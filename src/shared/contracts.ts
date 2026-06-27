@@ -317,7 +317,7 @@ export interface DevilCodexApi {
   providerRequestLog: () => Promise<ProviderRequestLogEntry[]>;
   onProviderAuth: (listener: (status: ProviderAuthStatus) => void) => () => void;
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
-  respondApproval: (input: { requestId: string | number; decision: ApprovalDecision }) => Promise<void>;
+  respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
   sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<void>;
   interruptTurn: (input: { threadId: string; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;

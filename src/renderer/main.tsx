@@ -801,7 +801,7 @@ function App(): React.JSX.Element {
     if (!prompt || approvalResponding) return;
     setApprovalResponding(true);
     try {
-      await window.devilCodex.respondApproval({ requestId: prompt.requestId, decision });
+      await window.devilCodex.respondApproval({ requestId: prompt.requestId, decision, threadId: prompt.threadId });
       setApprovalQueue((current) => current.filter((item) => item.requestId !== prompt.requestId));
     } catch (error) {
       setExternalError(`승인 응답 실패: ${String(error)}`);

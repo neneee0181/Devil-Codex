@@ -29,7 +29,7 @@ import { AskControlServer } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { providerUsageReport } from "./provider-usage.cjs";
-import type { ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, WorkspaceChange } from "./contracts.cjs";
+import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean }> {
   const [cli, oauth] = await Promise.all([codexCliStatus(), oauthStatus()]);
@@ -850,7 +850,15 @@ app.whenReady().then(async () => {
   ipcMain.handle("providers:usage", async () => providerUsageReport(await combinedAuthStatus()));
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
-  ipcMain.handle("approval:respond", (_event, input) => server().respondApproval(input));
+  ipcMain.handle("approval:respond", (_event, input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => {
+    // Approval requests are emitted by the per-thread app-server that's running
+    // the turn. The decision must go back to THAT child's stdin — routing it to
+    // the global server() leaves the command waiting forever (5-min hang on the
+    // first command/file approval). Fall back to the global server only when no
+    // live thread server matches.
+    const target = (input.threadId ? threadServers.get(input.threadId) : undefined) ?? server();
+    return target.respondApproval(input);
+  });
   ipcMain.handle("thread:create", async (_event, input) => {
     const instance = createAppServer(false);
     let bound = false;
