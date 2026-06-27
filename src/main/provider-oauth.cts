@@ -1,0 +1,351 @@
+import { app, safeStorage, shell } from "electron";
+import { createServer } from "node:http";
+import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+// In-app OAuth for providers that have their own login (no external CLI):
+//   GitHub Copilot — GitHub device flow → copilot token
+//   Claude Code     — Anthropic OAuth (PKCE) + localhost callback → API key
+// Tokens are encrypted at rest with the OS keychain (safeStorage).
+
+export type OAuthProvider = "copilot" | "claude-code";
+
+const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const GH_API = "https://api.github.com";
+const COPILOT_API = "https://api.githubcopilot.com";
+
+const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_AUTH_URL = "https://claude.ai/oauth/authorize";
+const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_CREATE_KEY_URL = "https://api.anthropic.com/api/oauth/claude_cli/create_api_key";
+const CLAUDE_CALLBACK_PORT = 49155;
+const CLAUDE_REDIRECT = `http://localhost:${CLAUDE_CALLBACK_PORT}/callback`;
+const CLAUDE_SCOPES = "org:create_api_key user:profile user:inference";
+const ANTHROPIC_API = "https://api.anthropic.com/v1";
+const CLAUDE_CODE_OAUTH_BETA = "claude-code-20250219,oauth-2025-04-20";
+
+type CopilotToken = { githubToken: string };
+type ClaudeToken = { apiKey?: string; accessToken: string; refreshToken: string; expiresAt?: number };
+const COPILOT_FALLBACK_MODELS = [
+  { id: "gpt-5-mini", label: "GPT-5 Mini" },
+];
+const COPILOT_BLOCKED_MODEL_IDS = new Set(["gpt-5.4"]);
+
+function root(): string { return join(app.getPath("userData"), "providers"); }
+function tokenPath(provider: OAuthProvider): string { return join(root(), `${provider}.oauth`); }
+// After an explicit Claude logout, suppress the auto-detect that would otherwise
+// re-import Claude Code's own credentials and silently log the user back in.
+const claudeOptOutPath = (): string => join(root(), "claude-code.logout");
+function claudeOptedOut(): boolean { return existsSync(claudeOptOutPath()); }
+let claudeLoginInProgress = false;
+
+async function writeToken(provider: OAuthProvider, value: unknown): Promise<void> {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("이 시스템에서 OS Keychain 암호화를 사용할 수 없습니다.");
+  await mkdir(root(), { recursive: true });
+  await writeFile(tokenPath(provider), safeStorage.encryptString(JSON.stringify(value)).toString("base64"), { mode: 0o600 });
+}
+async function readToken<T>(provider: OAuthProvider): Promise<T | null> {
+  const path = tokenPath(provider);
+  if (!existsSync(path)) return null;
+  try { return JSON.parse(safeStorage.decryptString(Buffer.from((await readFile(path, "utf8")).trim(), "base64"))) as T; }
+  catch { return null; }
+}
+async function deleteToken(provider: OAuthProvider): Promise<void> {
+  if (existsSync(tokenPath(provider))) await unlink(tokenPath(provider));
+}
+
+// ---------- GitHub Copilot device flow ----------
+export interface DeviceCodeInfo { userCode: string; verificationUri: string; expiresIn: number; }
+
+const copilotTokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+async function startCopilotDevice(): Promise<{ deviceCode: string; interval: number } & DeviceCodeInfo> {
+  const res = await fetch("https://github.com/login/device/code", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json", "User-Agent": "GithubCopilot/1.155.0" },
+    body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: "read:user" }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`GitHub device auth failed (${res.status}): ${await res.text()}`);
+  const data = await res.json() as { device_code: string; user_code: string; verification_uri: string; expires_in: number; interval?: number };
+  return { deviceCode: data.device_code, userCode: data.user_code, verificationUri: data.verification_uri, expiresIn: data.expires_in, interval: data.interval ?? 5 };
+}
+
+async function pollCopilotDevice(deviceCode: string, intervalSec: number, expiresIn: number): Promise<string> {
+  const startedAt = Date.now();
+  let intervalMs = Math.max(1, intervalSec) * 1000;
+  while (Date.now() - startedAt < expiresIn * 1000) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const res = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json", "User-Agent": "GithubCopilot/1.155.0" },
+      body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`GitHub token polling failed (${res.status}): ${await res.text()}`);
+    const data = await res.json() as { access_token?: string; error?: string; error_description?: string };
+    if (data.access_token) return data.access_token;
+    if (data.error === "authorization_pending") continue;
+    if (data.error === "slow_down") { intervalMs += 5_000; continue; }
+    if (data.error === "access_denied") throw new Error("GitHub Copilot 로그인이 거부되었습니다.");
+    if (data.error === "expired_token") throw new Error("GitHub Copilot 로그인 코드가 만료되었습니다.");
+    throw new Error(data.error_description || data.error || "GitHub Copilot 로그인 실패");
+  }
+  throw new Error("GitHub Copilot 로그인 시간이 초과되었습니다.");
+}
+
+async function getCopilotToken(githubToken: string): Promise<string> {
+  const cached = copilotTokenCache.get(githubToken);
+  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+  // Editor headers must be sent at token exchange too — the returned Copilot
+  // token's model access (gpt-5.x, claude) is scoped to the editor identity.
+  // Without them the token is limited and /chat/completions rejects newer models.
+  const res = await fetch(`${GH_API}/copilot_internal/v2/token`, {
+    headers: {
+      Authorization: `token ${githubToken}`,
+      "User-Agent": "GithubCopilot/1.155.0",
+      "Editor-Version": "vscode/1.90.2",
+      "Editor-Plugin-Version": "copilot-chat/0.17.2",
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Copilot token exchange failed (${res.status}): ${await res.text()}`);
+  const data = await res.json() as { token: string; expires_at: number };
+  copilotTokenCache.set(githubToken, { token: data.token, expiresAt: data.expires_at * 1000 });
+  return data.token;
+}
+
+// ---------- Claude Code OAuth (PKCE) ----------
+function detectClaudeCodeToken(): ClaudeToken | null {
+  if (process.platform !== "darwin") return null;
+  try {
+    const raw = execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { encoding: "utf8", timeout: 5_000 }).trim();
+    const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string; refreshToken?: string; expiresAt?: number } };
+    const oauth = parsed.claudeAiOauth;
+    if (!oauth?.accessToken || !oauth.refreshToken) return null;
+    return { accessToken: oauth.accessToken, refreshToken: oauth.refreshToken, expiresAt: oauth.expiresAt ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+function pkce(): { verifier: string; challenge: string } {
+  const verifier = randomBytes(32).toString("base64url");
+  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+}
+
+function waitForClaudeCallback(expectedState: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://localhost:${CLAUDE_CALLBACK_PORT}`);
+      if (url.pathname !== "/callback") { res.writeHead(404); res.end(); return; }
+      const error = url.searchParams.get("error");
+      const state = url.searchParams.get("state");
+      const code = url.searchParams.get("code");
+      const page = (msg: string, ok: boolean): string => `<!DOCTYPE html><meta charset="utf8"><body style="font-family:-apple-system,sans-serif;background:#121212;color:#e2e2e2;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:${ok ? "#6ad08a" : "#ef7770"}">${msg}</h2><p style="color:#888">devil-codex로 돌아가세요.</p></div></body>`;
+      if (error || state !== expectedState || !code) {
+        res.writeHead(error ? 200 : 400, { "content-type": "text/html" });
+        res.end(page(error ? `로그인 실패: ${error}` : "잘못된 콜백", false));
+        server.close(); reject(new Error(error || "Claude OAuth 콜백 오류"));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(page("Claude Code 연결됨! 탭을 닫아도 됩니다.", true));
+      server.close(); resolve(code);
+    });
+    server.on("error", reject);
+    server.listen(CLAUDE_CALLBACK_PORT, "127.0.0.1");
+    setTimeout(() => { server.close(); reject(new Error("Claude 로그인 시간 초과")); }, 5 * 60 * 1000);
+  });
+}
+
+async function exchangeClaudeCode(code: string, verifier: string, state: string): Promise<ClaudeToken> {
+  const res = await fetch(CLAUDE_TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "authorization_code", code: code.split("#")[0]!, redirect_uri: CLAUDE_REDIRECT, client_id: CLAUDE_CLIENT_ID, code_verifier: verifier, state }).toString(),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`Claude token exchange failed (${res.status})`);
+  const data = await res.json() as { access_token: string; refresh_token: string; expires_in?: number };
+  const token: ClaudeToken = { accessToken: data.access_token, refreshToken: data.refresh_token, expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000 - 60_000 };
+  try {
+    const keyRes = await fetch(CLAUDE_CREATE_KEY_URL, {
+      method: "POST",
+      headers: { authorization: `Bearer ${data.access_token}`, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({ name: "devil-codex" }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (keyRes.ok) { const kd = await keyRes.json() as { raw_key?: string; key?: string }; token.apiKey = kd.raw_key ?? kd.key; }
+  } catch { /* fall back to OAuth access token */ }
+  return token;
+}
+
+async function refreshClaudeToken(refreshToken: string): Promise<ClaudeToken> {
+  const res = await fetch(CLAUDE_TOKEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE_CLIENT_ID }).toString(),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`Claude token refresh failed (${res.status}): ${await res.text()}`);
+  const data = await res.json() as { access_token: string; refresh_token?: string; expires_in?: number };
+  return { accessToken: data.access_token, refreshToken: data.refresh_token ?? refreshToken, expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000 - 60_000 };
+}
+
+async function readClaudeToken(): Promise<ClaudeToken | null> {
+  let stored = await readToken<ClaudeToken>("claude-code");
+  if ((!stored?.accessToken || !stored.refreshToken) && !claudeOptedOut() && !claudeLoginInProgress) {
+    stored = detectClaudeCodeToken();
+    if (stored) await writeToken("claude-code", stored);
+  }
+  if (!stored?.accessToken || !stored.refreshToken) return stored;
+  if (stored.expiresAt && stored.expiresAt > Date.now() + 60_000) return stored;
+  try {
+    const fresh = await refreshClaudeToken(stored.refreshToken);
+    await writeToken("claude-code", { ...stored, ...fresh });
+    return { ...stored, ...fresh };
+  } catch {
+    return stored;
+  }
+}
+
+function copilotHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Editor-Version": "vscode/1.90.2", "Editor-Plugin-Version": "copilot-chat/0.17.2", "Copilot-Integration-Id": "vscode-chat", "Openai-Intent": "conversation-panel", "User-Agent": "GithubCopilot/1.155.0" };
+}
+
+// ---------- Raw credentials for the local Codex Responses proxy ----------
+export async function claudeAuth(): Promise<{ apiKey?: string; accessToken?: string } | null> {
+  const stored = await readClaudeToken();
+  if (!stored) return null;
+  // Prefer the official Claude Code OAuth bearer token. A created API key can
+  // bill/authorize differently from the user's Claude Code subscription.
+  return stored.accessToken ? { accessToken: stored.accessToken } : { apiKey: stored.apiKey };
+}
+
+export async function claudeAccessTokenForUsage(): Promise<string | null> {
+  const stored = await readClaudeToken();
+  return stored?.accessToken ?? null;
+}
+
+export const copilotChatHeaders = copilotHeaders;
+export async function copilotBearer(): Promise<string | null> {
+  const stored = await readToken<CopilotToken>("copilot");
+  if (!stored?.githubToken) return null;
+  return getCopilotToken(stored.githubToken);
+}
+
+// ---------- Chat credentials/requests for the runtime ----------
+const CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+export async function claudeChat(model: string, text: string, signal: AbortSignal): Promise<Response> {
+  const stored = await readClaudeToken();
+  if (!stored) throw new Error("Claude Code 로그인이 필요합니다.");
+  const headers: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
+  const body: Record<string, unknown> = { model, max_tokens: 8192, stream: true, messages: [{ role: "user", content: text }] };
+  if (stored.apiKey) {
+    // API key fallback. Normal Claude Code OAuth should use the subscription
+    // bearer token below instead.
+    headers["x-api-key"] = stored.apiKey;
+  }
+  if (stored.accessToken) {
+    // OAuth subscription token: Bearer + Claude Code/oauth betas + Claude Code identity prompt.
+    delete headers["x-api-key"];
+    headers.authorization = `Bearer ${stored.accessToken}`;
+    headers["anthropic-beta"] = CLAUDE_CODE_OAUTH_BETA;
+    body.system = CLAUDE_CODE_SYSTEM;
+  }
+  return fetch(`${ANTHROPIC_API}/messages`, { method: "POST", signal, headers, body: JSON.stringify(body) });
+}
+
+export async function copilotChat(model: string, text: string, signal: AbortSignal): Promise<Response> {
+  const stored = await readToken<CopilotToken>("copilot");
+  if (!stored?.githubToken) throw new Error("GitHub Copilot 로그인이 필요합니다.");
+  const token = await getCopilotToken(stored.githubToken);
+  return fetch(`${COPILOT_API}/chat/completions`, { method: "POST", signal, headers: copilotHeaders(token), body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: text }] }) });
+}
+
+// ---------- Public API ----------
+export async function oauthStatus(): Promise<{ copilot: boolean; claude: boolean }> {
+  const [copilot, claude] = await Promise.all([readToken<CopilotToken>("copilot"), readClaudeToken()]);
+  return { copilot: Boolean(copilot?.githubToken), claude: Boolean(claude?.apiKey || (claude?.accessToken && claude.refreshToken)) };
+}
+
+// Kicks off login; for copilot returns the device code to show the user while a
+// background poll stores the token, then calls onDone. Claude opens a browser
+// and a localhost callback completes it.
+export async function oauthLogin(provider: OAuthProvider, onDone: () => void): Promise<DeviceCodeInfo | null> {
+  if (provider === "copilot") {
+    const device = await startCopilotDevice();
+    void shell.openExternal(device.verificationUri);
+    void (async () => {
+      try {
+        const githubToken = await pollCopilotDevice(device.deviceCode, device.interval, device.expiresIn);
+        await writeToken("copilot", { githubToken } satisfies CopilotToken);
+      } catch { /* surfaced via status staying false */ }
+      finally { onDone(); }
+    })();
+    return { userCode: device.userCode, verificationUri: device.verificationUri, expiresIn: device.expiresIn };
+  }
+  claudeLoginInProgress = true;
+  const { verifier, challenge } = pkce();
+  const state = randomBytes(16).toString("hex");
+  const params = new URLSearchParams({ response_type: "code", client_id: CLAUDE_CLIENT_ID, redirect_uri: CLAUDE_REDIRECT, scope: CLAUDE_SCOPES, code_challenge: challenge, code_challenge_method: "S256", state });
+  const wait = waitForClaudeCallback(state);
+  void shell.openExternal(`${CLAUDE_AUTH_URL}?${params}`);
+  void (async () => {
+    try {
+      const code = await wait;
+      if (existsSync(claudeOptOutPath())) await unlink(claudeOptOutPath()).catch(() => undefined);
+      await writeToken("claude-code", await exchangeClaudeCode(code, verifier, state));
+    } catch { /* status stays false */ }
+    finally { claudeLoginInProgress = false; onDone(); }
+  })();
+  return null;
+}
+
+export async function oauthLogout(provider: OAuthProvider): Promise<void> {
+  await deleteToken(provider);
+  // Mark Claude as opted out so auto-detect won't re-import its credentials.
+  if (provider === "claude-code") await writeFile(claudeOptOutPath(), "1", { mode: 0o600 }).catch(() => undefined);
+}
+
+export async function oauthModels(provider: OAuthProvider): Promise<Array<{ id: string; label: string }>> {
+  if (provider === "copilot") {
+    const stored = await readToken<CopilotToken>("copilot");
+    if (!stored?.githubToken) return [];
+    try {
+      const token = await getCopilotToken(stored.githubToken);
+      const res = await fetch(`${COPILOT_API}/models`, { headers: copilotHeaders(token), signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return COPILOT_FALLBACK_MODELS;
+      const data = await res.json() as { data?: Array<{ id: string; model_picker_enabled?: boolean; supported_endpoints?: string[] }> };
+      const seen = new Set<string>();
+      const models = (data.data ?? []).filter((m) => {
+        if (m.model_picker_enabled === false) return false;
+        if (!m.id || COPILOT_BLOCKED_MODEL_IDS.has(m.id)) return false;
+        if (Array.isArray(m.supported_endpoints) && m.supported_endpoints.length > 0) return m.supported_endpoints.includes("/chat/completions");
+        return true;
+      }).flatMap((m) => { if (!m.id || seen.has(m.id)) return []; seen.add(m.id); return [{ id: m.id, label: m.id }]; });
+      return models.length ? models : COPILOT_FALLBACK_MODELS;
+    } catch { return []; }
+  }
+  const stored = await readClaudeToken();
+  const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
+  if (stored?.accessToken) {
+    headers.authorization = `Bearer ${stored.accessToken}`;
+    headers["anthropic-beta"] = CLAUDE_CODE_OAUTH_BETA;
+  } else if (stored?.apiKey) {
+    headers["x-api-key"] = stored.apiKey;
+  } else {
+    return [];
+  }
+  try {
+    const res = await fetch(`${ANTHROPIC_API}/models?limit=100`, { headers, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return [];
+    const data = await res.json() as { data?: Array<{ id: string; display_name?: string }> };
+    return (data.data ?? []).map((m) => ({ id: m.id, label: m.display_name ?? m.id }));
+  } catch { return []; }
+}

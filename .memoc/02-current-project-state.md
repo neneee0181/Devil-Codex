@@ -1,0 +1,165 @@
+---
+memoc: true
+type: state
+scope: project-memory
+created: 2026-06-21T11:02:34
+updated: 2026-06-27T18:58:00
+status: active
+tags:
+  - memoc
+  - memoc/state
+---
+# Current Project State
+
+Last synced: 2026-06-27
+
+## Current Status
+
+- Electron + React/TypeScript product shell and Codex app-server bridge exist.
+- Product direction and architectural constraints are agreed: Codex parity is the primary acceptance criterion, with multi-provider support as the extension.
+- M4-A packaging/update and M4-B subagents/side-chat are complete; M4-C direction was corrected after user clarification. The short-lived Devil-local Automations MVP (`AutomationStore`, IPC, app-local scheduler, create/list/toggle/delete/run UI) was removed because the target is **stock Codex-backed Automations**: create/manage from Devil, but execution/sync must go through the same stock Codex/ChatGPT automation path. Current Automations UI now follows stock Codex's first-run behavior: "채팅으로 만들기" and template chips create a new Codex-direct project chat and send a prepared automation setup prompt even if the current composer model is external; there is still no Devil-local scheduler/storage. Probe confirmed Codex app-server v0.142.0 does not expose `tasks/*`, `automation/*`, or `app/automations` methods; `~/.codex.state_5.sqlite` `agent_jobs` appears to be CSV/agent-job tooling, not the user-facing Automations feature. First release test `v0.1.1` uploaded Windows update assets but the workflow ended red because macOS DMG/ZIP publishing raced on the same GitHub Release; `v0.1.2` fixes this by making macOS builds artifact-only while Windows remains the release/update-feed publisher. `v0.1.3` is the Windows polish/update test target: Settings reads the real packaged version, non-macOS builds render traffic-light-style close/minimize/maximize controls, and project rows display cross-platform folder basenames instead of full Windows paths. Windows artifact/update verification remains user-side after CI publishes the release.
+- M3 providers (in progress, commit `d459a9d`): connection settings split into two sections — login providers (Codex, Claude Code, GitHub Copilot) and API-key providers (OpenAI, Anthropic, Google, DeepSeek). Connection tab manages credentials only (local viewing state) and no longer changes the composer model picker; the model section was removed.
+- In-app OAuth (rcodex-style, no external CLI) for the two login providers: Copilot uses the GitHub device flow → Copilot token; Claude Code uses Anthropic PKCE OAuth + localhost:49155 callback → creates an API key (falls back to the OAuth access token as Bearer with `anthropic-beta: oauth-2025-04-20` + Claude Code system prompt). Tokens are encrypted via safeStorage in `provider-oauth.cts`. Codex stays on the app-server (its login is reused from an installed `codex`).
+- Chat routing: codex turns go through the app-server; external-provider turns go through `provider-runtime.cts` (`dispatch`): claude-code → `claudeChat`, copilot → `copilotChat`, API providers → keychain key. Dynamic model lists: codex via app-server `model/list`, API providers via each `/models` endpoint (auto-synced when a key exists), login providers via OAuth `/models`; `useProviders` merges these over the static catalog.
+- Top "새 채팅" and app startup/connect both enter a standalone (general) chat under `~/Documents/Codex/<date>/new-chat` so the first composer is Codex general chat, not an active project draft.
+- Windows UI polish is in progress: non-macOS now has a stock-Codex-like title/menu bar, side-chat uses the main model-picker style, activity rows animate/expand reliably, Provider diagnostics are compact graphite cards, and `다음으로 열기` dynamically lists installed/openable apps. Fresh empty `new-chat` screens hide the thread ellipsis and disable `다음으로 열기` so the app no longer tries to open the pseudo `.../new-chat` folder. Sidebar thread rows now separate hover menu/time spacing, show a small spinner for running threads, and route offscreen turn events into per-thread history cache so multiple active conversations do not visually mix. Thread rename follows stock Codex semantics: it changes `~/.codex/state_5.sqlite` `threads.title`, not the real workspace folder name.
+- Plugins/Skills page now behaves as a read-only stock-Codex status surface: the Plugins tab lists connected MCP/plugin servers from the shared Codex app-server state without add/manage/run actions, while the Skills tab lists enabled `skills/list` results with search and refresh.
+- Search now uses a Codex-like command palette overlay instead of navigating to a separate page. It merges recent general/project chats by recency, remote `searchThreads` results while typing, Cmd+1..9 quick-open shortcuts, and only connected commands (new chat, folder open, settings, file search, active-thread archive/pin/side-chat, plugins/MCP, review, find/back/forward).
+- External-provider chats (Claude Code/Copilot/API) are stored in devil-codex's own `provider-transcript.cts` store (thread summary + transcript) and merged into the sidebar. Recovery/startup races were fixed (`b3177de`, `b497e8d`), so Devil-local reopen is the supported path.
+- External login-provider threads now use the app-server `modelProvider: "devil"` Responses proxy only; the forbidden `codex-mirror.cts` SQLite/session injection layer was removed (`20a2fc2`). Copilot rejects more than 128 tools, so both Copilot and Anthropic adapters now limit and normalize tool schemas (`f162512`).
+- Electron verification: Copilot app-server turn completed through the proxy with 58 Codex tools; a direct 191-tool Copilot request also completed after limiting. Codex `gpt-5.4` completed without any proxy traffic. Claude Code OAuth currently returns Anthropic 401 and needs re-login. Devil-local provider threads reappeared after restart.
+- Accepted sync direction changed on 2026-06-24: implement a narrow rcodex-style provider reconcile layer. Codex turns remain vanilla/no proxy. External turns run through app-server `modelProvider: "devil"` and Devil proxy, then the existing thread's provider metadata is reconciled back to `openai` in `~/.codex/state_5.sqlite` + rollout `session_meta` so stock Codex can list the same thread. This requires journal-first pending tracking, schema guard, backup-before-write, retry/backoff, startup recovery, and Devil-local actual provider/model metadata. Detailed plan: `.memoc/wiki/knowledge/topics/external-provider-sync-plan.md`.
+- First implementation landed locally: `src/main/codex-provider-reconcile.cts` adds pending journal, schema guard, backup-before-write, SQLite/rollout provider patch, retry/backoff, and startup pending recovery; `app-server.cts` can now resume a thread with `modelProvider`; external turns in `main.cts` mark pending, resume as `devil`, run through proxy, then reconcile on `turn/completed`; `provider-transcript.cts` records actual provider/model sync status. `npm run build` passes. Real Copilot E2E passed on 2026-06-24 while stock Codex was also running: Devil `copilot/gpt-5-mini` returned `OK`, pending journal cleared, SQLite `threads.model_provider` and rollout `session_meta.model_provider` were both `openai`, and Devil metadata marked the turn `synced`. Stock Codex UI inspection is blocked by computer-use safety policy, so user visual confirmation is still needed for sidebar visibility.
+- Existing stock-Codex-origin thread continuation is verified after the app-server reload fix: before external turns, Devil patches that thread provider to `devil`, disposes the cached app-server, resumes with `modelProvider:"devil"`, sends the Copilot/Claude proxy turn, then reconciles back to `openai`. Test thread `019ef81f-1335-7562-9833-ebc075728354` with prompt `CONTINUE_WITH_COPILOT_TEST_3. OK only.` returned `OK`; `pending-reconcile.json` was empty; DB and rollout first-line provider were `openai`; Devil provider turn was `syncStatus:"synced"`.
+- Follow-up stock-Codex reply error was fixed: after external turns, reconcile now restores DB `threads.model` to the prior non-external Codex model, or the root `~/.codex/config.toml` model if the thread had already been left on an external model. The broken test thread was manually backed up and restored from `openai|copilot:gpt-5-mini` to `openai|gpt-5.5`; a new Copilot turn `MODEL_RESTORE_AFTER_COPILOT_TEST. OK only.` returned `OK`, cleared pending, and ended with DB `openai|gpt-5.5`.
+- Devil-local external thread titles now match Codex semantics: they are based on the first user message and are not overwritten by later external-provider turns. For existing native threads that first become external in Devil, the title is derived from the native thread history's first user message when available. Existing bad local provider transcript titles were normalized once.
+- Devil sidebar recency now matches Codex's seconds-based timestamp contract: `ProviderTranscriptStore` normalizes `updatedAt` to Unix seconds on load/save/recovery, returns summaries newest-first, and `main.cts` sorts merged native/external `thread:list` and `thread:projects` results by latest activity. Existing local provider timestamps were normalized once.
+- Copilot-hosted Gemini empty-turn diagnosis: `gemini-3.1-pro-preview` produced user-message + token-count rollout entries but no assistant item, and Devil provider metadata recorded the turn as `failed`. `bridge.cts` now treats upstream completion with zero assistant/tool output as `response.failed`; `TurnActivity` visibly labels failed activity cards instead of making the turn look like a silent success.
+- External-provider failure messaging was improved: Copilot/Claude adapters preserve upstream HTTP status and translate likely causes (login expired, permission/subscription/model unsupported, rate limit, server issue), stream `error` frames are surfaced, and empty assistant-output failures explain likely model/account/context incompatibility instead of a silent failure.
+- Claude Code OAuth routing now matches the subscription-oriented route used by opencodex/rcodex more closely: Devil prefers the OAuth Bearer access token over generated API keys, sends `anthropic-beta: claude-code-20250219,oauth-2025-04-20`, and refreshes Claude Code models with the OAuth token instead of falling back to static catalog entries.
+- Claude Code provider handling now also imports an existing macOS Claude Code keychain token when Devil has no fresh token, refreshes OAuth access tokens via the stored refresh token, uses the Claude Agent SDK identity prompt, and applies opencodex-style `proxy_` tool-name prefixing for OAuth calls.
+- Claude Code OAuth status now avoids a false positive during login: starting the browser flow no longer clears the logout opt-out or auto-imports stock Claude Code credentials until the callback succeeds and Devil stores a token. Status also requires a usable OAuth refresh token when relying on access-token auth.
+- Provider credential/model management now ports the safe parts of opencodex/rcodex beyond Claude: Copilot device/token/model calls preserve upstream error bodies and use the same Copilot headers; API-key providers support env fallback for `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, and `DEEPSEEK_API_KEY`; API-key model refresh uses a short memory cache and falls back to saved/static models for transient `/models` failures while still surfacing 401/403 credential problems.
+- Provider/API surface was expanded from the safe opencodex registry subset and cross-checked with rcodex: xAI, OpenRouter, Groq, Mistral, Cerebras, Together, Fireworks, Moonshot/Kimi, Hugging Face, NVIDIA NIM, Ollama, vLLM, and LM Studio now share a common API provider config for model refresh and proxy requests. Local providers are keyless, visible in the picker/settings without credentials, and image sidecar routing respects provider native-image capability. OAuth-only/special providers such as xAI/Kimi OAuth, Azure, custom provider config, and broader rcodex free-tier catalog remain future work.
+- Provider availability was tightened after false-positive checks: picker/composer/proxy `/models` now require a verified live model list for API-key, local, Claude Code, and Copilot providers. Key changes and key deletion clear saved model caches, API-key env fallback is active for known env names, startup refresh revalidates configured providers, and 401/403 clears stale models so unusable providers disappear from the picker.
+- `.memoc/wiki/knowledge/topics/opencodex-port-plan.md` now includes an explicit OpenCodex-vs-Devil missing-provider table. Current decision remains: avoid full OpenCodex registry/API adoption for now; prefer custom OpenAI-compatible provider support first if provider breadth becomes a priority.
+- Settings → 연결 now keeps credential actions local to the selected card: clicking a login/API-key provider expands login, logout, save, delete, or replace controls directly inside that provider tile instead of pushing the controls to a separate lower section.
+- Composer model picker now keeps long connected provider/API-key model lists compact by rendering each provider as a collapsible accordion header; expanded providers show 10 models first and reveal 10 more per `더보기` click, while closing the picker resets both reveal/provider-expanded state and then reopens with only the active provider visible. Picker-specific CSS avoids collisions with the Settings provider model menu.
+- Sidebar project creation parity pass: the Projects header is always visible with Codex-like section controls, including a left-of-ellipsis all-open/all-closed toggle and a notebook-plus add button; "프로젝트 만들기" modal offers Local, "기존 폴더 사용" opens the native folder picker, and "다음" creates a real local folder under `~/Documents/Codex/Projects/새 프로젝트...` then opens it as a project draft. Project rows use custom notebook-style closed/open icons. Thread creation still goes through the same `cwd`, so Codex/Devil sync remains cwd-based.
+- Empty projects are remembered in `devil-codex:local-project-cwds` immediately after choosing/creating a project, so they appear in the sidebar before the first thread exists; re-adding a hidden project removes it from the hidden list. General chats render outside the Projects scroll section under a separate `채팅` heading with spacing.
+- Settings Usage & Billing now shows provider usage for logged-in accounts only. Codex reads the existing `~/.codex/auth.json` OAuth access token and calls `https://chatgpt.com/backend-api/wham/usage`; Claude Code uses the stored OAuth access token and calls `https://api.anthropic.com/api/oauth/usage`; GitHub Copilot displays a logged-in unavailable card because opencodex/rcodex did not expose a reliable Copilot quota API.
+- Composer paste handling now forces rich clipboard content through plain-text insertion. Copying a rendered chat bubble back into the contenteditable composer should paste only clean text, not nested bubble-like HTML. `npm run build` passes.
+- A-plan first pass is implemented: provider models now carry lightweight capability metadata (`tools`, `images`, `webSearch`, `diagnostics`, notes), the model picker shows capability badges/tooltips, turn activity can render `Provider 진단` cards, and Codex-direct/external turns emit diagnostics with route/reconcile/sidecar status. Web-search/vision sidecars are documented as future setting-gated work, not enabled by default.
+- A-plan diagnostics visibility pass is implemented: Provider 연결 탭 now shows per-model capability metadata, Settings → 구성 has default-off sidecar toggles/limits, and provider diagnostics are attached to the same `turn/completed` turn when possible so sync refresh is less likely to hide them. Sidecar diagnostics currently report enabled/disabled plus `0/<limit>` request counts; actual web-search/vision sidecar execution remains future work. `npm run build` passes.
+- Web-search sidecar now follows the opencodex-style external-provider tool loop rather than the earlier pre-search MVP. When Settings → 구성 → web-search sidecar is ON, Devil injects a synthetic `web_search` function tool only for external providers, intercepts that call, runs native Codex/ChatGPT web_search via forwarded auth, injects the result as a tool result, and re-asks the external model until it produces a final answer or hits the request limit. Provider diagnostics report toolCalls/requests/loops/failures, and each sidecar search is emitted as a visible timeline activity row (`웹 검색: ...`) with expandable query/source/failure detail. Codex direct route remains unchanged. `npm run build` and local scan smoke checks pass.
+- External-provider activity parity improved: Gemini API-key tools use a Gemini-specific schema sanitizer that removes `additionalProperties` and other unsupported schema keywords, fixing the `Unknown name "additionalProperties"` rejection. Devil also records workspace Git snapshots before app-server turns and emits a synthetic `fileChange` timeline item after completion when app-server reports only command execution for an external-provider file edit. This makes external turns show the compact Codex-like `파일 N개 수정` / `편집함 path +N -M` activity when files changed.
+- Codex and external-provider turns now share the same Codex-like activity presentation in `TurnActivity`: search commands are grouped as `코드 검색 N개`, file/skill reads as `파일 N개 읽음`, shell commands as `... 실행 완료` with expandable output, file changes as compact `파일 N개 수정`, web searches as `웹 검색`, and provider diagnostics as a separate card.
+- Activity/provider parity follow-up is implemented: `TurnActivity` now renders `Provider 진단` after all normal activity rows, and the redundant inner `작업 내용` toggle was removed so the elapsed-time row controls expansion. Gemini API-key tool schemas now also remove invalid `required` keys whose names are not present in `properties`, covering the `required[n]: property is not defined` Google rejection. Settings → 연결 includes an MVP recent Provider request log for external proxy turns, and a vision sidecar can turn image parts into Codex-generated text descriptions for text-only external providers when enabled. `npm run build` plus a local Gemini schema smoke test pass.
+- Copilot model discovery should stay metadata/cache based, not generation-probe based. A short-lived probe implementation was rejected after checking opencodex/rcodex because it consumes tokens and adds latency. Current direction: keep `/models` filtering cheap (`model_picker_enabled` + `/chat/completions`) and solve Gemini-like empty turns through adapter parsing, error surfacing, or explicit deny/metadata rules only when confirmed.
+- M1 end-to-end local thread flow has been verified with an OpenAI turn.
+- Existing workspace thread list and thread resume are verified against Codex app-server.
+- Diff panel reads actual workspace Git status and now provides selected-file unified line diff through the sandboxed IPC bridge; verified in Electron against seven modified text files.
+- Codex screenshot-driven shell now matches the sidebar/main/floating-environment/composer structure; search, settings navigation, `Cmd+G`, and `Cmd+J` were manually verified.
+- Screenshot-driven project collapse/menu, editor-open dropdown, account menu, utility split panel, and real Git review summary were manually verified.
+- Right and bottom docks now share review/terminal/browser/files/side-chat launcher/content. Both can remain open while flex transitions resize the thread/composer area.
+- Terminal now owns a real workspace shell session, accepts keyboard/paste/control input, streams output, supports drag height adjustment, and normalizes CR to LF in pipe-shell fallback mode. Electron UI input created a real `/tmp` file during verification.
+- Terminal now uses a Wave-style command block: native text input sends complete commands to the existing PTY, output keeps a scrollback, `Ctrl+C` interrupts, `clear` resets visible scrollback, and a `ResizeObserver` resizes the PTY. This avoids Electron xterm canvas/IME failures. Electron verified visible Korean `echo 한글` input and output.
+- Composer suggestions are anchored to textarea caret for both `$` and `/`; slash can select skills or review/status/goal commands. Approval picker matches ask/agent/full modes and full access requires a warning confirmation.
+- Project row hover exposes menu/new-chat actions. Project menu mirrors pin/Finder/worktree/rename/archive/remove; project new-chat shows project heading/context. New threads start lazily on first message and pending rows survive eventual-consistency list refreshes.
+- Motion/Lucide now power Codex-like transitions and SVG icons; left/right/bottom panels resize interactively and widths persist.
+- Renderer domains now split into `Composer`, `BottomDock`, `DockTabStrip`, `TerminalSession`, `ToolContent`, `ToolLauncherMenu`, `UtilityPanel`, and `ThreadList`; `main.tsx` remains composition/state boundary. Composer has approval policy, goal, attachment path, slash, and skill-picker interactions.
+- Project menu can now query `thread/list({ archived: true })` and render a dedicated archived-thread view; restore is intentionally not guessed because the app-server method is unverified.
+- Settings configuration now reads and explicitly saves `model`, `approval_policy`, and `sandbox_mode` in `~/.codex/config.toml` through isolated main-process store and renderer hook while preserving unknown keys/comments.
+- Shared outside-click/Escape hooks now dismiss shell and composer popovers; composer model control matches Codex's reasoning/model/speed nested menu and updates the selected model.
+- Settings now uses a dedicated full-window Codex layout with General/Profile/Appearance/Configuration/Personalization/Shortcuts/Usage pages and local persistence.
+- UI Codex-parity pass (2026-06-22): palette neutralized (no green tint; bg #181818, sidebar #262626, accents kept); top strip aligned via `main.cts` titleBarStyle:hidden + trafficLightPosition{19,19} + 52px window-nav/topbar; collapsed sidebar shows nav cluster in topbar; layout converted to flex (main-stage = topbar + stage-row(content-col + utility-panel) + terminal); utility/terminal always-rendered and animate open/close via `flex-basis` CSS transition (.24s) so content pushes smoothly, with a `resizing` state class disabling the transition during drag; ThreadMenu rebuilt (icon+label+kbd, dividers); responsive breakpoints 1120/900/720. Pitfall recorded: do NOT animate grid tracks via `@property` in this Electron build — it broke the grid. See worklog `20260621T1610`.
+- Codex turn parity now restores historical/live activity, reasoning, commands, file changes, context compaction, approvals, stop control, Markdown/image messages, file tree/code preview, and review cards.
+- Review `실행 취소` keeps conversation history and reverses only the selected AI turn's file patches. New/untracked-file undo was manually verified; tracked modify/delete and multi-file conflict protection compile but still require manual verification.
+- M2 Git workflow now connected end-to-end (commits `ef7009a..c096d3a`): selected-file stage/unstage and hunk stage/revert, commit + push, local/remote branch list/create/switch, Draft PR via `gh pr create --fill`, inline line comments routed to a Codex review turn, plus worktree list/create/switch, thread search + archive restore, thread rename/fork/pin, and Skills + MCP server status/tool-call integration. PLANS.md "다음 행동" advanced to M3 (provider adapter contract + OS keychain) after one manual Electron regression of the git hunk/worktree/MCP/PR paths. `npm run build` passes; 13 commits unpushed (origin behind).
+
+## Project Snapshot
+
+<!-- memoc:snapshot:start -->
+- Last synced: 2026-06-27T11:24:44
+- Detected stack: Node.js, React, Electron, TypeScript
+
+### Config Files
+
+- `.env.local`
+- `package.json`
+- `tsconfig.json`
+- `vite.config.ts`
+
+### Source Directories
+
+- `.claude`
+- `.github`
+- `assets`
+- `dist-electron`
+- `docs`
+- `release`
+- `scripts`
+- `src`
+- `vendor`
+
+### Package Scripts
+
+- `dev`: `concurrently -k "npm:dev:renderer" "npm:dev:electron"`
+- `dev:renderer`: `vite --host 127.0.0.1 --port 5173 --strictPort`
+- `dev:electron`: `npm run build:main && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .`
+- `build`: `npm run build:renderer && npm run build:main`
+- `build:renderer`: `vite build`
+- `build:main`: `tsc -p tsconfig.electron.json`
+- `start`: `electron .`
+- `icons`: `node scripts/build-icons.cjs`
+- `prepackage`: `npm run icons && npm run build`
+- `package`: `electron-builder`
+- `dist`: `npm run prepackage && electron-builder`
+- `dist:mac`: `npm run prepackage && electron-builder --mac`
+- `dist:win`: `npm run prepackage && electron-builder --win`
+- `postinstall`: `node scripts/fix-pty.cjs`
+<!-- memoc:snapshot:end -->
+
+## Open Tasks
+
+- Use `docs/CODEX_PARITY.md` as the authoritative implementation gap list and update it as features are verified.
+- Replace temporary glyph icons and connect settings/search/header/composer controls to app-server behavior.
+- Connect terminal/browser/files/side-chat panel placeholders and account menu actions to real backends.
+- Connect locally persisted settings to Codex config.toml and real account/profile/usage data.
+- Implement thread search and archive state from app-server data.
+- Replace browser/files/side-chat placeholders with real backends and extend Git review with split diff, inline comment, and stage/revert actions.
+- Connect persistent worktree creation and project removal/rename to full backend semantics; current rename/pin are local UI state and worktree is explicit placeholder feedback.
+- Map app-server items, approvals, and file changes to Codex-parity UI components.
+- Define provider adapter contract and API-key providers after OpenAI flow is stable.
+- Define an upstream sync process for regularly incorporating `openai/codex` updates.
+- Manually verify tracked-file modify/delete undo, multi-file atomic undo, and user-edit conflict rejection.
+
+## Completed Tasks
+
+See `.memoc/worklog/` for full shared activity history.
+
+## Commands
+
+- Memory summary: `.memoc/bin/memoc summary`
+- Memory refresh: `.memoc/bin/memoc update`
+
+## Notes
+
+- `npm run build` passes for Electron main/preload and React renderer.
+- Composer image attachment parity is in progress: pasted/dropped/selected images render as prompt-top thumbnails and are sent as app-server `type:image` items with `url` data URLs; manual runtime verification with Codex direct and external provider/vision sidecar is still needed.
+- User-message attachment parity is now in progress too: display metadata lets Devil render sent image/file attachments as Codex-like cards instead of `- image.png` text, images can open a large copy/save viewer, and long pasted text is converted into a text-file attachment card while still being included in the model prompt. Manual UI verification is still needed.
+- OpenCodex attachment handling was compared on 2026-06-25. Useful part: preserve `input_image` as a structured image part through provider adapters, never inline base64 into text. Devil now carries image `detail`, preserves `input_image.file_id` as a marker, decodes text-like `input_file.file_data` into context when present, forwards image `detail` to OpenAI-compatible/Copilot payloads, and lets Anthropic use remote image URLs as native URL image sources. OpenCodex itself mostly treats non-image files as markers, so PDF/document content extraction remains a Devil-specific future layer.
+- Attachment metadata restore and Provider dashboard/log pass is implemented. External-provider user turns persist display attachment metadata into Devil transcripts, `thread:sync-history` merges newer native Codex history while preserving local user attachments, and compacted-turn retry keeps attachment metadata. Provider request logs persist under Devil userData, include thread/model/route/tools/images/files/capability/errorType/sidecar stats, and Settings → 연결 computes per-model runtime compatibility from recent request outcomes.
+- Document attachment extraction is now the active priority over dashboard/model-compatibility polish. `src/main/document-attachments.cts` enriches file attachments at `turn:send` time so Codex direct and external-provider routes receive extracted document context. First pass supports text-like files, `.rtf`, `.docx`, and best-effort `.pdf`; scanned/complex PDFs and rich binary formats remain future work.
+- Timeline change cards are now turn-scoped: agent message cards use that turn's `fileChange` activity instead of the whole uncommitted workspace diff.
+- External provider failed-turn diagnostics now distinguish "provider final response failed" from already-executed command/file actions, reducing confusion for Gemini quota failures after successful shell/file commands.
+- Electron app was manually verified: runtime connection, thread creation, and a real `gpt-5.4` turn returned `clean timeline`.
+- Electron app was manually verified: app-server returned existing workspace threads and resumed a selected thread.
+- External proxy operation is not the desired end-user architecture; protocol adapters should live inside `devil-codex` where feasible.
+- Do not intentionally redesign or simplify Codex behaviors: follow Codex's GUI, features, workflows, and performance characteristics as closely as practical, except where multi-provider support or unavailable proprietary implementation requires a compatible reimplementation.
+- Local toolchain currently has Node.js `v26.0.0`, npm `11.12.1`, and Git; Rust, Cargo, pnpm, and Bun are not installed.
+- `.env` files are ignored. A safe presence check detected a non-empty `OPENAI_API_KEY`; do not inspect or commit `.env.local`.
+
+## Change Log
+
+See `.memoc/worklog/` and generated `.memoc/activity.md`.

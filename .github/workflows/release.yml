@@ -1,0 +1,130 @@
+name: Build installers
+
+# node-pty is a native module and cannot be cross-compiled, so each OS
+# installer is built on its own runner. The codex app-server binary is
+# downloaded per-platform into vendor/codex and bundled by electron-builder.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  CODEX_VERSION: rust-v0.142.1
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: mac
+          - os: windows-latest
+            platform: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Fetch codex app-server (macOS arm64)
+        if: matrix.platform == 'mac'
+        run: |
+          mkdir -p vendor/codex
+          curl -sL -o codex.zst "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-aarch64-apple-darwin.zst"
+          zstd -d codex.zst -o vendor/codex/codex
+          chmod +x vendor/codex/codex
+
+      - name: Fetch codex app-server (Windows x64)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          mkdir -p vendor/codex
+          curl -sL -o vendor/codex/codex.exe "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-x86_64-pc-windows-msvc.exe"
+
+      - run: npm ci
+
+      # Publish to a GitHub Release (generating latest*.yml update feeds) when
+      # building from a v* tag; plain workflow_dispatch only produces artifacts.
+      # Signs + notarizes when the matching secrets are set; otherwise builds
+      # unsigned. macOS auto-update only works for signed+notarized builds.
+      # Unsigned mac builds are uploaded as workflow artifacts only; Windows is
+      # the release publisher for the current auto-update test path. This avoids
+      # electron-builder's concurrent mac dmg/zip publish race creating the same
+      # GitHub Release multiple times.
+      # Build only (never publish here). A single release job below attaches all
+      # artifacts to one GitHub Release, avoiding electron-builder's concurrent
+      # release-creation race (HTTP 422 tag already_exists). Unsigned mac builds
+      # are ad-hoc signed by the afterSign hook so macOS doesn't flag them as
+      # damaged.
+      - name: Build macOS dmg
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          if [ -z "$CSC_LINK" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            NOTARIZE=""
+          else
+            NOTARIZE="-c.mac.notarize.teamId=$APPLE_TEAM_ID"
+          fi
+          npm run prepackage
+          npx electron-builder --mac $NOTARIZE -p never
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build Windows nsis
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          npm run prepackage
+          npx electron-builder --win -p never
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: devil-codex-${{ matrix.platform }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: ignore
+
+  # Single release publisher: collects both runners' artifacts and creates ONE
+  # GitHub Release. Includes latest.yml / latest-mac.yml update feeds.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist-artifacts/* \
+          || gh release upload "${GITHUB_REF_NAME}" dist-artifacts/* --repo "${GITHUB_REPOSITORY}" --clobber

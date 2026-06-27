@@ -1,0 +1,18 @@
+
+.memoc/.pending
+.memoc/local/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+dist-electron/
+release/
+build/icon.iconset/
+# bundled codex binaries (added per-release/CI, not committed)
+vendor/codex/codex
+vendor/codex/codex.exe
+# transient session export artifacts
+*-this-session-is-being-continued-from-a-previous-c.txt
+# stray vite build artifact at repo root
+/index.html
