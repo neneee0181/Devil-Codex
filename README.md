@@ -6,7 +6,8 @@
 
 OpenAI Codex의 GUI·워크플로를 재현하고, 수십 개의 모델 공급자와 브라우저·데스크톱 제어를 더한 macOS / Windows 데스크톱 앱.
 
-[![version](https://img.shields.io/badge/version-0.0.1-6c4cf1)](https://github.com/neneee0181/Devil-Codex)
+[![release](https://img.shields.io/github/v/release/neneee0181/Devil-Codex?color=6c4cf1)](https://github.com/neneee0181/Devil-Codex/releases)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-444)](https://github.com/neneee0181/Devil-Codex)
 [![electron](https://img.shields.io/badge/Electron-42-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![react](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -106,9 +107,15 @@ React 렌더러  ──IPC──▶  Electron 메인  ──▶  Codex app-serve
 
 ---
 
+## ⬇️ 다운로드
+
+[**Releases**](https://github.com/neneee0181/Devil-Codex/releases)에서 최신 설치 파일을 받으세요 — Windows `.exe`(NSIS), macOS `.dmg`. 태그(`v*`) 푸시마다 GitHub Actions가 설치 파일을 자동 빌드해 릴리스에 첨부합니다.
+
+> 설치 파일은 코드 서명되지 않았습니다. Windows SmartScreen / macOS Gatekeeper 경고가 뜨면 직접 허용해야 합니다.
+
 ## 📄 라이선스
 
-이 저장소의 라이선스 정책은 추후 명시됩니다. © 2026 neneee0181.
+[MIT](LICENSE) © 2026 neneee0181
 
 <div align="center">
 <sub>Codex 호환을 지향하는 비공식 프로젝트입니다. OpenAI와 직접적인 제휴 관계가 없습니다.</sub>
