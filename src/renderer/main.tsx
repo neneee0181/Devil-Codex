@@ -403,6 +403,16 @@ function App(): React.JSX.Element {
     // taller, so re-pin to bottom to keep the latest message above it.
   }, [thread?.id, items.length, view, queuedHere]);
 
+  // Re-read codex settings whenever the user leaves the Settings view (via back
+  // button, palette, anywhere). SettingsView owns a separate settings hook, so
+  // App's copy is otherwise stale — leaving the translate toggle visible after
+  // "English output" was turned off.
+  const prevViewRef = useRef(view);
+  useEffect(() => {
+    if (prevViewRef.current === "settings" && view !== "settings") codexSettings.reload();
+    prevViewRef.current = view;
+  }, [view, codexSettings.reload]);
+
   const folderName = basenamePath(workspace);
   const projectName = projectAliases[workspace] || projectAlias || folderName;
   const activeSummary = threads.find((item) => item.id === thread?.id);
@@ -1416,9 +1426,6 @@ function App(): React.JSX.Element {
   function openView(next: AppView): void {
     closePopovers();
     if (next === "settings") { setTerminalOpen(false); setUtilityPanelOpen(false); setEnvironmentOpen(false); }
-    // Leaving settings: re-read codex settings so the per-message translate
-    // toggle visibility tracks the "English output" switch without a restart.
-    if (view === "settings" && next !== "settings") codexSettings.reload();
     navigate({ view: next, search: next === "search" ? "" : search });
   }
 
