@@ -1893,9 +1893,14 @@ function WindowsTitlebar({
   return (
     <div className="windows-titlebar">
       <div className="windows-titlebar-left">
+        {/* The sidebar toggle must persist when collapsed — it's the only way back. */}
         <button className="windows-titlebar-icon" onClick={onSidebar} aria-label={sidebarCollapsed ? "사이드바 열기" : "사이드바 닫기"} title={sidebarCollapsed ? "사이드바 열기" : "사이드바 닫기"}>{sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}</button>
-        <button className="windows-titlebar-icon" onClick={onBack} disabled={!canGoBack} aria-label="뒤로" title="뒤로"><ArrowLeft size={16} /></button>
-        <button className="windows-titlebar-icon" onClick={onForward} disabled={!canGoForward} aria-label="앞으로" title="앞으로"><ArrowRight size={16} /></button>
+        {!sidebarCollapsed && (
+          <>
+            <button className="windows-titlebar-icon" onClick={onBack} disabled={!canGoBack} aria-label="뒤로" title="뒤로"><ArrowLeft size={16} /></button>
+            <button className="windows-titlebar-icon" onClick={onForward} disabled={!canGoForward} aria-label="앞으로" title="앞으로"><ArrowRight size={16} /></button>
+          </>
+        )}
         <div className="windows-menu-group">
           <button className={menuOpen === "file" ? "active" : ""} onClick={() => onMenu("file")}>파일</button>
           <button className={menuOpen === "edit" ? "active" : ""} onClick={() => onMenu("edit")}>편집</button>
@@ -1931,6 +1936,8 @@ function WindowsTitlebar({
                 )}
                 {menuOpen === "view" && (
                   <>
+                    <button type="button" onClick={onSidebar}><span>{sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"}</span></button>
+                    <div className="windows-app-menu-divider" />
                     <button type="button" onClick={onCommandPalette}><span>Command Palette</span><kbd>Ctrl+K</kbd></button>
                     <button type="button" onClick={onFind}><span>Find in Thread</span><kbd>Ctrl+F</kbd></button>
                     <div className="windows-app-menu-divider" />

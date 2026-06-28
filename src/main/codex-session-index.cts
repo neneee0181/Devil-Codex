@@ -1,10 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ThreadSummary } from "./contracts.cjs";
+import { codexHome } from "./codex-home.cjs";
 
-const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
-const SESSION_INDEX_PATH = join(CODEX_HOME, "session_index.jsonl");
+const SESSION_INDEX_PATH = join(codexHome(), "session_index.jsonl");
 
 type SessionIndexRow = {
   id?: string;

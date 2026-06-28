@@ -1,11 +1,10 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { codexHome } from "./codex-home.cjs";
 
-const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
-const STATE_DB_PATH = join(CODEX_HOME, "state_5.sqlite");
+const STATE_DB_PATH = join(codexHome(), "state_5.sqlite");
 
 type ThreadRow = { rollout_path: string };
 

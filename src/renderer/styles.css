@@ -51,6 +51,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .app-shell.is-windows .sidebar .window-nav { display: none; }
 .app-shell.is-windows .main-stage { padding-top: 34px; }
 .app-shell.is-windows .topbar { flex: 0 0 40px; padding: 0 10px 0 18px; }
+.app-shell.is-windows.sidebar-collapsed .topbar { padding-left: 18px; }
 .app-shell.is-windows .topbar-actions { gap: 3px; }
 .app-shell.is-windows .open-editor { height: 30px; }
 .app-shell.is-windows .square-action { width: 30px; height: 30px; border-radius: 7px; }

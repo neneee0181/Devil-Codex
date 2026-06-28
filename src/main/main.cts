@@ -59,6 +59,23 @@ import { ThreadHistoryCache, mergeCachedActivities } from "./history-cache.cjs";
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
 
+// Only one Devil Codex instance may run. A second process collides on the ask/
+// browser/computer named pipes ("EADDRINUSE \\.\pipe\devil-codex-ask"), fights
+// over the userData GPU disk cache ("Unable to create cache" / access denied),
+// and leaves the renderer talking to a different app-server than the one holding
+// a thread's per-thread child → "thread not found". Hand focus to the running
+// window and quit the duplicate before any of that state is touched.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!windowRef) return;
+    if (windowRef.isMinimized()) windowRef.restore();
+    windowRef.focus();
+  });
+}
+
 let windowRef: BrowserWindow | undefined;
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
@@ -828,7 +845,7 @@ async function startCodexProxy(): Promise<void> {
   }
 }
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
   configureMenu();
   // The app-server reads model providers when it connects. Register Devil's
   // local proxy before the renderer can start its first external-provider turn.
@@ -1064,10 +1081,21 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("thread:fork", (_event, input) => server().forkThread(input));
   ipcMain.handle("thread:read", async (_event, input) => {
-    // Devil owns external-provider transcript rendering. Reading its native
-    // Codex mirror here duplicates messages and can fail before the app-server
-    // has loaded an externally mirrored thread after restart.
-    if (await providerTranscripts.isExternal(input.id)) return providerTranscripts.read(input.id);
+    // External threads render from Devil's local transcript. BUT a mostly-native
+    // thread that took even one stray external turn is flagged external forever
+    // (providerTurns.length > 0) — and then this branch would hide its full
+    // native rollout, showing only the handful of locally stored items while
+    // stock Codex still has the whole conversation. Prefer the native rollout
+    // whenever it has more items (the merge preserves local attachments); fall
+    // back to local if the app-server hasn't loaded the mirror yet.
+    if (await providerTranscripts.isExternal(input.id)) {
+      const local = await providerTranscripts.read(input.id);
+      const native = await server().readThread(input).catch(() => []);
+      if (native.length > local.length) {
+        return enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, native));
+      }
+      return local;
+    }
     const rollout = await enrichThreadImages(input.id, await server().readThread(input));
     return mergeCachedActivities(rollout, await historyCache.load(input.id));
   });

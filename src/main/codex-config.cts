@@ -1,13 +1,13 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { codexHome } from "./codex-home.cjs";
 
 // Registers a local proxy as a NON-default Codex model provider so external
 // models (Claude/Copilot) can run through the Codex app-server (tools + sync)
 // while Codex-login models keep using the default provider untouched.
 
-const CODEX_HOME = process.env.DEVIL_CODEX_CODEX_HOME ?? join(homedir(), ".codex");
+const CODEX_HOME = codexHome();
 const CONFIG_PATH = join(CODEX_HOME, "config.toml");
 export const DEVIL_PROVIDER = "devil";
 const BEGIN = "# >>> devil-codex provider (managed) >>>";

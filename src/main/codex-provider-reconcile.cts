@@ -2,10 +2,10 @@ import { app } from "electron";
 import { DatabaseSync } from "node:sqlite";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { codexHome } from "./codex-home.cjs";
 
-const CODEX_HOME = process.env.DEVIL_CODEX_CODEX_HOME ?? join(homedir(), ".codex");
+const CODEX_HOME = codexHome();
 const STATE_DB_PATH = join(CODEX_HOME, "state_5.sqlite");
 const CONFIG_PATH = join(CODEX_HOME, "config.toml");
 const TARGET_PROVIDER = "openai";
