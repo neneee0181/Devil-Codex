@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, ChevronDown, Copy, FilePlus2, Languages, Pencil, RotateCcw, Send, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Blocks, Check, ChevronDown, Copy, FilePlus2, Info, Languages, Pencil, RotateCcw, Send, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import type { ThreadAttachment, ThreadHistoryItem, WorkspaceChanges } from "../../shared/contracts";
 import { MarkdownContent } from "./MarkdownContent";
 import { splitMessageImages } from "./messageAttachments";
@@ -53,6 +53,13 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
   const [translateError, setTranslateError] = useState(false);
   const reduceMotion = useReducedMotion();
   if (item.kind === "activity") return <TurnActivity item={item} onOpenFile={onOpenFile} />;
+  if (item.kind === "system" && item.title === "모델 변경") {
+    return <motion.article layout="position" className="timeline-item model-change-notice" initial={reduceMotion ? false : { opacity: 0, y: 6 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .18, ease: [.22, 1, .36, 1] }}>
+      <span />
+      <strong><Blocks size={14} />{item.text}<Info size={13} /></strong>
+      <span />
+    </motion.article>;
+  }
   const toggleTranslate = async (sourceText: string): Promise<void> => {
     if (showTranslation) { setShowTranslation(false); return; }
     setShowTranslation(true);

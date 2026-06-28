@@ -341,10 +341,12 @@ export class CodexAppServer extends EventEmitter {
       service_tier: input.responseSpeed === "fast" ? "priority" : "default",
       serviceTier: input.responseSpeed === "fast" ? "priority" : "default",
     };
+    const requestedApprovalPolicy = input.approvalPolicy ?? "on-request";
+    const requestedSandbox = input.sandboxMode ?? "workspace-write";
     const permissionParams = {
       ...baseParams,
-      approvalPolicy: input.approvalPolicy ?? "on-request",
-      sandbox: input.sandboxMode ?? "workspace-write",
+      approvalPolicy: requestedApprovalPolicy,
+      sandbox: requestedSandbox,
     };
     await syncStockThreadPermissions(input.threadId, input.cwd, permissionParams.approvalPolicy, permissionParams.sandbox).catch(() => undefined);
     try {
@@ -352,6 +354,9 @@ export class CodexAppServer extends EventEmitter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!/approvalPolicy|sandbox|unknown field|unknown parameter|invalid params|invalid request/i.test(message)) throw error;
+      if (requestedApprovalPolicy !== "on-request" || requestedSandbox !== "workspace-write") {
+        throw new Error(`Codex app-server rejected requested permissions (${requestedApprovalPolicy}, ${requestedSandbox}): ${message}`);
+      }
       await this.request("turn/start", baseParams);
     }
   }

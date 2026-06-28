@@ -31,7 +31,7 @@ import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oa
 import { providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, WorkspaceChange } from "./contracts.cjs";
+import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean }> {
   const [cli, oauth] = await Promise.all([codexCliStatus(), oauthStatus()]);
@@ -164,7 +164,7 @@ interface SidecarDiagnosticsSnapshot {
   failures: string[];
 }
 
-const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; sidecars?: SidecarSettings }>();
+const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }>();
 const turnFileSnapshots = new Map<string, { cwd: string; files: Map<string, string> }>();
 const nativeFileChangeTurns = new Set<string>();
 
@@ -183,12 +183,14 @@ function sidecarDiagnostics(sidecars?: SidecarSettings, actual?: SidecarDiagnost
   ];
 }
 
-function providerDiagnosticsDetail(input: { provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot }): string {
+function providerDiagnosticsDetail(input: { provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): string {
   const cap = capabilityFor(input.provider as ProviderId, input.model);
   return [
     `provider: ${input.provider}`,
     `model: ${input.model}`,
     `route: ${input.provider === "codex" ? "app-server direct" : "devil proxy + reconcile"}`,
+    `approvalPolicy: ${input.approvalPolicy ?? "on-request"}`,
+    `sandbox: ${input.sandboxMode ?? "workspace-write"}`,
     `tools: ${cap.tools}`,
     `images: ${cap.images}`,
     `webSearch: ${cap.webSearch}`,
@@ -201,7 +203,7 @@ function providerDiagnosticsDetail(input: { provider: string; model: string; sta
   ].join("\n");
 }
 
-function emitProviderDiagnostics(input: { threadId: string; turnId?: string; provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot }): void {
+function emitProviderDiagnostics(input: { threadId: string; turnId?: string; provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): void {
   const item = {
     id: `provider-diagnostics-${crypto.randomUUID()}`,
     type: "providerDiagnostics",
@@ -1269,7 +1271,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             ...(title ? { title } : {}),
           });
         }
-        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, sidecars: input.sidecars });
+        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
         codexProxy.setSidecarSettings(input.threadId, input.sidecars);
         await rememberTurnFileSnapshot(input.threadId, input.cwd);
         await threadServer(input.threadId).sendTurn({ ...turnInput, model: routedModel });
@@ -1289,6 +1291,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           error: detail,
           sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,
           sidecarActual,
+          sandboxMode: pendingDiagnostics?.sandboxMode ?? input.sandboxMode,
+          approvalPolicy: pendingDiagnostics?.approvalPolicy ?? input.approvalPolicy,
         });
         throw error;
       }
@@ -1315,7 +1319,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text });
       return;
     }
-    pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars });
+    pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
     codexProxy.setSidecarSettings(input.threadId, input.sidecars);
     try {
       await rememberTurnFileSnapshot(input.threadId, input.cwd);
@@ -1335,6 +1339,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         error: detail,
         sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,
         sidecarActual,
+        sandboxMode: pendingDiagnostics?.sandboxMode ?? input.sandboxMode,
+        approvalPolicy: pendingDiagnostics?.approvalPolicy ?? input.approvalPolicy,
       });
       throw error;
     }

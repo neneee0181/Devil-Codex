@@ -323,6 +323,10 @@ button:active:not(:disabled) { transform: scale(.96); }
 .timeline-image-gallery { display: flex; gap: 8px; justify-content: flex-end; overflow-x: auto; margin: 0 0 10px; padding: 2px; }.timeline-image-gallery .markdown-image-button { flex: 0 0 108px; width: 108px; height: 108px; margin: 0; }.timeline-image-gallery .markdown-image { width: 108px; height: 108px; border-radius: 13px; object-fit: cover; }
 .timeline-item.user > .attachment-gallery { margin: 0 0 10px; }
 .timeline-item.system { border-left: 2px solid #4b4b4b; padding-left: 12px; color: #afafaf; }
+.model-change-notice { display: grid; grid-template-columns: minmax(28px, 1fr) auto minmax(28px, 1fr); gap: 10px; align-items: center; color: #a7a7a7; font-size: 12px; }
+.model-change-notice > span { height: 1px; background: #303030; }
+.model-change-notice strong { display: inline-flex; gap: 6px; align-items: center; justify-content: center; min-width: 0; border: 1px solid #333; border-radius: 999px; background: #191919; color: #bdbdbd; padding: 4px 10px; font-weight: 550; box-shadow: inset 0 1px 0 #ffffff08; }
+.model-change-notice svg { flex: 0 0 auto; color: #9c9c9c; }
 .thread-find { position: sticky; z-index: 8; top: 12px; display: flex; width: min(430px, calc(100% - 24px)); gap: 8px; align-items: center; margin: 12px 12px -42px auto; border: 1px solid #4b4b4b; border-radius: 10px; background: #303030f2; box-shadow: 0 12px 30px #0008; padding: 8px 10px; backdrop-filter: blur(14px); }.thread-find svg { flex: 0 0 auto; color: #aaa; }.thread-find input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: #eee; font: 13px inherit; }.thread-find small { color: #999; white-space: nowrap; }.thread-find button { display: grid; border: 0; border-radius: 6px; background: transparent; color: #aaa; padding: 3px; place-items: center; }.thread-find button:hover { background: #484848; color: #eee; }.thread-find-empty { color: #999; padding: 30px 0; text-align: center; }
 
 .turn-activity { border-bottom: 1px solid #292929; color: #a5a5a5; }

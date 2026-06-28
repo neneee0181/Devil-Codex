@@ -38,6 +38,7 @@ type ProjectSortMode = "manual" | "created" | "updated";
 type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
 type EnvironmentSource = { url: string; label: string };
 type ShellMenuKey = "file" | "edit" | "view" | "help";
+type SentModelState = { provider: ProviderId; model: string };
 
 const defaultStatus: RuntimeStatus = {
   state: "ready",
@@ -54,6 +55,7 @@ const defaultChanges: WorkspaceChanges = {
 };
 
 const SIDE_CHAT_NAMES = ["Laplace", "Curie", "Euler", "Gauss", "Turing", "Lovelace", "Hopper", "Tesla", "Newton", "Fermi", "Bohr", "Pascal", "Fourier", "Riemann", "Noether", "Maxwell", "Planck", "Feynman", "Ada", "Hilbert"];
+const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
 
 function changesFromTurn(items: ThreadHistoryItem[], turnId: string | undefined, branch: string): WorkspaceChanges {
   if (!turnId) return { ...defaultChanges, branch };
@@ -173,6 +175,19 @@ function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatu
   if (provider.id === "codex") return runtimeState === "connected";
   if (provider.kind === "login") return provider.modelsLoaded;
   return provider.keyRequired ? provider.credentialSource !== "none" && provider.modelsLoaded : provider.modelsLoaded;
+}
+
+function readLastSentModels(): Record<string, SentModelState> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAST_SENT_MODELS_KEY) ?? "{}") as Record<string, SentModelState>;
+    return Object.fromEntries(Object.entries(raw).filter(([, value]) => value?.provider && value?.model));
+  } catch {
+    return {};
+  }
+}
+
+function modelKey(value: SentModelState): string {
+  return `${value.provider}:${value.model}`;
 }
 
 type PendingTurnState = {
@@ -333,6 +348,7 @@ function App(): React.JSX.Element {
   const pendingThreads = useRef(new Map<string, ThreadSummary>());
   const pendingTurn = useRef<PendingTurnState | null>(null);
   const pendingTurns = useRef(new Map<string, PendingTurnState>());
+  const lastSentModels = useRef<Record<string, SentModelState>>(readLastSentModels());
   // Per-thread follow-up queue. When the user sends another message while the
   // same chat is still running, it lands here and auto-sends the moment the
   // current turn finishes — instead of being dropped.
@@ -632,6 +648,32 @@ function App(): React.JSX.Element {
     }
   }
 
+  function modelDisplayName(input: SentModelState): string {
+    const provider = providers.settings?.providers.find((item) => item.id === input.provider);
+    const modelInfo = provider?.models.find((item) => item.id === input.model);
+    const label = modelInfo?.label || input.model;
+    return input.provider === "codex" ? label : `${provider?.label ?? input.provider} ${label}`;
+  }
+
+  function rememberThreadModel(threadId: string, provider: ProviderId, nextModel: string): void {
+    if (!threadId || !nextModel) return;
+    lastSentModels.current = { ...lastSentModels.current, [threadId]: { provider, model: nextModel } };
+    localStorage.setItem(LAST_SENT_MODELS_KEY, JSON.stringify(lastSentModels.current));
+  }
+
+  function modelChangeItemForThread(threadId: string, provider: ProviderId, nextModel: string): ThreadHistoryItem | null {
+    const next = { provider, model: nextModel };
+    const previous = lastSentModels.current[threadId];
+    rememberThreadModel(threadId, provider, nextModel);
+    if (!previous || modelKey(previous) === modelKey(next)) return null;
+    return {
+      id: `model-change-${threadId}-${Date.now()}`,
+      kind: "system",
+      title: "모델 변경",
+      text: `${modelDisplayName(previous)}에서 ${modelDisplayName(next)}(으)로 모델이 변경되었습니다.`,
+    };
+  }
+
   // Mirror the queue ref into reactive state so the queued-message panel can
   // render (and edit) what's waiting. The ref stays the send-path source of
   // truth; this is the view projection.
@@ -697,6 +739,8 @@ function App(): React.JSX.Element {
     if (!next) return;
     if (queue.length === 0) queuedTurns.current.delete(threadId);
     syncQueuedView(threadId);
+    const modelNotice = modelChangeItemForThread(threadId, next.pending.provider ?? "codex", next.pending.model);
+    if (modelNotice) appendItemToThread(threadId, modelNotice);
     appendItemToThread(threadId, next.userItem);
     pendingTurn.current = next.pending;
     pendingTurns.current.set(threadId, next.pending);
@@ -1261,12 +1305,16 @@ function App(): React.JSX.Element {
     if (activeThreadBusy) return;
     if (options.forceNewThread) navigate({ view: "thread", thread: null, items: [], projectDraft: true, environmentOpen: false });
     const editedVisibleItems = replacingFromEdit ? [...itemsRef.current.slice(0, replaceIndex), userItem] : null;
-    setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, userItem]));
+    const existingThreadId = !options.forceNewThread && !replacingFromEdit ? thread?.id : undefined;
+    const modelNotice = existingThreadId ? modelChangeItemForThread(existingThreadId, provider, sendModel) : null;
+    const visibleTurnItems = modelNotice ? [modelNotice, userItem] : [userItem];
+    setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, ...visibleTurnItems]));
     setBusy(true);
     try {
       const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, ...permissions, ...turnOptions });
       threadRef.current = activeThread;
       setThread(activeThread);
+      if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
         const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: promptText.slice(0, 56), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };

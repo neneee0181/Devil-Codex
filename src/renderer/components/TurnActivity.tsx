@@ -215,6 +215,8 @@ function diagnosticRows(detail: string): { values: Record<string, string>; notes
 function DiagnosticEntry({ entry }: { entry: ThreadActivityEntry }): React.JSX.Element {
   const { values, notes, errors } = diagnosticRows(entry.detail ?? "");
   const chips = [
+    ["approval", values.approvalPolicy],
+    ["sandbox", values.sandbox],
     ["tools", values.tools],
     ["images", values.images],
     ["web", values.webSearch],
