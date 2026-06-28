@@ -225,8 +225,8 @@ function App(): React.JSX.Element {
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>({});
   const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string }>>>({});
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [bottomTabs, setBottomTabs] = useState<ToolKind[]>(["terminal"]);
-  const [bottomActive, setBottomActive] = useState<ToolKind | null>("terminal");
+  const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal"]);
+  const [bottomActive, setBottomActive] = useState<string | null>("terminal");
   const [terminalHeight, setTerminalHeight] = useState(286);
   const [resizing, setResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => Number(localStorage.getItem("devil-codex:sidebar-width")) || 310);
@@ -361,6 +361,22 @@ function App(): React.JSX.Element {
   useEffect(() => window.devilCodex.onBrowserActivate(() => { openUtility("browser"); setUtilityPanelOpen(true); }), []);
   useEffect(() => { void window.devilCodex.appInfo().then(setAppInfo).catch(() => undefined); }, []);
   useEffect(() => { void window.devilCodex.listOpenWorkspaceTargets().then(setOpenTargets).catch(() => undefined); }, []);
+
+  useEffect(() => {
+    if (runtime.state !== "connected" || !workspace) return;
+    const timer = window.setInterval(() => {
+      void refreshThreads(workspace, { quiet: true });
+      void refreshProjects({ quiet: true });
+      const activeThreadId = threadRef.current?.id;
+      if (!activeThreadId) return;
+      if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
+      void window.devilCodex.syncThreadHistory({ id: activeThreadId }).then((history) => {
+        threadHistoryCache.current.set(activeThreadId, history);
+        if (threadRef.current?.id === activeThreadId) setItems(history);
+      }).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [runtime.state, workspace]);
 
   useEffect(() => window.devilCodex.onCommand((command) => {
     if (command === "new-thread") void newThread();
@@ -918,7 +934,7 @@ function App(): React.JSX.Element {
     if (runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
   }
 
-  async function refreshThreads(cwd = workspace): Promise<void> {
+  async function refreshThreads(cwd = workspace, options?: { quiet?: boolean }): Promise<void> {
     if (!cwd) return;
     try {
       const loaded = await window.devilCodex.listThreads({ cwd });
@@ -927,6 +943,7 @@ function App(): React.JSX.Element {
       setThreads([...pending, ...loaded].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt));
       for (const summary of loaded.slice(0, 4)) window.setTimeout(() => { void prefetchThreadHistory(summary.id); }, 0);
     } catch (error) {
+      if (options?.quiet) return;
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 목록 오류", text: String(error) }]);
     }
   }
@@ -939,7 +956,7 @@ function App(): React.JSX.Element {
     finally { prefetchingThreadHistory.current.delete(threadId); }
   }
 
-  async function refreshProjects(): Promise<void> {
+  async function refreshProjects(_options?: { quiet?: boolean }): Promise<void> {
     try {
       const all = await window.devilCodex.listProjects();
       const map = new Map<string, ThreadSummary[]>();
@@ -1171,13 +1188,23 @@ function App(): React.JSX.Element {
     }
   }
 
-  async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; model?: string } = {}): Promise<void> {
+  function editedContinuationContext(history: ThreadHistoryItem[]): string {
+    const lines = history.flatMap((item) => {
+      if (item.kind === "user") return [`사용자: ${item.text.trim()}`];
+      if (item.kind === "agent") return [`Codex: ${item.text.trim()}`];
+      return [];
+    }).filter(Boolean);
+    return lines.length ? `아래는 편집 지점 이전 대화입니다. 이 맥락만 유지하고, 이어지는 사용자 메시지부터 새로 계속하세요.\n\n${lines.join("\n\n")}` : "";
+  }
+
+  async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; model?: string; replaceFromItemId?: string; contextPrefix?: string } = {}): Promise<void> {
     const attachmentContext = attachmentContextForModel(input.attachments);
     const imageAttachments = input.attachments.filter((item) => item.kind === "image").map((item) => item.url ?? item.path);
     const attachmentDetails = displayAttachments(input.attachments);
     const selectedSkills = input.skills.flatMap((name) => { const skill = availableSkills.find((item) => item.name === name); return skill ? [{ name: skill.name, path: skill.path }] : []; });
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
-    const text = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}${attachmentContext}`;
+    const visiblePrompt = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
+    const text = `${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = options.provider ?? providers.settings?.provider ?? "codex";
@@ -1190,6 +1217,8 @@ function App(): React.JSX.Element {
         : { approvalPolicy: "on-request" as const, sandboxMode: "workspace-write" as const };
     const turnOptions = { reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed };
     const userItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "user", text: displayText, attachments: attachmentDetails };
+    const replaceIndex = options.replaceFromItemId ? itemsRef.current.findIndex((item) => item.id === options.replaceFromItemId) : -1;
+    const replacingFromEdit = replaceIndex >= 0;
     // Same chat still running → queue this follow-up instead of dropping it.
     // It auto-sends the instant the current turn finishes (startQueuedTurn), so
     // short requests can be stacked and answered back-to-back.
@@ -1202,13 +1231,15 @@ function App(): React.JSX.Element {
     }
     if (activeThreadBusy) return;
     if (options.forceNewThread) navigate({ view: "thread", thread: null, items: [], projectDraft: true, environmentOpen: false });
-    setItems((current) => options.forceNewThread ? [userItem] : [...current, userItem]);
+    const editedVisibleItems = replacingFromEdit ? [...itemsRef.current.slice(0, replaceIndex), userItem] : null;
+    setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, userItem]));
     setBusy(true);
     try {
-      const activeThread = !options.forceNewThread && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, ...permissions, ...turnOptions });
+      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, ...permissions, ...turnOptions });
       threadRef.current = activeThread;
       setThread(activeThread);
-      if (options.forceNewThread || !thread) {
+      if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
+      if (options.forceNewThread || replacingFromEdit || !thread) {
         const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: promptText.slice(0, 56), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id)]);
@@ -1525,7 +1556,7 @@ function App(): React.JSX.Element {
     window.addEventListener("pointerup", stop, { once: true });
   }
 
-  function openBottomTool(tool: ToolKind): void {
+  function openBottomTool(tool: string): void {
     setBottomTabs((current) => current.includes(tool) ? current : [...current, tool]);
     setBottomActive(tool);
     setTerminalOpen(true);
@@ -1553,21 +1584,22 @@ function App(): React.JSX.Element {
 
   // Side conversation ("곁가지 대화") tab — distinct from subagents: a plain
   // "사이드 채팅" tab, not a named agent.
-  function openSideTab(id: string, label: string): void {
+  function openSideTab(id: string, label: string, dock: "right" | "bottom" = "right"): void {
     subagentIdsRef.current.add(id);
     setSubagentNames((prev) => ({ ...prev, [id]: label }));
-    openUtility(`sidechat:${id}`);
+    if (dock === "bottom") openBottomTool(`sidechat:${id}`);
+    else openUtility(`sidechat:${id}`);
   }
 
   // Start a fresh side conversation: a temporary codex thread shown in the
   // environment + right panel, removed (and deleted) when closed.
-  async function newSideChat(): Promise<void> {
+  async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
     try {
       const seed = providers.settings?.provider === "codex" ? model : "gpt-5.4";
       const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex" });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
-      openSideTab(created.id, label);
+      openSideTab(created.id, label, dock);
     } catch (error) {
       setExternalError(`사이드 채팅 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1578,6 +1610,7 @@ function App(): React.JSX.Element {
     setSideChats((prev) => prev.filter((c) => c.id !== id));
     setSubagentHistory((prev) => { const next = { ...prev }; delete next[id]; return next; });
     closeUtilityTab(`sidechat:${id}`);
+    closeBottomTab(`sidechat:${id}`);
     void window.devilCodex.deleteThread?.({ id }).catch(() => undefined);
   }
 
@@ -1586,7 +1619,23 @@ function App(): React.JSX.Element {
     openUtility("files");
   }
 
-  function closeBottomTab(tool: ToolKind): void {
+  function editUserMessageFrom(item: ThreadHistoryItem, text: string): void {
+    if (!thread || item.kind !== "user") return;
+    const index = itemsRef.current.findIndex((current) => current.id === item.id);
+    if (index < 0) return;
+    const contextPrefix = editedContinuationContext(itemsRef.current.slice(0, index));
+    void submit({
+      prompt: text,
+      approvalMode: "agent",
+      goalMode: false,
+      attachments: item.attachments ?? [],
+      skills: [],
+      reasoningEffort,
+      responseSpeed,
+    }, { replaceFromItemId: item.id, contextPrefix });
+  }
+
+  function closeBottomTab(tool: string): void {
     setBottomTabs((current) => {
       const next = current.filter((item) => item !== tool);
       if (bottomActive === tool) setBottomActive(next.at(-1) ?? null);
@@ -1730,7 +1779,7 @@ function App(): React.JSX.Element {
         style={{ "--terminal-height": `${terminalHeight}px` } as CSSProperties}
       >
         <header className="topbar">
-          <div className="thread-title">{sidebarCollapsed && <div className="collapsed-nav"><button onClick={() => setSidebarCollapsed(false)} aria-label="사이드바 열기"><PanelLeftOpen size={16} /></button><button onClick={goBack} aria-label="뒤로"><ArrowLeft size={17} /></button><button onClick={() => void newThread()} disabled={busy && !thread?.id} aria-label="새 채팅"><MessageSquarePlus size={16} /></button></div>}<strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
+          <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
           <div className="topbar-actions">
             {update.status === "available" && <button className="update-badge" onClick={() => void window.devilCodex.installUpdate()} title={`Devil Codex ${update.version} 업데이트`}><Download size={15} />업데이트 {update.version}</button>}
             {update.status === "downloading" && <button className="update-badge" disabled><Download size={15} />업데이트 중… {update.percent}%</button>}
@@ -1767,7 +1816,7 @@ function App(): React.JSX.Element {
               {items.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 Codex 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{visibleItems.map((item) => {
                 const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
                 const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));
-                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
+                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} onEditUserMessage={editUserMessageFrom} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
 
@@ -1791,7 +1840,7 @@ function App(): React.JSX.Element {
         <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} onBrowserAsk={askAboutPage} subagentPick={subagentPick} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setUtilityPanelOpen(false)} onResize={(event) => startSideResize(event, "right")} />
         </div>
 
-        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onSelect={openBottomTool} onAdd={openBottomTool} onCloseTab={closeBottomTab} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
+        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
       </section>
       {gitDialogOpen && <GitWorkflowDialog cwd={workspace} changes={changes} onClose={() => setGitDialogOpen(false)} onRefresh={() => refreshChanges()} onError={setExternalError} />}
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, shell } from "electron";
 import { config as loadEnv } from "dotenv";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { access, mkdir as fsMkdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -29,6 +29,8 @@ import { AskControlServer } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { providerUsageReport } from "./provider-usage.cjs";
+import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
+import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean }> {
@@ -52,7 +54,7 @@ async function uniqueProjectDir(base: string, name: string): Promise<string> {
 }
 import { createGitWorktree, listGitWorktrees } from "./worktree-service.cjs";
 import { BrowserViewManager } from "./browser-view.cjs";
-import { ThreadHistoryCache, activityCount } from "./history-cache.cjs";
+import { ThreadHistoryCache, mergeCachedActivities } from "./history-cache.cjs";
 
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
@@ -258,7 +260,7 @@ async function rememberTurnFileSnapshot(threadId: string, cwd?: string): Promise
   if (snapshot) turnFileSnapshots.set(threadId, snapshot);
 }
 
-async function changedFilesSinceSnapshot(threadId: string): Promise<Array<WorkspaceChange & { diff?: string }>> {
+async function changedFilesSinceSnapshot(threadId: string): Promise<Array<WorkspaceChange & { diff?: string; absPath?: string }>> {
   const before = turnFileSnapshots.get(threadId);
   turnFileSnapshots.delete(threadId);
   if (!before) return [];
@@ -273,13 +275,14 @@ async function changedFilesSinceSnapshot(threadId: string): Promise<Array<Worksp
     if (beforeSignature == null) return true;
     return beforeSignature !== `${file.status}\0${file.additions}\0${file.deletions}\0${file.diff ?? ""}`;
   });
-  return changed.filter((file) => file.diff || file.additions || file.deletions);
+  return changed.filter((file) => file.diff || file.additions || file.deletions).map((file) => ({ ...file, absPath: resolve(before.cwd, file.path) }));
 }
 
 async function emitSyntheticFileChanges(input: { threadId: string; turnId?: string; status: "completed" | "failed" }): Promise<void> {
   const seenNative = nativeFileChangeTurns.delete(turnKey(input.threadId, input.turnId)) || nativeFileChangeTurns.delete(turnKey(input.threadId));
   const changes = await changedFilesSinceSnapshot(input.threadId);
   if (seenNative || changes.length === 0) return;
+  const mirrorId = `devil-file-change-${input.turnId || input.threadId}`;
   sendToRenderer("app-server:event", {
     method: "item/completed",
     params: {
@@ -293,6 +296,45 @@ async function emitSyntheticFileChanges(input: { threadId: string; turnId?: stri
       },
     },
   });
+  void appendMirroredRolloutEvents(input.threadId, mirrorId, [{
+    type: "patch_apply_end",
+    call_id: mirrorId,
+    ...(input.turnId ? { turn_id: input.turnId } : {}),
+    stdout: `Devil Codex detected ${changes.length} changed file(s).`,
+    stderr: "",
+    success: input.status !== "failed",
+    changes: Object.fromEntries(changes.map((file) => [
+      file.absPath ?? file.path,
+      { type: "update", unified_diff: file.diff ?? "" },
+    ])),
+  }]).catch((error) => console.warn("[devil-codex rollout mirror] fileChange", error instanceof Error ? error.message : error));
+}
+
+function mirrorCommandExecution(input: { threadId: string; turnId?: string; item: Record<string, unknown> }): void {
+  const id = String(input.item.id ?? crypto.randomUUID());
+  const mirrorId = `devil-command-${id}`;
+  const command = String(input.item.command ?? "명령 실행");
+  const output = String(input.item.aggregatedOutput ?? input.item.output ?? "");
+  const status = String(input.item.status ?? "completed");
+  const cwd = String(input.item.cwd ?? "");
+  void appendMirroredRolloutEvents(input.threadId, mirrorId, [
+    {
+      type: "exec_command_begin",
+      call_id: mirrorId,
+      ...(input.turnId ? { turn_id: input.turnId } : {}),
+      command,
+      cwd,
+    },
+    {
+      type: "exec_command_end",
+      call_id: mirrorId,
+      ...(input.turnId ? { turn_id: input.turnId } : {}),
+      stdout: output,
+      stderr: "",
+      exit_code: status === "failed" ? 1 : 0,
+      duration: { secs: 0, nanos: 0 },
+    },
+  ]).catch((error) => console.warn("[devil-codex rollout mirror] commandExecution", error instanceof Error ? error.message : error));
 }
 
 function eventThreadId(event: { params?: unknown }): string {
@@ -312,6 +354,9 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   if (event.method === "turn/started") {
     activeThreadServerTurns.add(threadId);
     return;
+  }
+  if (event.method === "item/completed" && String(item.type ?? "") === "commandExecution") {
+    mirrorCommandExecution({ threadId, ...(turnId ? { turnId } : {}), item });
   }
   if ((event.method === "item/started" || event.method === "item/completed") && String(item.type ?? "") === "fileChange") {
     nativeFileChangeTurns.add(turnKey(threadId, turnId));
@@ -960,7 +1005,7 @@ app.whenReady().then(async () => {
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...codex.filter((summary) => !ids.has(summary.id))];
     sortThreadsByRecency(merged);
-    return merged;
+    return applySessionIndexTitles(merged);
   });
   // Model discovery is optional at startup. The provider settings UI retains
   // its saved models while Codex's app-server finishes connecting.
@@ -971,7 +1016,7 @@ app.whenReady().then(async () => {
     await fsMkdir(dir, { recursive: true }).catch(() => undefined);
     return dir;
   });
-  ipcMain.handle("thread:search", (_event, input) => server().searchThreads(input));
+  ipcMain.handle("thread:search", async (_event, input) => applySessionIndexTitles(await server().searchThreads(input)));
   ipcMain.handle("thread:resume", async (_event, input) => {
     if (await providerTranscripts.isExternal(input.id)) {
       const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
@@ -1024,18 +1069,17 @@ app.whenReady().then(async () => {
     // has loaded an externally mirrored thread after restart.
     if (await providerTranscripts.isExternal(input.id)) return providerTranscripts.read(input.id);
     const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-    // The rollout reconstruction can drop activity entries (skill/file reads,
-    // tool calls) that the live session captured. If our cached live timeline is
-    // richer, prefer it so a restart keeps showing the full work timeline.
-    const cached = await historyCache.load(input.id);
-    return cached && activityCount(cached) > activityCount(rollout) ? cached : rollout;
+    return mergeCachedActivities(rollout, await historyCache.load(input.id));
   });
   ipcMain.handle("thread:cache-history", async (_event, input) => {
     if (await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, input.items);
     else await historyCache.save(input.id, input.items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
-    if (!(await providerTranscripts.isExternal(input.id))) return enrichThreadImages(input.id, await server().readThread(input));
+    if (!(await providerTranscripts.isExternal(input.id))) {
+      const rollout = await enrichThreadImages(input.id, await server().readThread(input));
+      return mergeCachedActivities(rollout, await historyCache.load(input.id));
+    }
     const local = await providerTranscripts.read(input.id);
     const native = await server().readThread(input).catch(() => []);
     if (native.length > local.length) {
@@ -1050,7 +1094,7 @@ app.whenReady().then(async () => {
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...codex.filter((summary) => !ids.has(summary.id))];
     sortThreadsByRecency(merged);
-    return merged;
+    return applySessionIndexTitles(merged);
   });
   ipcMain.handle("thread:archive", async (_event, input) => {
     await server().archiveThread(input);

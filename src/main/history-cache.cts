@@ -29,3 +29,26 @@ export function activityCount(items: ThreadHistoryItem[]): number {
   for (const item of items) n += item.activities?.length ?? 0;
   return n;
 }
+
+export function mergeCachedActivities(native: ThreadHistoryItem[], cached: ThreadHistoryItem[] | null): ThreadHistoryItem[] {
+  if (!cached?.length) return native;
+  const cachedByTurnId = new Map<string, ThreadHistoryItem>();
+  for (const item of cached) {
+    if (item.kind === "activity" && item.turnId) cachedByTurnId.set(item.turnId, item);
+  }
+  if (!cachedByTurnId.size) return native;
+
+  const nativeTurnIds = new Set<string>();
+  const merged = native.map((item) => {
+    if (item.kind !== "activity" || !item.turnId) return item;
+    nativeTurnIds.add(item.turnId);
+    const richer = cachedByTurnId.get(item.turnId);
+    if (!richer || activityCount([richer]) <= activityCount([item])) return item;
+    return { ...richer, ...item, activities: richer.activities };
+  });
+
+  for (const item of cachedByTurnId.values()) {
+    if (item.turnId && !nativeTurnIds.has(item.turnId)) merged.push(item);
+  }
+  return merged;
+}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { Check, ChevronDown, Copy, FilePlus2, Languages, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, ChevronDown, Copy, FilePlus2, Languages, Pencil, RotateCcw, Send, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import type { ThreadAttachment, ThreadHistoryItem, WorkspaceChanges } from "../../shared/contracts";
 import { MarkdownContent } from "./MarkdownContent";
 import { splitMessageImages } from "./messageAttachments";
@@ -20,6 +20,11 @@ function ChangesCard({ changes, turnId, canRollback, rollbackBusy, onRollback, o
 }
 
 const hideAppDirectives = (text: string): string => text.replace(/::git-(?:stage|commit|push|create-branch|create-pr)\{[^}]*\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
+const hideEditedContinuationContext = (text: string): string => {
+  const marker = "[수정된 사용자 메시지]\n";
+  const index = text.lastIndexOf(marker);
+  return index >= 0 ? text.slice(index + marker.length).trim() : text;
+};
 
 function hideAttachmentBlock(text: string): string {
   const lines = text.split("\n");
@@ -38,19 +43,16 @@ function imagePathAttachments(paths: string[]): ThreadAttachment[] {
   return paths.map((path) => ({ kind: "image", path, name: path.split("/").at(-1) ?? "image" }));
 }
 
-export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
+export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, onRollback, onReview, onOpenFile, onEditUserMessage }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void; onEditUserMessage?: (item: ThreadHistoryItem, text: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(item.text);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState(false);
   const reduceMotion = useReducedMotion();
   if (item.kind === "activity") return <TurnActivity item={item} onOpenFile={onOpenFile} />;
-  const copy = async (): Promise<void> => {
-    await navigator.clipboard?.writeText(item.text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  };
   const toggleTranslate = async (sourceText: string): Promise<void> => {
     if (showTranslation) { setShowTranslation(false); return; }
     setShowTranslation(true);
@@ -62,7 +64,8 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     finally { setTranslating(false); }
   };
   const label = item.title ?? (item.kind === "user" ? "나" : item.kind === "agent" ? "Codex" : "시스템");
-  const message = item.kind === "user" ? splitMessageImages(item.text) : { text: hideAppDirectives(item.text), images: [] };
+  const visibleItemText = item.kind === "user" ? hideEditedContinuationContext(item.text) : item.text;
+  const message = item.kind === "user" ? splitMessageImages(visibleItemText) : { text: hideAppDirectives(item.text), images: [] };
   // Stock Codex repeats pasted images in the text as temp paths (now gone) AND
   // as base64 content parts. When we already have real image attachments, skip
   // the text-path duplicates so they don't render as "이미지 없음".
@@ -71,6 +74,21 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
   const attachments = item.kind === "user" ? [...ownImages, ...(hasContentImage ? [] : imagePathAttachments(message.images))] : [];
   const userText = item.kind === "user" && attachments.length > 0 ? hideAttachmentBlock(message.text) : message.text;
   const userMessage = item.kind === "user" ? splitSkillTokens(userText) : { skills: [], text: message.text };
+  const copy = async (): Promise<void> => {
+    await navigator.clipboard?.writeText(item.kind === "user" ? userMessage.text : item.text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+  const startEdit = (): void => {
+    setDraft(userMessage.text);
+    setEditing(true);
+  };
+  const submitEdit = (): void => {
+    const next = draft.trim();
+    if (!next) return;
+    setEditing(false);
+    onEditUserMessage?.(item, next);
+  };
 
   return <motion.article layout="position" className={`timeline-item ${item.kind}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
     <div className="item-label-row">
@@ -79,7 +97,16 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     </div>
     {translateError && <div className="translate-error">번역 실패 · 다시 시도해 주세요.</div>}
     {attachments.length > 0 && <AttachmentGallery attachments={attachments} align="end" />}
-    <div className={item.kind === "user" ? "timeline-user-bubble" : undefined}><SkillTokens skills={userMessage.skills} /><MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} /></div>
+    <div className={item.kind === "user" ? "timeline-user-bubble" : undefined}>
+      <SkillTokens skills={userMessage.skills} />
+      {item.kind === "user" && editing
+        ? <div className="timeline-edit-box">
+            <textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) submitEdit(); if (event.key === "Escape") setEditing(false); }} />
+            <div><button type="button" onClick={() => setEditing(false)}><X size={14} />취소</button><button type="button" className="primary" disabled={!draft.trim()} onClick={submitEdit}><Send size={14} />보내기</button></div>
+          </div>
+        : <MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} />}
+    </div>
+    {item.kind === "user" && !editing && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" onClick={startEdit} aria-label="메시지 편집"><Pencil size={16} /></button></div>}
     {item.kind === "agent" && <div className="timeline-actions"><button type="button" onClick={() => void copy()} aria-label="응답 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" aria-label="좋아요"><ThumbsUp size={16} /></button><button type="button" aria-label="싫어요"><ThumbsDown size={16} /></button></div>}
     {showChanges && <ChangesCard changes={changes} turnId={item.turnId} canRollback={canRollback} rollbackBusy={rollbackBusy} onRollback={onRollback} onReview={onReview} onOpenFile={onOpenFile} />}
   </motion.article>;

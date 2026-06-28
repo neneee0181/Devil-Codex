@@ -21,16 +21,22 @@ export function AskUserModal(): React.JSX.Element | null {
   const answersFor = (index: number): string[] => {
     const picks = selected[index] ?? [];
     const free = (custom[index] ?? "").trim();
-    return free ? [...picks, free] : picks;
+    return free ? [free] : picks;
   };
   const complete = questions.every((_, index) => answersFor(index).length > 0);
 
   const toggle = (index: number, label: string, multi: boolean): void => {
+    setCustom((current) => ({ ...current, [index]: "" }));
     setSelected((current) => {
       const existing = current[index] ?? [];
       if (multi) return { ...current, [index]: existing.includes(label) ? existing.filter((l) => l !== label) : [...existing, label] };
       return { ...current, [index]: existing.includes(label) ? [] : [label] };
     });
+  };
+
+  const updateCustom = (index: number, value: string): void => {
+    setCustom((current) => ({ ...current, [index]: value }));
+    if (value.trim()) setSelected((current) => ({ ...current, [index]: [] }));
   };
 
   const finish = (answers: AskAnswer[] | null): void => {
@@ -60,7 +66,7 @@ export function AskUserModal(): React.JSX.Element | null {
                     </button>;
                   })}
                 </div>
-                <input className="ask-custom" value={custom[index] ?? ""} onChange={(event) => setCustom((c) => ({ ...c, [index]: event.target.value }))} placeholder="직접 입력…" />
+                <input className="ask-custom" value={custom[index] ?? ""} onChange={(event) => updateCustom(index, event.target.value)} placeholder="직접 입력…" />
               </section>;
             })}
           </div>
