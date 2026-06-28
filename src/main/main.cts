@@ -768,6 +768,18 @@ function restartThreadServer(threadId: string): CodexAppServer {
   return bindThreadServer(threadId, createAppServer(false));
 }
 
+// A newer stock-Codex rollout can't be deserialized by an older bundled codex
+// binary (app-server throws "rollout does not start with session metadata" /
+// "thread-store internal error"). Detect that so we surface an actionable
+// "update Devil Codex" notice instead of a silently empty/desynced thread.
+function isRolloutVersionSkew(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /does not start with session metadata|thread-store internal error/i.test(message);
+}
+function rolloutSkewNotice(): ThreadHistoryItem {
+  return { id: "rollout-version-skew", kind: "system", text: "이 대화는 더 최신 버전의 Codex로 작성되어, 현재 Devil Codex에 번들된 codex 버전으로는 열 수 없습니다. Devil Codex를 최신 버전으로 업데이트하면 동기화됩니다." };
+}
+
 function titleFromText(text: string): string {
   return text.trim().slice(0, 60) || "새 채팅";
 }
@@ -1090,14 +1102,21 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // back to local if the app-server hasn't loaded the mirror yet.
     if (await providerTranscripts.isExternal(input.id)) {
       const local = await providerTranscripts.read(input.id);
-      const native = await server().readThread(input).catch(() => []);
+      let native: ThreadHistoryItem[] = [];
+      try { native = await server().readThread(input); }
+      catch (error) { if (isRolloutVersionSkew(error) && local.length === 0) return [rolloutSkewNotice()]; }
       if (native.length > local.length) {
         return enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, native));
       }
       return local;
     }
-    const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-    return mergeCachedActivities(rollout, await historyCache.load(input.id));
+    try {
+      const rollout = await enrichThreadImages(input.id, await server().readThread(input));
+      return mergeCachedActivities(rollout, await historyCache.load(input.id));
+    } catch (error) {
+      if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
+      throw error;
+    }
   });
   ipcMain.handle("thread:cache-history", async (_event, input) => {
     if (await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, input.items);
