@@ -1,8 +1,10 @@
 import { ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ApprovalDecision, AppServerEvent, CodexSkillInfo, McpServerInfo, ProviderModel, ReasoningEffort, ResponseSpeed, RuntimeStatus, ThreadApprovalPolicy, ThreadHistoryItem, ThreadRef, ThreadSandboxMode, ThreadSummary } from "./contracts.cjs";
+import { codexHome } from "./codex-home.cjs";
 import { mapThreadHistory } from "./thread-history.cjs";
 
 // Resolve the codex executable. Packaged builds ship the binary under
@@ -119,15 +121,18 @@ export class CodexAppServer extends EventEmitter {
 
   async createThread(input: { cwd: string; model: string; modelProvider?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }): Promise<ThreadRef> {
     await this.ensureConnected();
+    const approvalPolicy = input.approvalPolicy ?? "on-request";
+    const sandboxMode = input.sandboxMode ?? "workspace-write";
     const result = (await this.request("thread/start", {
       cwd: input.cwd,
       model: input.model,
       ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
-      approvalPolicy: input.approvalPolicy ?? "on-request",
-      sandbox: input.sandboxMode ?? "workspace-write",
+      approvalPolicy,
+      sandbox: sandboxMode,
     })) as { thread?: { id?: string } };
     const id = result.thread?.id;
     if (!id) throw new Error("Codex app-server returned a thread without an id");
+    await syncStockThreadPermissions(id, input.cwd, approvalPolicy, sandboxMode).catch(() => undefined);
     return { id, cwd: input.cwd, model: input.model };
   }
 
@@ -341,6 +346,7 @@ export class CodexAppServer extends EventEmitter {
       approvalPolicy: input.approvalPolicy ?? "on-request",
       sandbox: input.sandboxMode ?? "workspace-write",
     };
+    await syncStockThreadPermissions(input.threadId, input.cwd, permissionParams.approvalPolicy, permissionParams.sandbox).catch(() => undefined);
     try {
       await this.request("turn/start", permissionParams);
     } catch (error) {
@@ -448,4 +454,46 @@ export class CodexAppServer extends EventEmitter {
   private emitStatus(): void {
     this.emit("status", this.status);
   }
+}
+
+const STOCK_STATE_PATH = join(codexHome(), ".codex-global-state.json");
+
+function stockSandboxPolicy(mode: ThreadSandboxMode, cwd: string): Record<string, unknown> {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly", networkAccess: false };
+  return { type: "workspaceWrite", writableRoots: [cwd], networkAccess: false };
+}
+
+function stockPermissionProfile(mode: ThreadSandboxMode): { id: string; extends: null } | null {
+  if (mode === "danger-full-access") return { id: ":danger-full-access", extends: null };
+  if (mode === "read-only") return { id: ":read-only", extends: null };
+  return null;
+}
+
+async function syncStockThreadPermissions(threadId: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Promise<void> {
+  let state: Record<string, unknown> = {};
+  try { state = JSON.parse(await readFile(STOCK_STATE_PATH, "utf8")) as Record<string, unknown>; } catch { state = {}; }
+  const atom = typeof state["electron-persisted-atom-state"] === "object" && state["electron-persisted-atom-state"] !== null
+    ? state["electron-persisted-atom-state"] as Record<string, unknown>
+    : {};
+  const permissions = typeof atom["heartbeat-thread-permissions-by-id"] === "object" && atom["heartbeat-thread-permissions-by-id"] !== null
+    ? atom["heartbeat-thread-permissions-by-id"] as Record<string, unknown>
+    : {};
+  permissions[threadId] = {
+    activePermissionProfile: stockPermissionProfile(sandboxMode),
+    approvalPolicy,
+    approvalsReviewer: "user",
+    sandboxPolicy: stockSandboxPolicy(sandboxMode, cwd),
+  };
+  atom["heartbeat-thread-permissions-by-id"] = permissions;
+  if (sandboxMode === "workspace-write") {
+    const roots = typeof atom["thread-writable-roots"] === "object" && atom["thread-writable-roots"] !== null
+      ? atom["thread-writable-roots"] as Record<string, unknown>
+      : {};
+    roots[threadId] = [cwd];
+    atom["thread-writable-roots"] = roots;
+  }
+  state["electron-persisted-atom-state"] = atom;
+  await mkdir(dirname(STOCK_STATE_PATH), { recursive: true });
+  await writeFile(STOCK_STATE_PATH, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
 }

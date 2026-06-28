@@ -1,11 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CodexSettings } from "./contracts.cjs";
+import { codexHome } from "./codex-home.cjs";
+import { preserveDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
-const defaultConfigPath = join(homedir(), ".codex", "config.toml");
-const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", devilMcpEnabled: false, englishOutput: false };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
+const defaultConfigPath = join(codexHome(), "config.toml");
+const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", serviceTier: "default", devilMcpEnabled: false, englishOutput: false };
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", serviceTier: "service_tier", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
 
 function readValue(source: string, key: string): string | undefined {
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, "m"));
@@ -38,6 +39,7 @@ export class CodexSettingsStore {
         model: readValue(source, keys.model) ?? defaults.model,
         approvalPolicy: readValue(source, keys.approvalPolicy) ?? defaults.approvalPolicy,
         sandboxMode: readValue(source, keys.sandboxMode) ?? defaults.sandboxMode,
+        serviceTier: readValue(source, keys.serviceTier) === "priority" ? "priority" : "default",
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
@@ -50,6 +52,7 @@ export class CodexSettingsStore {
   async save(next: CodexSettings): Promise<CodexSettings> {
     let source = "";
     try { source = await readFile(this.configPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const previous = source;
     // Remove the managed keys from anywhere, then re-emit them as a block at the
     // very top. TOML root keys must precede the first [table]; appending at the
     // end would slot them under a managed MCP table and break config parsing.
@@ -58,6 +61,7 @@ export class CodexSettingsStore {
       .map(([field, key]) => `${key} = ${formatValue(next[field])}`)
       .join("\n");
     source = `${block}\n${source.replace(/^[\r\n]+/, "")}`;
+    source = preserveDesktopAppearanceTheme(source, previous);
     await mkdir(dirname(this.configPath), { recursive: true });
     await writeFile(this.configPath, source, { encoding: "utf8", mode: 0o600 });
     return next;

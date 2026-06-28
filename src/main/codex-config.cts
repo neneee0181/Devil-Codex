@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
+import { preserveDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
 // Registers a local proxy as a NON-default Codex model provider so external
 // models (Claude/Copilot) can run through the Codex app-server (tools + sync)
@@ -77,7 +78,7 @@ export async function registerDevilProvider(port: number, secret = ""): Promise<
   const source = await read();
   await backupOnce(source);
   const cleaned = stripProviderBlock(source).trimEnd();
-  const next = `${cleaned ? cleaned + "\n\n" : ""}${block(port, secret)}`;
+  const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block(port, secret)}`, source);
   await mkdir(dirname(CONFIG_PATH), { recursive: true });
   await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
 }
@@ -85,7 +86,7 @@ export async function registerDevilProvider(port: number, secret = ""): Promise<
 export async function unregisterDevilProvider(): Promise<void> {
   const source = await read();
   if (!source.includes(BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripProviderBlock(source), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripProviderBlock(source), source), { encoding: "utf8", mode: 0o600 });
 }
 
 // Register the embedded-browser MCP so Codex (and external models via the proxy)
@@ -141,7 +142,7 @@ export async function registerDevilBrowserMcp(input: { execPath: string; script:
   }
   lines.push(MCP_END, "");
   const block = lines.join("\n");
-  const next = `${cleaned ? cleaned + "\n\n" : ""}${block}`;
+  const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block}`, source);
   await mkdir(dirname(CONFIG_PATH), { recursive: true });
   await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
 }
@@ -149,7 +150,7 @@ export async function registerDevilBrowserMcp(input: { execPath: string; script:
 export async function unregisterDevilBrowserMcp(): Promise<void> {
   const source = await read();
   if (!source.includes(MCP_BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), source), { encoding: "utf8", mode: 0o600 });
 }
 
 // "Ask the user" MCP — a structured multiple-choice prompt (like Claude Code's
@@ -177,7 +178,7 @@ export async function registerDevilAskMcp(input: { execPath: string; script: str
     ASK_END,
     "",
   ].join("\n");
-  const next = `${cleaned ? cleaned + "\n\n" : ""}${block}`;
+  const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block}`, source);
   await mkdir(dirname(CONFIG_PATH), { recursive: true });
   await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
 }
@@ -185,5 +186,5 @@ export async function registerDevilAskMcp(input: { execPath: string; script: str
 export async function unregisterDevilAskMcp(): Promise<void> {
   const source = await read();
   if (!source.includes(ASK_BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), { encoding: "utf8", mode: 0o600 });
 }

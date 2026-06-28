@@ -217,6 +217,12 @@ function App(): React.JSX.Element {
   const setModel = (next: { provider: ProviderId; model: string }): void => { void providers.select(next); };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
+  useEffect(() => {
+    if (!codexSettings.settings) return;
+    const next = codexSettings.settings.serviceTier === "priority" ? "fast" : "standard";
+    setResponseSpeedState(next);
+    localStorage.setItem("devil-codex:response-speed", next);
+  }, [codexSettings.settings?.serviceTier]);
   const setReasoningEffort = (value: ReasoningEffort): void => {
     setReasoningEffortState(value);
     localStorage.setItem("devil-codex:reasoning-effort", value);
@@ -224,6 +230,7 @@ function App(): React.JSX.Element {
   const setResponseSpeed = (value: ResponseSpeed): void => {
     setResponseSpeedState(value);
     localStorage.setItem("devil-codex:response-speed", value);
+    if (codexSettings.settings) codexSettings.save({ ...codexSettings.settings, serviceTier: value === "fast" ? "priority" : "default" });
   };
   const [busy, setBusy] = useState(false);
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>({});
