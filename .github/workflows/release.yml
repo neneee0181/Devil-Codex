@@ -9,7 +9,10 @@ on:
     tags: ["v*"]
 
 env:
-  CODEX_VERSION: rust-v0.142.1
+  # Must be >= the codex version stock Codex Desktop uses, or newer rollout/
+  # session_meta formats fail to deserialize ("rollout does not start with
+  # session metadata") and those threads show empty/desynced in Devil.
+  CODEX_VERSION: rust-v0.142.3
 
 permissions:
   contents: write
