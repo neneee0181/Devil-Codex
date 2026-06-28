@@ -76,6 +76,7 @@ function providerLabel(provider: ProxyProvider): string {
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "xai") return "xAI Grok";
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "openrouter-free") return "OpenRouter Free";
   if (provider === "groq") return "Groq";
   if (provider === "mistral") return "Mistral";
   if (provider === "cerebras") return "Cerebras";
@@ -94,7 +95,7 @@ function splitModel(id: string): { provider: ProxyProvider; model: string } {
   const sep = id.indexOf(":");
   if (sep > 0) {
     const p = id.slice(0, sep);
-    if (p === "claude-code" || p === "copilot" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, model: id.slice(sep + 1) };
+    if (p === "claude-code" || p === "copilot" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, model: id.slice(sep + 1) };
   }
   // Fallback by name shape.
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
@@ -112,7 +113,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|openai|anthropic|google|deepseek|xai|openrouter|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model);
+  return /^(claude-code|copilot|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model);
 }
 
 function redactSensitiveText(text: string): string {

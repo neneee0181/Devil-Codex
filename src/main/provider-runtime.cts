@@ -24,6 +24,7 @@ function providerLabel(provider: ExternalProvider): string {
   if (provider === "deepseek") return "DeepSeek";
   if (provider === "xai") return "xAI Grok";
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "openrouter-free") return "OpenRouter Free";
   if (provider === "groq") return "Groq";
   if (provider === "mistral") return "Mistral";
   if (provider === "cerebras") return "Cerebras";

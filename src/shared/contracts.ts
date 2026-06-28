@@ -119,7 +119,7 @@ export interface CodexSettings { model: string; approvalPolicy: string; sandboxM
 export type ProviderId =
   | "codex" | "claude-code" | "copilot"
   | "openai" | "anthropic" | "google" | "deepseek"
-  | "xai" | "openrouter" | "groq" | "mistral" | "cerebras" | "together" | "fireworks"
+  | "xai" | "openrouter" | "openrouter-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks"
   | "moonshot" | "huggingface" | "nvidia" | "ollama" | "vllm" | "lm-studio";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ResponseSpeed = "standard" | "fast";

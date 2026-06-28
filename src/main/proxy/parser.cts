@@ -80,7 +80,7 @@ function ensureAssistant(messages: OcxMessage[]): OcxAssistantMessage {
   return placeholder;
 }
 
-function buildTools(tools: unknown[] | undefined): OcxTool[] {
+function buildTools(tools: unknown[] | undefined, loaded = false): OcxTool[] {
   if (!tools) return [];
   const out: OcxTool[] = [];
   const pushFunctionTool = (tool: Record<string, unknown>, namespace?: string): void => {
@@ -90,6 +90,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] {
       parameters: isObj(tool.parameters) ? tool.parameters : {},
       ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
       ...(namespace ? { namespace } : {}),
+      ...(loaded ? { loaded: true } : {}),
     });
   };
   for (const t of tools) {
@@ -107,6 +108,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] {
         description: String(t.description ?? ""),
         parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input body." } }, required: ["input"] },
         freeform: true,
+        ...(loaded ? { loaded: true } : {}),
       });
     } else if (t.type === "tool_search") {
       out.push({
@@ -121,6 +123,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] {
           required: ["query"],
         },
         toolSearch: true,
+        ...(loaded ? { loaded: true } : {}),
       });
     } else if (typeof t.name === "string" && t.type !== "web_search" && t.type !== "image_generation") {
       pushFunctionTool(t);
@@ -159,7 +162,11 @@ function mergeTools(declared: OcxTool[], loaded: OcxTool[]): OcxTool[] {
   const out: OcxTool[] = [];
   for (const tool of [...declared, ...loaded]) {
     const key = namespacedToolName(tool.namespace, tool.name);
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      const existing = out.find((candidate) => namespacedToolName(candidate.namespace, candidate.name) === key);
+      if (existing && tool.loaded) existing.loaded = true;
+      continue;
+    }
     seen.add(key);
     out.push(tool);
   }
@@ -255,7 +262,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   const reasoning = isObj(data.reasoning) ? data.reasoning : undefined;
   const effort = reasoning && typeof reasoning.effort === "string" && EFFORTS.has(reasoning.effort) ? reasoning.effort : "medium";
   const declaredTools = buildTools(data.tools as unknown[] | undefined);
-  const loadedTools = buildTools(loadedToolSpecs);
+  const loadedTools = buildTools(loadedToolSpecs, true);
   const webSearch = hostedWebSearch(data.tools as unknown[] | undefined);
   const isStructured = structuredOutput(data.text);
   const options: OcxRequestOptions = {};

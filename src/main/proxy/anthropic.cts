@@ -1,7 +1,7 @@
 // Anthropic adapter: neutral request → Anthropic Messages call → AdapterEvent stream.
 // Adapted from opencodex (MIT).
 import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxMessage, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
-import { limitTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 
 const ANTHROPIC_API = "https://api.anthropic.com";
@@ -114,8 +114,9 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   if (oauth) body.system = [{ type: "text", text: CLAUDE_CODE_SYSTEM }, ...(sys ? [{ type: "text", text: sys }] : [])];
   else if (sys) body.system = sys;
 
-  if (parsed.tools.length) {
-    body.tools = limitTools(parsed.tools, 128).map((tool) => ({
+  const selectedTools = budgetTools(parsed.tools, 64, requiredToolName(parsed));
+  if (selectedTools.length) {
+    body.tools = selectedTools.map((tool) => ({
       name: toClaudeToolName(sanitizeName(namespacedToolName(tool.namespace, tool.name)), oauth),
       description: tool.description ?? "",
       input_schema: normalizeSchema(tool.parameters),
@@ -149,6 +150,11 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   else if (auth.apiKey) headers["x-api-key"] = auth.apiKey;
 
   return { url: `${ANTHROPIC_API}/v1/messages`, headers, body: JSON.stringify(body) };
+}
+
+function requiredToolName(parsed: OcxParsedRequest): string | undefined {
+  const choice = parsed.options.toolChoice;
+  return choice && typeof choice === "object" && "name" in choice ? choice.name : undefined;
 }
 
 export async function* streamAnthropic(response: Response): AsyncGenerator<AdapterEvent> {

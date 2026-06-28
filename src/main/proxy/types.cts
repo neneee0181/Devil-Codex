@@ -24,6 +24,7 @@ export interface OcxTool {
   freeform?: boolean;
   toolSearch?: boolean;
   webSearch?: boolean;
+  loaded?: boolean;
 }
 
 export function namespacedToolName(namespace: string | undefined, name: string): string {

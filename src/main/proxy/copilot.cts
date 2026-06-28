@@ -1,6 +1,6 @@
 // Copilot adapter: neutral request → GitHub Copilot chat/completions → AdapterEvent stream.
 import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
-import { limitTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 
 const COPILOT_API = "https://api.githubcopilot.com";
@@ -61,8 +61,9 @@ function toChatMessages(parsed: OcxParsedRequest): unknown[] {
 
 export function buildCopilotRequest(parsed: OcxParsedRequest, bearer: string): { url: string; headers: Record<string, string>; body: string } {
   const body: Record<string, unknown> = { model: parsed.model, messages: toChatMessages(parsed), stream: true };
-  if (parsed.tools.length) {
-    const tools = limitTools(parsed.tools, 128).map((tool) => ({
+  const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  if (selectedTools.length) {
+    const tools = selectedTools.map((tool) => ({
       type: "function",
       function: {
         name: sanitizeName(namespacedToolName(tool.namespace, tool.name)),
@@ -91,6 +92,11 @@ export function buildCopilotRequest(parsed: OcxParsedRequest, bearer: string): {
     "Openai-Intent": "conversation-panel", "X-Initiator": "user", "User-Agent": "GithubCopilot/1.155.0",
   };
   return { url: `${COPILOT_API}/chat/completions`, headers, body: JSON.stringify(body) };
+}
+
+function requiredToolName(parsed: OcxParsedRequest): string | undefined {
+  const choice = parsed.options.toolChoice;
+  return choice && typeof choice === "object" && "name" in choice ? choice.name : undefined;
 }
 
 export async function* streamCopilot(response: Response): AsyncGenerator<AdapterEvent> {

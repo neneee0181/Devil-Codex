@@ -248,6 +248,10 @@ function sortThreadsByRecency(threads: Array<{ updatedAt: number }>): void {
   threads.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+function cwdKey(cwd: string | undefined): string {
+  return String(cwd ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 function sendToRenderer(channel: string, payload: unknown): void {
   if (!windowRef || windowRef.isDestroyed()) return;
   windowRef.webContents.send(channel, payload);
@@ -1030,7 +1034,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // Codex can still be booting while the renderer asks for a sidebar refresh.
     // Devil's own durable index must remain visible in that short window.
     const [codex, external] = await Promise.all([server().listThreads(input).catch(() => []), providerTranscripts.summaries()]);
-    const extra = external.filter((summary) => summary.cwd === input.cwd && summary.archived === (input.archived ?? false));
+    const requestedCwd = cwdKey(input.cwd);
+    const extra = external.filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...codex.filter((summary) => !ids.has(summary.id))];
     sortThreadsByRecency(merged);

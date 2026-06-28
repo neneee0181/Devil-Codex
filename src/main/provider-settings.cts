@@ -20,6 +20,7 @@ const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
   deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", modelPath: "/models", keyRequired: true, allowImages: false },
   xai: { adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   openrouter: { adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", modelPath: "/models", keyRequired: true, allowImages: true },
+  "openrouter-free": { adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   groq: { adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   mistral: { adapter: "openai-chat", baseUrl: "https://api.mistral.ai/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   cerebras: { adapter: "openai-chat", baseUrl: "https://api.cerebras.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
@@ -69,7 +70,21 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     diagnostics: "experimental",
     notes: ["로컬 OpenAI-compatible endpoint입니다. 모델 서버가 실행 중이어야 합니다.", "모델별 tool/image 지원은 로컬 서버 설정에 따라 달라집니다."],
   };
-  if (provider === "openrouter" || provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "moonshot" || provider === "huggingface" || provider === "nvidia" || provider === "xai") return {
+  if (provider === "groq") return {
+    tools: "limited",
+    images: "sidecar",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["Groq on-demand TPM 제한을 피하기 위해 기본 요청에는 tool_search 중심의 최소 도구만 전송합니다.", "필요한 도구는 lazy loading으로 일부만 로드하며, 큰 파일 편집/명령 작업은 Codex/OpenAI/Anthropic 계열을 권장합니다."],
+  };
+  if (provider === "openrouter-free") return {
+    tools: "limited",
+    images: "native",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["OpenRouter의 무료 모델만 노출하는 전용 목록입니다.", "무료 모델 availability/rate limit은 OpenRouter 정책과 각 모델 상태에 따라 바뀔 수 있습니다."],
+  };
+  if (provider === "openrouter" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "moonshot" || provider === "huggingface" || provider === "nvidia" || provider === "xai") return {
     tools: "limited",
     images: apiProviderConfig(provider)?.allowImages ? "native" : "sidecar",
     webSearch: "sidecar",
@@ -127,6 +142,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded">> = 
   { id: "deepseek", label: "DeepSeek", kind: "apikey", keyRequired: true, models: [{ id: "deepseek-chat", label: "DeepSeek Chat" }, { id: "deepseek-reasoner", label: "DeepSeek Reasoner" }] },
   { id: "xai", label: "xAI Grok", kind: "apikey", keyRequired: true, models: [{ id: "grok-4.3", label: "Grok 4.3" }, { id: "grok-code-fast-1", label: "Grok Code Fast 1" }] },
   { id: "openrouter", label: "OpenRouter", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-5", label: "OpenAI GPT-5" }, { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5" }] },
+  { id: "openrouter-free", label: "OpenRouter Free", kind: "apikey", keyRequired: true, models: [{ id: "openrouter/free", label: "OpenRouter Free Router" }] },
   { id: "groq", label: "Groq", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-oss-120b", label: "GPT OSS 120B" }, { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" }] },
   { id: "mistral", label: "Mistral", kind: "apikey", keyRequired: true, models: [{ id: "codestral-latest", label: "Codestral Latest" }, { id: "mistral-large-latest", label: "Mistral Large" }] },
   { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "llama-3.3-70b", label: "Llama 3.3 70B" }] },
@@ -147,6 +163,7 @@ const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   deepseek: ["DEEPSEEK_API_KEY"],
   xai: ["XAI_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  "openrouter-free": ["OPENROUTER_API_KEY"],
   groq: ["GROQ_API_KEY"],
   mistral: ["MISTRAL_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
@@ -163,7 +180,10 @@ const defaults: PersistedSettings = { provider: "codex", model: "gpt-5.4" };
 export class ProviderSettingsStore {
   private root(): string { return join(app.getPath("userData"), "providers"); }
   private settingsPath(): string { return join(this.root(), "settings.json"); }
-  private keyPath(provider: ProviderId): string { return join(this.root(), `${provider}.credential`); }
+  private keyPath(provider: ProviderId): string {
+    const keyOwner = provider === "openrouter-free" ? "openrouter" : provider;
+    return join(this.root(), `${keyOwner}.credential`);
+  }
 
   async load(): Promise<ProviderSettings> {
     const stored = await this.readSettings();

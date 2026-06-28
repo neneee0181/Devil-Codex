@@ -127,6 +127,10 @@ function basenamePath(value: string): string {
   return normalized.split(/[\\/]/).filter(Boolean).at(-1) || normalized || "프로젝트 선택";
 }
 
+function cwdKey(value: string | undefined): string {
+  return String(value ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 function modelContextWindow(model: string): number {
   const lower = model.toLowerCase();
   if (lower.includes("gpt-5") || lower.includes("5.5") || lower.includes("5.4")) return 258_000;
@@ -532,20 +536,34 @@ function App(): React.JSX.Element {
         if (projectSortMode === "updated") return b.updatedAt - a.updatedAt;
         return 0;
       });
-    const map = new Map(projects.map((group) => [group.cwd, group.threads]));
+    const map = new Map<string, { cwd: string; threads: ThreadSummary[] }>();
+    const addProjectThreads = (cwd: string, list: ThreadSummary[]): void => {
+      const key = cwdKey(cwd);
+      if (!key) return;
+      const existing = map.get(key);
+      if (existing) existing.threads.push(...list);
+      else map.set(key, { cwd, threads: [...list] });
+    };
+    for (const group of projects) addProjectThreads(group.cwd, group.threads);
     // `threads` is only the currently selected workspace's fast-refresh list.
     // Merge it into the project cache instead of replacing that cache; replacing
     // it made sibling threads disappear whenever another project was opened.
     if (workspace) {
-      const merged = new Map((map.get(workspace) ?? []).map((summary) => [summary.id, summary]));
+      const key = cwdKey(workspace);
+      const existing = map.get(key);
+      const merged = new Map((existing?.threads ?? []).map((summary) => [summary.id, summary]));
       for (const summary of threads) merged.set(summary.id, summary);
-      map.set(workspace, [...merged.values()]);
+      map.set(key, { cwd: existing?.cwd ?? workspace, threads: [...merged.values()] });
     }
-    for (const cwd of localProjectCwds) if (!map.has(cwd)) map.set(cwd, []);
-    return [...map.entries()]
-      .filter(([cwd]) => cwd && !hiddenProjects.includes(cwd) && basenamePath(cwd) !== "new-chat")
+    for (const cwd of localProjectCwds) {
+      const key = cwdKey(cwd);
+      if (key && !map.has(key)) map.set(key, { cwd, threads: [] });
+    }
+    const hiddenProjectKeys = new Set(hiddenProjects.map(cwdKey));
+    return [...map.values()]
+      .filter(({ cwd }) => cwd && !hiddenProjectKeys.has(cwdKey(cwd)) && basenamePath(cwd) !== "new-chat")
       // Side-chat / subagent threads are not standalone conversations.
-      .map(([cwd, all]) => ({ cwd, list: sortThreadList(all.filter((t) => !sideThreadSet.has(t.id))) }))
+      .map(({ cwd, threads: all }) => ({ cwd, list: sortThreadList([...new Map(all.map((thread) => [thread.id, thread])).values()].filter((t) => !sideThreadSet.has(t.id))) }))
       .map(({ cwd, list }) => ({ cwd, name: projectAliases[cwd] || basenamePath(cwd), threads: list, recency: list.reduce((max, t) => Math.max(max, t.updatedAt), 0) }))
       .sort((a, b) => {
         const pinDelta = (pinnedProjects.includes(b.cwd) ? 1 : 0) - (pinnedProjects.includes(a.cwd) ? 1 : 0);
@@ -939,7 +957,8 @@ function App(): React.JSX.Element {
     try {
       const loaded = await window.devilCodex.listThreads({ cwd });
       for (const summary of loaded) pendingThreads.current.delete(summary.id);
-      const pending = [...pendingThreads.current.values()].filter((summary) => summary.cwd === cwd && !loaded.some((item) => item.id === summary.id));
+      const currentCwdKey = cwdKey(cwd);
+      const pending = [...pendingThreads.current.values()].filter((summary) => cwdKey(summary.cwd) === currentCwdKey && !loaded.some((item) => item.id === summary.id));
       setThreads([...pending, ...loaded].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt));
       for (const summary of loaded.slice(0, 4)) window.setTimeout(() => { void prefetchThreadHistory(summary.id); }, 0);
     } catch (error) {
@@ -959,15 +978,16 @@ function App(): React.JSX.Element {
   async function refreshProjects(_options?: { quiet?: boolean }): Promise<void> {
     try {
       const all = await window.devilCodex.listProjects();
-      const map = new Map<string, ThreadSummary[]>();
+      const map = new Map<string, { cwd: string; threads: ThreadSummary[] }>();
       for (const summary of all) {
         if (!summary.cwd) continue;
-        const list = map.get(summary.cwd) ?? [];
-        list.push(summary);
-        map.set(summary.cwd, list);
+        const key = cwdKey(summary.cwd);
+        const group = map.get(key) ?? { cwd: summary.cwd, threads: [] };
+        group.threads.push(summary);
+        map.set(key, group);
       }
-      const groups = [...map.entries()]
-        .map(([cwd, list]) => ({ cwd, name: basenamePath(cwd), threads: list }))
+      const groups = [...map.values()]
+        .map(({ cwd, threads }) => ({ cwd, name: basenamePath(cwd), threads: [...new Map(threads.map((thread) => [thread.id, thread])).values()] }))
         .sort((a, b) => Math.max(...b.threads.map((t) => t.updatedAt)) - Math.max(...a.threads.map((t) => t.updatedAt)));
       setProjects(groups);
     } catch {

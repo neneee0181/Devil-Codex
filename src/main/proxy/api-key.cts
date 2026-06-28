@@ -1,6 +1,6 @@
 import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxTool, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { providerErrorMessage } from "./errors.cjs";
-import { limitTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import type { ProviderId } from "../contracts.cjs";
 import { apiProviderConfig, apiProviderUrl } from "../provider-settings.cjs";
 
@@ -126,9 +126,10 @@ function googleContents(parsed: OcxParsedRequest): unknown[] {
 }
 
 function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
-  if (!parsed.tools.length) return undefined;
+  const selected = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  if (!selected.length) return undefined;
   return [{
-    functionDeclarations: limitTools(parsed.tools, 128).map((tool) => ({
+    functionDeclarations: selected.map((tool) => ({
       name: wireToolName(tool),
       description: tool.description ?? "",
       parameters: normalizeGeminiSchema(tool.parameters),
@@ -138,8 +139,10 @@ function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
 
 function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): Record<string, unknown> {
   const body: Record<string, unknown> = { model: parsed.model, messages: openAiMessages(parsed, allowImages), stream: parsed.stream };
-  if (parsed.tools.length) {
-    const tools = limitTools(parsed.tools, 128).map((tool) => ({
+  const toolLimit = maxToolsForProvider(provider);
+  const selectedTools = budgetTools(parsed.tools, toolLimit, requiredToolName(parsed));
+  if (selectedTools.length) {
+    const tools = selectedTools.map((tool) => ({
       type: "function",
       function: {
         name: wireToolName(tool),
@@ -163,6 +166,21 @@ function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, pr
   if (parsed.options.presencePenalty !== undefined) body.presence_penalty = parsed.options.presencePenalty;
   if (parsed.options.frequencyPenalty !== undefined) body.frequency_penalty = parsed.options.frequencyPenalty;
   return body;
+}
+
+function requiredToolName(parsed: OcxParsedRequest): string | undefined {
+  const choice = parsed.options.toolChoice;
+  return choice && typeof choice === "object" && "name" in choice ? choice.name : undefined;
+}
+
+function maxToolsForProvider(provider: ApiKeyProvider): number {
+  // Keep external provider prompts lean: expose tool_search first, then loaded
+  // tools, then a small core set. Full catalog forwarding is too expensive for
+  // low-TPM providers and makes fresh chats fail before user text matters.
+  if (provider === "groq") return 2;
+  if (provider === "deepseek" || provider === "cerebras" || provider === "moonshot") return 12;
+  if (provider === "openai") return 64;
+  return 24;
 }
 
 export function buildApiKeyRequest(provider: ApiKeyProvider, parsed: OcxParsedRequest, key: string): { url: string; headers: Record<string, string>; body: string } {
@@ -195,7 +213,7 @@ export function buildApiKeyRequest(provider: ApiKeyProvider, parsed: OcxParsedRe
 
 function supportsReasoningEffort(provider: ApiKeyProvider, model: string): boolean {
   if (provider === "moonshot") return false;
-  if (provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "huggingface" || provider === "nvidia" || provider === "openrouter" || provider === "ollama" || provider === "vllm" || provider === "lm-studio") return false;
+  if (provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "huggingface" || provider === "nvidia" || provider === "openrouter" || provider === "openrouter-free" || provider === "ollama" || provider === "vllm" || provider === "lm-studio") return false;
   if (provider === "xai") return !/grok-build|composer/i.test(model);
   return provider === "openai" || provider === "deepseek";
 }

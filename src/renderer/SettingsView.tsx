@@ -232,6 +232,7 @@ function estimateUsageCost(provider: ProviderId | "unknown", model: string, usag
 
 function pricingFor(provider: ProviderId | "unknown", model: string): Pricing | null {
   const id = model.toLowerCase();
+  if (provider === "openrouter-free") return { input: 0, output: 0, label: "OpenRouter Free" };
   if (provider === "openai" || provider === "codex") {
     if (id.includes("gpt-5.5-pro") || id.includes("gpt-5.4-pro")) return { input: 15, output: 90, cachedInput: 1.5, label: "OpenAI pro" };
     if (id.includes("gpt-5.5") || id.includes("gpt-5.4")) return { input: 1.25, output: 10, cachedInput: 0.125, label: "OpenAI GPT-5" };
@@ -263,6 +264,8 @@ function providerFallbackLabel(provider: ProviderId): string {
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";
   if (provider === "deepseek") return "DeepSeek";
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "openrouter-free") return "OpenRouter Free";
   return "Codex";
 }
 

@@ -2,7 +2,7 @@ import type { ProviderId, ProviderInfo, ProviderSettings } from "./contracts.cjs
 import { apiProviderConfig, apiProviderUrl, ProviderSettingsStore } from "./provider-settings.cjs";
 
 type ExternalProvider = Exclude<ProviderId, "codex">;
-type ModelRow = { id?: unknown; display_name?: unknown; name?: unknown; supportedGenerationMethods?: unknown };
+type ModelRow = { id?: unknown; display_name?: unknown; name?: unknown; supportedGenerationMethods?: unknown; pricing?: unknown };
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const modelCache = new Map<ExternalProvider, { models: ProviderInfo["models"]; fetchedAt: number }>();
 
@@ -18,6 +18,27 @@ function normalizeModels(rows: ModelRow[]): ProviderInfo["models"] {
     ids.add(id);
     return [{ id, label: String(row.display_name ?? humanLabel(id)) }];
   }).sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function numericPrice(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function isOpenRouterFreeModel(row: ModelRow): boolean {
+  const id = String(row.id ?? row.name ?? "").replace(/^models\//, "");
+  if (id === "openrouter/free" || id.endsWith(":free")) return true;
+  const pricing = row.pricing;
+  if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) return false;
+  const record = pricing as Record<string, unknown>;
+  const prompt = numericPrice(record.prompt);
+  const completion = numericPrice(record.completion);
+  const request = numericPrice(record.request);
+  return prompt === 0 && completion === 0 && (request === undefined || request === 0);
 }
 
 export class ProviderModelCatalog {
@@ -44,7 +65,9 @@ export class ProviderModelCatalog {
       const payload = await response.json() as { data?: ModelRow[]; models?: ModelRow[] };
       const rows = provider === "google"
         ? (payload.models ?? []).filter((model) => Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
-        : payload.data ?? [];
+        : provider === "openrouter-free"
+          ? (payload.data ?? []).filter(isOpenRouterFreeModel)
+          : payload.data ?? [];
       const models = normalizeModels(rows);
       if (!models.length) return this.withFallback(provider, "사용 가능한 대화 모델이 없습니다.");
       modelCache.set(provider, { models, fetchedAt: Date.now() });

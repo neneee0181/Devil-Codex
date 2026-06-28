@@ -101,3 +101,25 @@ export function limitTools<T extends OcxTool>(tools: T[], max: number): T[] {
   const rest = tools.filter((tool) => !CORE_TOOL_NAME.test(tool.name));
   return [...core, ...rest].slice(0, max);
 }
+
+export function budgetTools<T extends OcxTool>(tools: T[], max: number, requiredName?: string): T[] {
+  if (max <= 0) return [];
+  const seen = new Set<string>();
+  const out: T[] = [];
+  const add = (items: T[]): void => {
+    for (const tool of items) {
+      const key = `${tool.namespace ?? ""}:${tool.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tool);
+      if (out.length >= max) return;
+    }
+  };
+
+  add(tools.filter((tool) => tool.toolSearch || tool.name === "tool_search"));
+  if (requiredName) add(tools.filter((tool) => tool.name === requiredName || `${tool.namespace ?? ""}__${tool.name}` === requiredName));
+  add(tools.filter((tool) => tool.loaded));
+  add(tools.filter((tool) => CORE_TOOL_NAME.test(tool.name)));
+  add(tools);
+  return out;
+}
