@@ -19,7 +19,15 @@ function stripCommentLine(source: string, marker: string): string {
 
 function stripTable(source: string, header: string): string {
   const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(^\\s*\\[${escaped}\\]\\s*\\r?\\n)([\\s\\S]*?)(?=^\\s*\\[[^\\]]+\\]\\s*\\r?\\n|\\Z)`, "m");
+  // Match the table header line plus every following line up to (but not
+  // including) the next table header, or end of file. Global so duplicate
+  // tables are all removed. NOTE: JS regex has no \Z — the old pattern used it
+  // as a lookahead alternative, which silently matched the literal "Z" instead
+  // of end-of-input, so a table that was the LAST one in the file was never
+  // stripped. registerDevil* appends its block last, so on the next launch the
+  // old block survived and a duplicate was appended → "config.toml: duplicate
+  // key" and a dead app-server (skills/list etc. all fail).
+  const pattern = new RegExp(`^[ \\t]*\\[${escaped}\\][^\\n]*\\n(?:(?![ \\t]*\\[)[^\\n]*\\n?)*`, "gm");
   return source.replace(pattern, "");
 }
 
