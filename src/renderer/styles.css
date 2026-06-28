@@ -178,12 +178,81 @@ button:active:not(:disabled) { transform: scale(.96); }
 .browser-annotate-bar img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; border: 1px solid #ffffff1c; }
 .browser-annotate-bar input { flex: 1; height: 30px; padding: 0 12px; border: 1px solid #e0294f55; border-radius: 8px; background: #ffffff0a; color: #eee; outline: none; }
 .browser-annotate-bar button { width: 28px; height: 28px; border: 0; border-radius: 7px; background: #ffffff10; color: #ddd; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.browser-host { position: relative; flex: 1; min-height: 0; background: #fff; }
+.browser-host { position: relative; flex: 1; min-height: 0; background: #171717; }
+.browser-context-backdrop { position: absolute; z-index: 20; inset: 0; display: grid; place-items: center; padding: 18px; background: #0009; backdrop-filter: blur(4px); }
+.browser-context-backdrop.compact { align-items: start; justify-items: start; padding-top: 52px; background: #0005; }
+.browser-assistant-modal { display: grid; width: min(360px, calc(100% - 24px)); gap: 7px; overflow: hidden; border: 1px solid #454545; border-radius: 16px; background: #282828f8; box-shadow: 0 22px 70px #000c; color: #ededed; padding: 8px; }
+.browser-assistant-modal header { display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 9px; border-bottom: 1px solid #ffffff12; }
+.browser-assistant-modal header span { display: inline-flex; align-items: center; gap: 8px; }
+.browser-assistant-modal header svg { color: #f0b6c1; }
+.browser-assistant-modal header button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #bbb; cursor: pointer; }
+.browser-assistant-modal header button:hover { background: #ffffff12; color: #fff; }
+.browser-assistant-modal > button { display: flex; gap: 11px; align-items: flex-start; border: 0; border-radius: 11px; background: transparent; color: #ededed; padding: 11px; text-align: left; cursor: pointer; }
+.browser-assistant-modal > button:hover:not(:disabled) { background: #ffffff12; }
+.browser-assistant-modal > button:disabled { opacity: .45; cursor: default; }
+.browser-assistant-modal > button > svg { flex: 0 0 17px; margin-top: 1px; color: #d9d9d9; }
+.browser-assistant-modal > button span { display: grid; min-width: 0; gap: 3px; }
+.browser-assistant-modal > button strong { font-size: 13px; }
+.browser-assistant-modal > button small { color: #aaa; font-size: 12px; line-height: 1.35; }
+.browser-context-modal { display: flex; width: min(1040px, 100%); max-height: min(860px, 100%); min-height: min(680px, 100%); flex-direction: column; overflow: hidden; border: 1px solid #454545; border-radius: 18px; background: #262626f7; box-shadow: 0 28px 90px #000d; color: #ededed; }
+.browser-context-modal header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px 12px; border-bottom: 1px solid #ffffff12; }
+.browser-context-modal header span { display: inline-flex; min-width: 0; align-items: center; gap: 9px; }
+.browser-context-modal header svg { color: #f0b6c1; }
+.browser-context-modal header strong { overflow: hidden; font-size: 15px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.browser-context-modal header button { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #bdbdbd; cursor: pointer; }
+.browser-context-modal header button:hover { background: #ffffff12; color: #fff; }
+.browser-context-modal p { margin: 0; padding: 13px 18px 11px; color: #b9b9b9; font-size: 12.5px; line-height: 1.55; }
+.browser-context-body { display: grid; grid-template-columns: minmax(280px, .9fr) minmax(280px, .8fr); gap: 12px; padding: 0 18px 12px; }
+.browser-context-picker { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 210px; max-height: 260px; gap: 8px; overflow: hidden; border: 1px solid #ffffff12; border-radius: 13px; background: #1d1d1d; padding: 10px 11px; }
+.browser-context-picker > div { display: grid; gap: 2px; }
+.browser-context-picker strong { color: #eeeeee; font-size: 12px; }
+.browser-context-picker small { color: #8f8f8f; font-size: 11.5px; }
+.browser-context-picker label { display: flex; align-items: center; gap: 7px; height: 30px; border: 1px solid #ffffff16; border-radius: 9px; background: #151515; color: #8f8f8f; padding: 0 9px; }
+.browser-context-picker input { flex: 1; min-width: 0; border: 0; background: transparent; color: #e8e8e8; outline: 0; font-size: 12px; }
+.browser-context-tree { display: grid; align-content: start; min-height: 0; overflow: auto; padding-right: 2px; scrollbar-width: thin; scrollbar-color: #555 transparent; }
+.browser-context-tree button { display: flex; min-width: 0; gap: 6px; align-items: center; height: 27px; border: 0; border-radius: 7px; background: transparent; color: #d5d5d5; padding: 0 8px; text-align: left; cursor: pointer; }
+.browser-context-tree button:hover { background: #ffffff10; }
+.browser-context-tree button.selected { background: #e0294f22; color: #ffd7df; }
+.browser-context-tree button svg { flex: 0 0 auto; color: #a9a9a9; }
+.browser-context-tree button span:not(.tree-spacer) { overflow: hidden; flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.browser-context-tree button em { flex: 0 0 auto; color: #9f9f9f; font-size: 10.5px; font-style: normal; }
+.browser-context-tree button.selected em { color: #ffc6d0; }
+.browser-context-picker-error { color: #f0b6c1 !important; }
+.browser-context-files { display: grid; align-content: start; max-height: 260px; gap: 6px; overflow: auto; border: 1px solid #ffffff12; border-radius: 13px; background: #1d1d1d; padding: 10px 11px; }
+.browser-context-files > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.browser-context-files strong { color: #eeeeee; font-size: 12px; }
+.browser-context-files > div button { display: inline-flex; gap: 5px; align-items: center; border: 1px solid #4b4b4b; border-radius: 8px; background: #343434; color: #e0e0e0; padding: 5px 8px; font-size: 11.5px; cursor: pointer; }
+.browser-context-files span { display: flex; min-width: 0; gap: 6px; align-items: center; }
+.browser-context-file-row { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name remove" "path remove"; column-gap: 8px; align-items: center; border: 1px solid transparent; border-radius: 9px; padding: 4px 4px 4px 7px; }
+.browser-context-file-row:hover { border-color: #ffffff12; background: #ffffff08; }
+.browser-context-file-row b { grid-area: name; overflow: hidden; color: #eeeeee; font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.browser-context-file-row small { grid-area: path; }
+.browser-context-file-row button { grid-area: remove; }
+.browser-context-files small { overflow: hidden; min-width: 0; color: #a8a8a8; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.browser-context-files span button { display: grid; flex: 0 0 21px; width: 21px; height: 21px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #a8a8a8; cursor: pointer; }
+.browser-context-files span button:hover { background: #ffffff12; color: #fff; }
+.browser-context-question { display: grid; gap: 7px; margin: 12px 18px 0; color: #eeeeee; font-size: 12px; font-weight: 650; }
+.browser-context-question textarea { min-height: 86px; margin: 0; resize: vertical; font: 13px/1.45 inherit; }
+.browser-context-modal > textarea { flex: 1; min-height: 220px; margin: 0 18px; resize: none; border: 1px solid #3f3f3f; border-radius: 13px; background: #171717; color: #e8e8e8; outline: 0; padding: 13px 14px; font: 12px/1.55 "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
+.browser-context-question textarea { border: 1px solid #3f3f3f; border-radius: 13px; background: #171717; color: #e8e8e8; outline: 0; padding: 11px 12px; }
+.browser-context-modal textarea:focus { border-color: #e0294f88; box-shadow: 0 0 0 1px #e0294f33; }
+.browser-context-notice { margin: 10px 18px 0; color: #f0b6c1; font-size: 12px; }
+.browser-context-modal footer { display: flex; gap: 8px; justify-content: flex-end; padding: 14px 18px 18px; }
+.browser-context-modal footer button { border: 1px solid #4b4b4b; border-radius: 10px; background: #363636; color: #ddd; padding: 8px 13px; cursor: pointer; }
+.browser-context-modal footer button:hover:not(:disabled) { background: #444; }
+.browser-context-modal footer button.primary { border-color: #ededed; background: #ededed; color: #1f1f1f; font-weight: 650; }
+.browser-context-modal footer button:disabled { opacity: .55; cursor: default; }
+@media (max-width: 760px) {
+  .browser-context-body { grid-template-columns: 1fr; }
+  .browser-context-modal { min-height: min(620px, 100%); }
+}
 /* The webview guest swallows pointer events; disable it during a panel resize so
    the drag keeps tracking when the cursor passes over the browser. */
 .main-stage.resizing webview { pointer-events: none; }
-.browser-host-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #888; background: #1c1c1c; }
-.browser-host-empty svg { width: 34px; height: 34px; opacity: .5; }
+.browser-host-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #898989; background: #171717; text-align: center; pointer-events: none; }
+.browser-host-empty svg { width: 58px; height: 58px; color: #a4a4a4; stroke-width: 1.8; opacity: .9; }
+.browser-host-empty strong { margin-top: 14px; color: #eeeeee; font-size: 15px; font-weight: 700; }
+.browser-host-empty small { color: #888888; font-size: 13px; }
 .permission-hint { margin: 0 18px 8px; display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 9px 13px; border: 1px solid #e0294f55; border-radius: 10px; background: #e0294f14; color: #f2c0cb; font-size: 13px; }
 .permission-hint-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .permission-hint-actions button { border: 1px solid #e0294f66; background: #e0294f22; color: #f2c0cb; border-radius: 7px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
@@ -649,7 +718,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .environment-sources button:hover { background: #363636; color: #fff; }
 .environment-sources svg { flex: 0 0 13px; width: 13px; height: 13px; color: #9dbce8; }
 
-.utility-panel { position: relative; z-index: 5; flex-grow: 0; flex-shrink: 0; flex-basis: 0; max-width: 62%; display: flex; flex-direction: column; min-width: 0; overflow: hidden; opacity: 0; pointer-events: none; border-left: 0 solid #2c2c2c; background: #181818; transition: flex-basis .24s cubic-bezier(.4,0,.2,1), opacity .18s ease; }
+.utility-panel { position: relative; z-index: 5; flex-grow: 0; flex-shrink: 0; flex-basis: 0; max-width: 75%; display: flex; flex-direction: column; min-width: 0; overflow: hidden; opacity: 0; pointer-events: none; border-left: 0 solid #2c2c2c; background: #181818; transition: flex-basis .24s cubic-bezier(.4,0,.2,1), opacity .18s ease; }
 .utility-panel.open { flex-basis: var(--utility-width); opacity: 1; pointer-events: auto; border-left-width: 1px; }
 .main-stage.utility-expanded .utility-panel.expanded.open { position: absolute; z-index: 25; inset: 0; max-width: 100%; flex-basis: auto; width: 100%; border-left-width: 0; box-shadow: -22px 0 60px #0009; }
 .main-stage.utility-expanded .utility-panel.expanded .utility-resize { display: none; }

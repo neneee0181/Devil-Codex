@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { existsSync, statSync } from "node:fs";
 
 export interface BrowserState {
   url: string;
@@ -99,7 +100,11 @@ export class BrowserViewManager {
   }
   getZoom(): number { return this.wc?.getZoomFactor() ?? 1; }
 
-  async clearCookies(): Promise<void> { await this.wc?.session.clearStorageData({ storages: ["cookies"] }); }
+  async clearCookies(): Promise<void> {
+    await this.wc?.session.clearStorageData({
+      storages: ["cookies", "localstorage", "indexdb", "websql", "serviceworkers", "cachestorage"],
+    });
+  }
   async clearCache(): Promise<void> { await this.wc?.session.clearCache(); }
 
   // Crop a screenshot to a page rect (CSS px, viewport-relative) for the element
@@ -154,9 +159,49 @@ export class BrowserViewManager {
       + `var d=Object.getOwnPropertyDescriptor(proto,'value');var nv=(el.value||'')+t;`
       + `try{d&&d.set?d.set.call(el,nv):el.value=nv;}catch(e){el.value=nv;}`
       + `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;}`
-      + `if(el.isContentEditable){el.textContent=(el.textContent||'')+t;el.dispatchEvent(new Event('input',{bubbles:true}));return true;}return false;})(${JSON.stringify(text)})`;
+      + `if(el.isContentEditable){`
+      + `var before=(el.innerText||el.textContent||'').length;`
+      + `try{var dt=new DataTransfer();dt.setData('text/plain',t);var ev=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});el.dispatchEvent(ev);if(((el.innerText||el.textContent||'').length)>before)return true;}catch(e){}`
+      + `try{document.execCommand('insertText',false,t);el.dispatchEvent(new Event('input',{bubbles:true}));if(((el.innerText||el.textContent||'').length)>before)return true;}catch(e){}`
+      + `el.innerText=(el.innerText||'')+t;el.dispatchEvent(new Event('input',{bubbles:true}));return true;}`
+      + `return false;})(${JSON.stringify(text)})`;
     const ok = await this.wc.executeJavaScript(js).catch(() => false);
     if (!ok) { for (const ch of text) { this.wc.sendInputEvent({ type: "char", keyCode: ch }); await this.delay(12); } }
+  }
+
+  async uploadFiles(paths: string[]): Promise<{ ok: boolean; count: number; detail?: string }> {
+    if (!this.wc) return { ok: false, count: 0, detail: "브라우저 탭이 아직 준비되지 않았습니다." };
+    const files = paths.filter((path) => {
+      try { return Boolean(path) && existsSync(path) && statSync(path).isFile(); }
+      catch { return false; }
+    });
+    if (!files.length) return { ok: false, count: 0, detail: "업로드할 실제 파일을 찾지 못했습니다." };
+
+    const dbg = this.wc.debugger;
+    const attachedBefore = dbg.isAttached();
+    try {
+      if (!attachedBefore) dbg.attach("1.3");
+      const evaluated = await dbg.sendCommand("Runtime.evaluate", {
+        expression: FILE_INPUT_DISCOVERY_SCRIPT,
+        objectGroup: "devil-file-upload",
+        awaitPromise: true,
+      }) as { result?: { objectId?: string; subtype?: string } };
+      const objectId = evaluated.result?.objectId;
+      if (!objectId || evaluated.result?.subtype === "null") {
+        return { ok: false, count: 0, detail: "현재 웹 페이지에서 파일 첨부 입력창을 찾지 못했습니다. ChatGPT의 첨부 버튼을 한 번 눌러 파일 입력창을 만든 뒤 다시 시도하세요." };
+      }
+      await dbg.sendCommand("DOM.setFileInputFiles", { objectId, files });
+      await dbg.sendCommand("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: "function(){this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return true;}",
+      }).catch(() => undefined);
+      return { ok: true, count: files.length };
+    } catch (error) {
+      return { ok: false, count: 0, detail: error instanceof Error ? error.message : String(error) };
+    } finally {
+      await dbg.sendCommand("Runtime.releaseObjectGroup", { objectGroup: "devil-file-upload" }).catch(() => undefined);
+      if (!attachedBefore && dbg.isAttached()) dbg.detach();
+    }
   }
 
   async aiKey(key: string): Promise<void> {
@@ -227,3 +272,16 @@ function normalizeUrl(input: string): string {
   if (/\s/.test(value) || !/\.[a-z]{2,}/i.test(value)) return `https://www.google.com/search?q=${encodeURIComponent(value)}`;
   return `https://${value}`;
 }
+
+const FILE_INPUT_DISCOVERY_SCRIPT = `(async function(){
+  function visible(el){var r=el.getBoundingClientRect();return r.width>1&&r.height>1&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
+  function label(el){return [el.getAttribute('aria-label'),el.getAttribute('title'),el.getAttribute('data-testid'),el.innerText].filter(Boolean).join(' ');}
+  function findInput(){var inputs=Array.prototype.slice.call(document.querySelectorAll('input[type="file"]')).filter(function(el){return !el.disabled;});return inputs.find(visible)||inputs[0]||null;}
+  var pick=findInput();
+  if(pick)return pick;
+  var buttons=Array.prototype.slice.call(document.querySelectorAll('button,[role="button"],a,[aria-label],[data-testid]'));
+  var trigger=buttons.find(function(el){return /(attach|upload|file|paperclip|첨부|파일|업로드|plus|add)/i.test(label(el));});
+  if(trigger){try{trigger.click();}catch(e){}}
+  for(var i=0;i<10;i++){pick=findInput();if(pick)return pick;await new Promise(function(r){setTimeout(r,120);});}
+  return null;
+})()`;

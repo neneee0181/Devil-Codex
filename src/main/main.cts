@@ -936,6 +936,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("browser:capture-rect", (_event, input: { x: number; y: number; width: number; height: number }) => browserView.captureRect(input));
   ipcMain.handle("browser:ai-click", (_event, input: { x?: number; y?: number; selector?: string }) => browserView.aiClick(input));
   ipcMain.handle("browser:ai-type", (_event, input: { text: string }) => browserView.aiType(input.text));
+  ipcMain.handle("browser:upload-files", (_event, input: { paths: string[] }) => browserView.uploadFiles(input.paths));
   ipcMain.handle("browser:ai-key", (_event, input: { key: string }) => browserView.aiKey(input.key));
   ipcMain.handle("browser:ai-scroll", (_event, input: { dy: number }) => browserView.aiScroll(input.dy));
   ipcMain.handle("browser:ai-read", () => browserView.aiReadText());

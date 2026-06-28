@@ -241,6 +241,7 @@ export interface DevilCodexApi {
   browserCaptureRect: (input: { x: number; y: number; width: number; height: number }) => Promise<string>;
   browserAiClick: (input: { x?: number; y?: number; selector?: string }) => Promise<boolean>;
   browserAiType: (input: { text: string }) => Promise<void>;
+  browserUploadFiles: (input: { paths: string[] }) => Promise<{ ok: boolean; count: number; detail?: string }>;
   browserAiKey: (input: { key: string }) => Promise<void>;
   browserAiScroll: (input: { dy: number }) => Promise<void>;
   browserAiRead: () => Promise<string>;

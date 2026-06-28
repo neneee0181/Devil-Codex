@@ -235,6 +235,7 @@ function App(): React.JSX.Element {
   const [resizing, setResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => Number(localStorage.getItem("devil-codex:sidebar-width")) || 310);
   const [utilityWidth, setUtilityWidth] = useState(() => Number(localStorage.getItem("devil-codex:utility-width")) || 440);
+  const appShellRef = useRef<HTMLElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const [subagentNames, setSubagentNames] = useState<Record<string, string>>({});
@@ -1564,15 +1565,36 @@ function App(): React.JSX.Element {
 
   function startSideResize(event: ReactPointerEvent<HTMLDivElement>, side: "left" | "right"): void {
     event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
     setResizing(true);
     const startX = event.clientX;
     const startWidth = side === "left" ? sidebarWidth : utilityWidth;
+    const shell = appShellRef.current;
+    let frame = 0;
+    let latestWidth = startWidth;
+    const commitCssWidth = (width: number): void => {
+      latestWidth = width;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        shell?.style.setProperty(side === "left" ? "--sidebar-width" : "--utility-width", `${latestWidth}px`);
+      });
+    };
     const resize = (moveEvent: PointerEvent): void => {
       const delta = side === "left" ? moveEvent.clientX - startX : startX - moveEvent.clientX;
-      const next = Math.min(Math.max(startWidth + delta, side === "left" ? 240 : 320), side === "left" ? 440 : 760);
-      if (side === "left") setSidebarWidth(next); else setUtilityWidth(next);
+      const minRightWidth = Math.floor(window.innerWidth * 0.2);
+      const maxRightWidth = Math.floor(window.innerWidth * 0.75);
+      const next = Math.min(Math.max(startWidth + delta, side === "left" ? 240 : minRightWidth), side === "left" ? 440 : maxRightWidth);
+      commitCssWidth(next);
     };
-    const stop = (): void => { setResizing(false); window.removeEventListener("pointermove", resize); window.removeEventListener("pointerup", stop); };
+    const stop = (): void => {
+      if (frame) cancelAnimationFrame(frame);
+      shell?.style.setProperty(side === "left" ? "--sidebar-width" : "--utility-width", `${latestWidth}px`);
+      if (side === "left") setSidebarWidth(latestWidth); else setUtilityWidth(latestWidth);
+      setResizing(false);
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+    };
     window.addEventListener("pointermove", resize);
     window.addEventListener("pointerup", stop, { once: true });
   }
@@ -1679,7 +1701,7 @@ function App(): React.JSX.Element {
   }
 
   return (
-    <main className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${view === "settings" ? " settings-mode" : ""}${appInfo && appInfo.platform !== "darwin" ? " is-windows" : ""}`} style={{ "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`, "--utility-width": `${utilityWidth}px` } as CSSProperties}>
+    <main ref={appShellRef} className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${view === "settings" ? " settings-mode" : ""}${appInfo && appInfo.platform !== "darwin" ? " is-windows" : ""}`} style={{ "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`, "--utility-width": `${utilityWidth}px` } as CSSProperties}>
       {appInfo && appInfo.platform !== "darwin" && (
         <WindowsTitlebar
           sidebarCollapsed={sidebarCollapsed}

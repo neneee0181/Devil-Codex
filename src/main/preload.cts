@@ -21,6 +21,7 @@ const api: DevilCodexApi = {
   browserCaptureRect: (input) => ipcRenderer.invoke("browser:capture-rect", input),
   browserAiClick: (input) => ipcRenderer.invoke("browser:ai-click", input),
   browserAiType: (input) => ipcRenderer.invoke("browser:ai-type", input),
+  browserUploadFiles: (input) => ipcRenderer.invoke("browser:upload-files", input),
   browserAiKey: (input) => ipcRenderer.invoke("browser:ai-key", input),
   browserAiScroll: (input) => ipcRenderer.invoke("browser:ai-scroll", input),
   browserAiRead: () => ipcRenderer.invoke("browser:ai-read"),

@@ -1,8 +1,8 @@
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, Globe2, MessageSquarePlus, MoreVertical, Plus, RotateCcw, ScanLine, Send, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, FolderOpen, Globe2, MessageSquarePlus, MoreVertical, Plus, RotateCcw, ScanLine, Search, Send, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { BrowserState, ProviderAuthStatus, ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
+import type { BrowserState, ProviderAuthStatus, ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry } from "../../shared/contracts";
 import type { ToolKind } from "./ToolLauncherMenu";
 import { WorkspaceFilesPanel } from "./WorkspaceFilesPanel";
 import { MarkdownContent } from "./MarkdownContent";
@@ -167,7 +167,7 @@ export function ToolContent({ active, workspace, fileTarget, changes, selectedDi
     {(subagents ?? []).map((agent) => <button type="button" key={agent.id} className="side-chat-launcher-row" onClick={() => onOpenSubagent?.(agent.id, agent.label)}><Bot size={15} /><span>{agent.label}</span></button>)}
     {(subagents ?? []).length === 0 && <p className="side-chat-launcher-empty">아직 대화가 없습니다. 새 사이드 채팅으로 시작하면 여기 목록에 추가됩니다.</p>}
   </div>;
-  if (active === "browser") return <BrowserPanel onAsk={onBrowserAsk} />;
+  if (active === "browser") return <BrowserPanel workspace={workspace} fileTarget={fileTarget} changes={changes} onAsk={onBrowserAsk} />;
   const label = { files: "파일" }[active] ?? active;
   return <div className="utility-empty"><Folder /><strong>{label}</strong><small>실제 Codex backend 연결 예정</small></div>;
 }
@@ -176,7 +176,7 @@ export function ToolContent({ active, workspace, fileTarget, changes, selectedDi
 // <webview> (so modals/popovers layer above it via z-index). The guest's
 // WebContents is captured in the main process so user + AI control share one
 // path; this component owns the address bar + nav + page tools.
-function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
+function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: string; fileTarget: string | null; changes: WorkspaceChanges; onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>({ url: "", title: "", loading: false, canGoBack: false, canGoForward: false });
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
@@ -187,6 +187,14 @@ function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?:
   const [picking, setPicking] = useState(false);
   const [annotation, setAnnotation] = useState<{ selector: string; shot: string } | null>(null);
   const [note, setNote] = useState("");
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextBusy, setContextBusy] = useState(false);
+  const [contextInserting, setContextInserting] = useState(false);
+  const [contextText, setContextText] = useState("");
+  const [contextQuestion, setContextQuestion] = useState("");
+  const [contextUploadPaths, setContextUploadPaths] = useState<string[]>([]);
+  const [contextNotice, setContextNotice] = useState("");
 
   useEffect(() => {
     void window.devilCodex.browserState().then(setState).catch(() => undefined);
@@ -206,6 +214,8 @@ function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?:
   };
 
   const webviewRef = useRef<ElectronWebview | null>(null);
+  const contextFileInputRef = useRef<HTMLInputElement>(null);
+  const lastUploadRef = useRef<{ key: string; at: number } | null>(null);
 
   // Annotate (DevTools-style): inject a picker into the guest <webview> that
   // hover-highlights elements; click selects one. We then crop a screenshot to
@@ -232,11 +242,115 @@ function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?:
     setNote("");
   };
 
+  const openChatGpt = (): void => {
+    void window.devilCodex.browserNavigate({ url: "https://chatgpt.com/" });
+    setDraft("https://chatgpt.com/");
+    setAssistantOpen(false);
+  };
+
+  const buildContextForWebAi = async (): Promise<{ text: string; uploadPaths: string[] }> => {
+    const fileLimit = 5;
+    const diffLimit = 2200;
+    const contentLimit = 1800;
+    const files = [...changes.files].filter((file) => file.status !== "D").slice(0, fileLimit);
+    const uploadPaths = files.map((file) => absoluteWorkspacePath(workspace, file.path));
+    const sections: string[] = [
+      "You are helping with a local coding task in Devil-Codex.",
+      "",
+      "Use the attached files plus the context below to answer the user's next question. The local file paths are only labels; you cannot access them directly unless the files are uploaded with this message.",
+      "",
+      "## Workspace",
+      workspace || "(no workspace selected)",
+      "",
+      "## Current Browser Page",
+      `${state.title || "(untitled)"} — ${state.url || "(no url)"}`,
+    ];
+    if (fileTarget) sections.push("", "## Currently Open File Target", fileTarget);
+    sections.push("", "## Git/Workspace Summary", `Branch: ${changes.branch || "(unknown)"}`, `Changed files: ${changes.files.length}`, `Additions: +${changes.additions}`, `Deletions: -${changes.deletions}`);
+    if (!files.length) {
+      sections.push("", "## Relevant Files", "No changed files were detected.");
+    } else {
+      sections.push("", "## Relevant Files", "파일 목록 + 핵심 변경 요약:");
+      for (const file of files) {
+        const absolutePath = absoluteWorkspacePath(workspace, file.path);
+        sections.push("", `### ${file.path}`, `Status: ${file.status} · +${file.additions} -${file.deletions}`, `Uploaded file candidate: ${absolutePath}`);
+        const diff = await window.devilCodex.getWorkspaceDiff({ cwd: workspace, path: file.path }).catch(() => null);
+        if (diff?.text) sections.push("", "Diff excerpt:", fenced(diff.text.slice(0, diffLimit), "diff"));
+        const content = await window.devilCodex.readWorkspaceFile({ cwd: workspace, path: file.path }).catch(() => null);
+        if (content?.kind === "text" && content.content.trim()) sections.push("", "File excerpt:", fenced(content.content.slice(0, contentLimit), languageForPath(file.path)));
+      }
+    }
+    return { text: sections.join("\n").slice(0, 24000), uploadPaths };
+  };
+
+  const openContextModal = async (): Promise<void> => {
+    setAssistantOpen(false);
+    setContextOpen(true);
+    setContextNotice("");
+    setContextBusy(true);
+    try {
+      const context = await buildContextForWebAi();
+      setContextText(context.text);
+      setContextQuestion("");
+      setContextUploadPaths(context.uploadPaths);
+    }
+    catch (error) { setContextNotice(`컨텍스트 생성 실패: ${error instanceof Error ? error.message : String(error)}`); }
+    finally { setContextBusy(false); }
+  };
+
+  const insertContextIntoPage = async (): Promise<void> => {
+    if (contextInserting) return;
+    const text = formatWebAiPrompt(contextText, contextQuestion);
+    if (!text || !webviewRef.current) return;
+    setContextInserting(true);
+    setContextNotice("");
+    try {
+      const ok = await webviewRef.current.executeJavaScript(CHAT_INPUT_FOCUS_SCRIPT).catch(() => false) as boolean;
+      if (!ok) {
+        setContextNotice("ChatGPT/Claude 입력창을 찾지 못했습니다. 입력창을 한 번 클릭한 뒤 다시 눌러주세요.");
+        return;
+      }
+      await window.devilCodex.browserAiType({ text });
+      if (contextUploadPaths.length) {
+        const uploadKey = contextUploadPaths.map((path) => path.toLowerCase()).sort().join("\n");
+        const recentDuplicate = lastUploadRef.current?.key === uploadKey && Date.now() - lastUploadRef.current.at < 30_000;
+        if (recentDuplicate) {
+          setContextNotice("컨텍스트는 입력창에 넣었습니다. 같은 파일을 방금 첨부해서 중복 업로드는 건너뛰었습니다.");
+          setContextOpen(false);
+          return;
+        }
+        const uploaded = await window.devilCodex.browserUploadFiles({ paths: contextUploadPaths });
+        setContextNotice(uploaded.ok
+          ? `컨텍스트를 입력창에 넣고 관련 파일 ${uploaded.count}개를 첨부했습니다. 확인 후 직접 전송하세요.`
+          : `컨텍스트는 입력창에 넣었지만 파일 첨부는 실패했습니다: ${uploaded.detail ?? "알 수 없는 오류"}`);
+        if (!uploaded.ok) return;
+        lastUploadRef.current = { key: uploadKey, at: Date.now() };
+      } else {
+        setContextNotice("컨텍스트를 웹 입력창에 넣었습니다. 변경 파일이 없어 첨부할 파일은 없습니다.");
+      }
+      setContextOpen(false);
+    } finally {
+      setContextInserting(false);
+    }
+  };
+
+  const addContextFiles = (files: FileList | null): void => {
+    const paths = Array.from(files ?? []).map((file) => window.devilCodex.getFilePath(file)).filter(Boolean);
+    if (!paths.length) return;
+    setContextUploadPaths((current) => [...current, ...paths.filter((path) => !current.includes(path))]);
+  };
+
+  const removeContextFile = (path: string): void => {
+    setContextUploadPaths((current) => current.filter((item) => item !== path));
+  };
+  const isBrowserEmpty = !state.url || state.url === "about:blank";
+
   return <div className="browser-panel">
     <div className="browser-toolbar">
       <button onClick={() => void window.devilCodex.browserBack()} disabled={!state.canGoBack} aria-label="뒤로"><ChevronLeft size={16} /></button>
       <button onClick={() => void window.devilCodex.browserForward()} disabled={!state.canGoForward} aria-label="앞으로"><ChevronRight size={16} /></button>
       <button onClick={() => void (state.loading ? window.devilCodex.browserStop() : window.devilCodex.browserReload())} aria-label="새로고침">{state.loading ? <X size={15} /> : <RotateCcw size={15} />}</button>
+      <button className={assistantOpen ? "active" : ""} onClick={() => setAssistantOpen((open) => !open)} aria-label="웹 AI 도우미" title="웹 AI 도우미"><Bot size={16} /></button>
       <input
         className="browser-url"
         value={draft}
@@ -273,7 +387,12 @@ function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?:
     </div>}
     <div className="browser-host">
       {/* @ts-expect-error webview is an Electron intrinsic element */}
-      <webview ref={webviewRef} src="about:blank" partition="persist:devil-browser" allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
+      <webview ref={webviewRef} src="about:blank" partition="devil-browser" allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
+      {isBrowserEmpty && <div className="browser-host-empty">
+        <Globe2 />
+        <strong>브라우징 시작</strong>
+        <small>페이지를 열려면 URL을 입력하세요.</small>
+      </div>}
       {picking && <div className="browser-pick-hint"><span>요소 위에 마우스를 올리고 클릭하세요 · 취소하려면 버튼을 다시 누르세요</span></div>}
     </div>
     {annotation && <div className="browser-annotate-bar">
@@ -282,8 +401,143 @@ function BrowserPanel({ onAsk }: { onAsk?: (attachment: ThreadAttachment, text?:
       <button onClick={submitAnnotation}><Send size={14} /></button>
       <button onClick={() => { setAnnotation(null); setNote(""); }}><X size={14} /></button>
     </div>}
+    {assistantOpen && <div className="browser-context-backdrop compact" onMouseDown={(event) => { if (event.target === event.currentTarget) setAssistantOpen(false); }}>
+      <div className="browser-assistant-modal">
+        <header><span><Bot size={17} /><strong>웹 AI 도우미</strong></span><button onClick={() => setAssistantOpen(false)}><X size={15} /></button></header>
+        <button type="button" onClick={openChatGpt}><Globe2 size={17} /><span><strong>GPT로 가기</strong><small>우측 브라우저에서 ChatGPT 웹을 엽니다.</small></span></button>
+        <button type="button" disabled={!workspace || contextBusy} onClick={() => void openContextModal()}><FileText size={17} /><span><strong>현재 컨텍스트 보내기</strong><small>작업 요약을 입력창에 넣고 관련 변경 파일 첨부를 시도합니다.</small></span></button>
+      </div>
+    </div>}
+    {contextOpen && <div className="browser-context-backdrop">
+      <div className="browser-context-modal">
+        <header><span><Bot size={17} /><strong>현재 컨텍스트 보내기</strong></span><button onClick={() => setContextOpen(false)}><X size={15} /></button></header>
+        <p>Devil-Codex가 로컬 변경 파일과 diff 일부를 모아 웹 AI 입력창에 넣고, 가능한 경우 관련 실제 파일도 첨부합니다. 내부 AI가 대신 질문하는 게 아니라, 아래 내용을 사용자가 확인한 뒤 ChatGPT/Claude 웹에서 직접 전송하는 방식입니다.</p>
+        <div className="browser-context-body">
+          <ContextProjectFilePicker workspace={workspace} selectedPaths={contextUploadPaths} onAdd={(path) => setContextUploadPaths((current) => current.includes(path) ? current : [...current, path])} />
+          <section className="browser-context-files">
+            <div><strong>첨부 시도 파일 {contextUploadPaths.length}개</strong><button type="button" onClick={() => contextFileInputRef.current?.click()}><Plus size={13} />파일 추가</button></div>
+            <input ref={contextFileInputRef} className="file-input" type="file" multiple onChange={(event) => { addContextFiles(event.target.files); event.target.value = ""; }} />
+            {contextUploadPaths.length === 0 ? <small>아직 첨부할 파일이 없습니다.</small> : contextUploadPaths.map((path) => {
+              const label = displayPathLabel(path);
+              return <span key={path} className="browser-context-file-row" title={path}>
+                <b>{label.name}</b>
+                <small>{label.parent}</small>
+                <button type="button" aria-label={`${path} 제거`} onClick={() => removeContextFile(path)}><X size={12} /></button>
+              </span>;
+            })}
+          </section>
+        </div>
+        <textarea value={contextText} onChange={(event) => setContextText(event.target.value)} placeholder={contextBusy ? "컨텍스트 생성 중..." : "보낼 컨텍스트"} />
+        <label className="browser-context-question">
+          <span>사용자 질문</span>
+          <textarea value={contextQuestion} onChange={(event) => setContextQuestion(event.target.value)} placeholder="ChatGPT에게 마지막으로 물어볼 내용을 입력하세요. 예: 이 변경의 문제점과 개선 방향을 리뷰해줘." />
+        </label>
+        {contextNotice && <small className="browser-context-notice">{contextNotice}</small>}
+        <footer>
+          <button onClick={() => setContextOpen(false)}>취소</button>
+          <button className="primary" disabled={contextBusy || contextInserting || !contextText.trim()} onClick={() => void insertContextIntoPage()}>{contextBusy ? "생성 중..." : contextInserting ? "넣는 중..." : "입력창에 넣기"}</button>
+        </footer>
+      </div>
+    </div>}
   </div>;
 }
+
+function fenced(text: string, lang = ""): string {
+  return `\`\`\`${lang}\n${text.replace(/```/g, "'''")}\n\`\`\``;
+}
+
+function languageForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return ({ ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", css: "css", json: "json", md: "md", py: "py", cts: "ts", mjs: "js", cjs: "js" } as Record<string, string>)[ext] ?? "";
+}
+
+function absoluteWorkspacePath(workspace: string, path: string): string {
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\")) return path;
+  return `${workspace.replace(/[\\/]+$/, "")}\\${path.replace(/\//g, "\\")}`;
+}
+
+function formatWebAiPrompt(context: string, question: string): string {
+  const trimmedContext = context.trim();
+  const trimmedQuestion = question.trim() || "첨부 파일과 위 컨텍스트를 바탕으로 현재 작업을 검토하고, 중요한 문제점과 다음 액션을 알려줘.";
+  return `${trimmedContext}\n\n## User Question\n${trimmedQuestion}`.trim();
+}
+
+function displayPathLabel(path: string): { name: string; parent: string } {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const name = parts.at(-1) ?? path;
+  if (parts.length <= 2) return { name, parent: parts.slice(0, -1).join("\\") };
+  return { name, parent: `${parts[0]}\\...\\${parts.at(-2)}` };
+}
+
+function ContextProjectFilePicker({ workspace, selectedPaths, onAdd }: { workspace: string; selectedPaths: string[]; onAdd: (absolutePath: string) => void }): React.JSX.Element {
+  const [directories, setDirectories] = useState<Record<string, WorkspaceEntry[]>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
+  const [filter, setFilter] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async (path: string): Promise<void> => {
+    if (!workspace) return;
+    try {
+      const entries = await window.devilCodex.listWorkspaceDirectory({ cwd: workspace, path });
+      setDirectories((current) => ({ ...current, [path]: entries }));
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [workspace]);
+
+  useEffect(() => {
+    setDirectories({});
+    setExpanded(new Set([""]));
+    setFilter("");
+    void load("");
+  }, [load]);
+
+  const query = filter.trim().toLowerCase();
+  const selected = new Set(selectedPaths.map((path) => path.toLowerCase()));
+  const rows = useCallback((dir: string, depth: number): React.JSX.Element[] => (directories[dir] ?? []).flatMap((entry) => {
+    if (query && !entry.name.toLowerCase().includes(query) && entry.kind === "file") return [];
+    const open = expanded.has(entry.path);
+    const absolutePath = absoluteWorkspacePath(workspace, entry.path);
+    const isSelected = selected.has(absolutePath.toLowerCase());
+    const row = <button type="button" className={isSelected ? "selected" : ""} style={{ paddingLeft: 10 + depth * 16 }} key={entry.path} onClick={() => {
+      if (entry.kind === "file") { onAdd(absolutePath); return; }
+      setExpanded((current) => { const next = new Set(current); if (open) next.delete(entry.path); else next.add(entry.path); return next; });
+      if (!open && !directories[entry.path]) void load(entry.path);
+    }}>
+      {entry.kind === "folder" ? <>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{open ? <FolderOpen size={15} /> : <Folder size={15} />}</> : <><span className="tree-spacer" /><FileText size={14} /></>}
+      <span>{entry.name}</span>
+      {entry.kind === "file" && <em>{isSelected ? "추가됨" : "첨부"}</em>}
+    </button>;
+    return entry.kind === "folder" && open ? [row, ...rows(entry.path, depth + 1)] : [row];
+  }), [directories, expanded, load, onAdd, query, selected, workspace]);
+
+  return <section className="browser-context-picker">
+    <div><strong>프로젝트 파일</strong><small>파일을 클릭하면 첨부 목록에 추가됩니다.</small></div>
+    <label><Search size={14} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 검색..." /></label>
+    <div className="browser-context-tree">{rows("", 0)}</div>
+    {error && <small className="browser-context-picker-error">{error}</small>}
+  </section>;
+}
+
+const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
+  var selectors=[
+    '#prompt-textarea',
+    'textarea[data-testid="prompt-textarea"]',
+    'div[contenteditable="true"][id="prompt-textarea"]',
+    'div[contenteditable="true"][data-testid="textbox"]',
+    'div[contenteditable="true"]',
+    'textarea',
+    'input[type="text"]'
+  ];
+  for(var i=0;i<selectors.length;i++){
+    var el=document.querySelector(selectors[i]);
+    if(el){
+      try{el.scrollIntoView({block:'center'});el.focus();return true;}catch(e){return false;}
+    }
+  }
+  return false;
+})()`;
 
 // Conversation state is lifted to the parent (history/onHistory) so it survives
 // tab switches and the optimistic message isn't lost on reload.
