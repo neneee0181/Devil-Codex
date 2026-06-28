@@ -59,6 +59,20 @@ import { ThreadHistoryCache, mergeCachedActivities } from "./history-cache.cjs";
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
 
+const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
+
+function stripInternalDirectives(text: string): string {
+  return text.replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "").trimEnd();
+}
+
+function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  return items.map((item) => item.kind === "user" ? { ...item, text: stripInternalDirectives(item.text) } : item);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Only one Devil Codex instance may run. A second process collides on the ask/
 // browser/computer named pipes ("EADDRINUSE \\.\pipe\devil-codex-ask"), fights
 // over the userData GPU disk cache ("Unable to create cache" / access denied),
@@ -1111,33 +1125,34 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       try { native = await server().readThread(input); }
       catch (error) { if (isRolloutVersionSkew(error) && local.length === 0) return [rolloutSkewNotice()]; }
       if (native.length > local.length) {
-        return enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, native));
+        return stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native))));
       }
-      return local;
+      return stripInternalDirectivesFromHistory(local);
     }
     try {
       const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-      return mergeCachedActivities(rollout, await historyCache.load(input.id));
+      return stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id)));
     } catch (error) {
       if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
       throw error;
     }
   });
   ipcMain.handle("thread:cache-history", async (_event, input) => {
-    if (await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, input.items);
-    else await historyCache.save(input.id, input.items);
+    const items = stripInternalDirectivesFromHistory(input.items);
+    if (await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, items);
+    else await historyCache.save(input.id, items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-      return mergeCachedActivities(rollout, await historyCache.load(input.id));
+      return stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id)));
     }
     const local = await providerTranscripts.read(input.id);
     const native = await server().readThread(input).catch(() => []);
     if (native.length > local.length) {
-      return providerTranscripts.mergeHistoryPreservingAttachments(input.id, native);
+      return stripInternalDirectivesFromHistory(await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)));
     }
-    return local;
+    return stripInternalDirectivesFromHistory(local);
   });
   ipcMain.handle("thread:projects", async (_event, input) => {
     const archived = (input ?? {}).archived ?? false;
@@ -1149,10 +1164,38 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return applySessionIndexTitles(merged);
   });
   ipcMain.handle("thread:archive", async (_event, input) => {
-    await server().archiveThread(input);
+    const external = await providerTranscripts.isExternal(input.id);
+    let nativeError: unknown;
+    try { await server().archiveThread(input); }
+    catch (error) { nativeError = error; }
+    if (external) {
+      await providerTranscripts.archive(input.id);
+      return;
+    }
+    if (nativeError) throw nativeError;
   });
-  ipcMain.handle("thread:unarchive", async (_event, input) => server().unarchiveThread(input));
-  ipcMain.handle("thread:delete", async (_event, input) => server().deleteThread(input));
+  ipcMain.handle("thread:unarchive", async (_event, input) => {
+    const external = await providerTranscripts.isExternal(input.id);
+    let nativeError: unknown;
+    try { await server().unarchiveThread(input); }
+    catch (error) { nativeError = error; }
+    if (external) {
+      await providerTranscripts.unarchive(input.id);
+      return;
+    }
+    if (nativeError) throw nativeError;
+  });
+  ipcMain.handle("thread:delete", async (_event, input) => {
+    const external = await providerTranscripts.isExternal(input.id);
+    let nativeError: unknown;
+    try { await server().deleteThread(input); }
+    catch (error) { nativeError = error; }
+    if (external) {
+      await providerTranscripts.delete(input.id);
+      return;
+    }
+    if (nativeError) throw nativeError;
+  });
   ipcMain.handle("workspace:undo-file-changes", async (_event, input) => undoFileChanges(input));
   ipcMain.handle("workspace:stage-files", async (_event, input) => stageWorkspaceFiles(input));
   ipcMain.handle("workspace:unstage-files", async (_event, input) => unstageWorkspaceFiles(input));
@@ -1174,9 +1217,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // provider by appending a directive to the model-bound text only. Transcripts
     // store the raw input.text, so the visible user message stays untouched.
     const { englishOutput } = await settingsStore.load();
-    const englishDirective = englishOutput
-      ? "\n\n---\n[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands."
-      : "";
+    const englishDirective = englishOutput ? `\n\n---\n${ENGLISH_OUTPUT_DIRECTIVE}` : "";
     const turnInput = {
       ...input,
       text: `${input.text}${attachmentEnrichment.context}${englishDirective}`,

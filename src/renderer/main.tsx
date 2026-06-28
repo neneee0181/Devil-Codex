@@ -260,6 +260,7 @@ function App(): React.JSX.Element {
   const [subagentBusy, setSubagentBusy] = useState<Record<string, boolean>>({});
   // Per-subagent picked model so it doesn't reset when switching tabs.
   const [subagentPick, setSubagentPick] = useState<Record<string, { provider: ProviderId; model: string }>>({});
+  const [utilityPanelExpanded, setUtilityPanelExpanded] = useState(false);
   const [projectExpanded, setProjectExpanded] = useState(true);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
   const [projectDraft, setProjectDraft] = useState(false);
@@ -1629,6 +1630,7 @@ function App(): React.JSX.Element {
   function closeSideChat(id: string): void {
     setSideChats((prev) => prev.filter((c) => c.id !== id));
     setSubagentHistory((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setSubagentPick((prev) => { const next = { ...prev }; delete next[id]; return next; });
     closeUtilityTab(`sidechat:${id}`);
     closeBottomTab(`sidechat:${id}`);
     void window.devilCodex.deleteThread?.({ id }).catch(() => undefined);
@@ -1668,7 +1670,10 @@ function App(): React.JSX.Element {
     setUtilityTabs((current) => {
       const next = current.filter((item) => item !== tool);
       if (utilityActive === tool) setUtilityActive(next.at(-1) ?? null);
-      if (next.length === 0) setUtilityPanelOpen(false);
+      if (next.length === 0) {
+        setUtilityPanelExpanded(false);
+        setUtilityPanelOpen(false);
+      }
       return next;
     });
   }
@@ -1795,7 +1800,7 @@ function App(): React.JSX.Element {
       <div className="sidebar-resize" onPointerDown={(event) => { if (!sidebarCollapsed) startSideResize(event, "left"); }} />
 
       <section
-        className={`main-stage${utilityPanelOpen ? " utility-open" : ""}${terminalOpen ? " terminal-open" : ""}${resizing ? " resizing" : ""}`}
+        className={`main-stage${utilityPanelOpen ? " utility-open" : ""}${terminalOpen ? " terminal-open" : ""}${resizing ? " resizing" : ""}${utilityPanelOpen && utilityPanelExpanded ? " utility-expanded" : ""}`}
         style={{ "--terminal-height": `${terminalHeight}px` } as CSSProperties}
       >
         <header className="topbar">
@@ -1811,7 +1816,7 @@ function App(): React.JSX.Element {
             </div>
             <button className={environmentOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); setEnvironmentOpen((open) => !open); }} aria-label="환경"><SlidersHorizontal size={18} /></button>
             <button className={terminalOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); if (terminalOpen && bottomActive === "terminal") setTerminalOpen(false); else openBottomTool("terminal"); }} aria-label="터미널"><PanelBottom size={18} /></button>
-            <button className={utilityPanelOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); setUtilityPanelOpen((open) => { if (!open) setEnvironmentOpen(false); return !open; }); }} aria-label="도구 패널"><PanelRight size={18} /></button>
+            <button className={utilityPanelOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); setUtilityPanelOpen((open) => { if (open) setUtilityPanelExpanded(false); else setEnvironmentOpen(false); return !open; }); }} aria-label="도구 패널"><PanelRight size={18} /></button>
           </div>
         </header>
 
@@ -1857,7 +1862,7 @@ function App(): React.JSX.Element {
         )}
         </div>
 
-        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} onBrowserAsk={askAboutPage} subagentPick={subagentPick} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setUtilityPanelOpen(false)} onResize={(event) => startSideResize(event, "right")} />
+        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
         </div>
 
         <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />

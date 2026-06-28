@@ -12,7 +12,13 @@ type ProviderTurnMeta = {
   syncStatus?: "pending" | "synced" | "failed";
   syncError?: string;
 };
-type StoredShape = { items: Record<string, ThreadHistoryItem[]>; meta: Record<string, ThreadSummary>; providerTurns?: Record<string, ProviderTurnMeta[]>; recovered?: boolean };
+type StoredShape = {
+  items: Record<string, ThreadHistoryItem[]>;
+  meta: Record<string, ThreadSummary>;
+  providerTurns?: Record<string, ProviderTurnMeta[]>;
+  deleted?: Record<string, number>;
+  recovered?: boolean;
+};
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 
 function nowSeconds(): number {
@@ -89,6 +95,30 @@ export class ProviderTranscriptStore {
     return Boolean(meta?.provider || all.providerTurns?.[threadId]?.length);
   }
 
+  async archive(threadId: string): Promise<void> {
+    await this.mutate((all) => {
+      const summary = all.meta[threadId];
+      if (summary) all.meta[threadId] = { ...summary, archived: true, updatedAt: nowSeconds() };
+    });
+  }
+
+  async unarchive(threadId: string): Promise<void> {
+    await this.mutate((all) => {
+      const summary = all.meta[threadId];
+      if (summary) all.meta[threadId] = { ...summary, archived: false, updatedAt: nowSeconds() };
+    });
+  }
+
+  async delete(threadId: string): Promise<void> {
+    await this.mutate((all) => {
+      all.deleted ??= {};
+      all.deleted[threadId] = Date.now();
+      delete all.meta[threadId];
+      delete all.items[threadId];
+      delete all.providerTurns?.[threadId];
+    });
+  }
+
   async append(threadId: string, item: ThreadHistoryItem): Promise<void> {
     await this.mutate((all) => { all.items[threadId] = [...(all.items[threadId] ?? []), item]; });
   }
@@ -133,6 +163,7 @@ export class ProviderTranscriptStore {
 
   async saveMeta(summary: Partial<ThreadSummary> & { id: string }): Promise<void> {
     await this.mutate((all) => {
+      if (all.deleted?.[summary.id]) return;
       const base: ThreadSummary = all.meta[summary.id] ?? { id: summary.id, cwd: "", model: "", title: "새 채팅", preview: "", updatedAt: nowSeconds(), archived: false };
       const next = { ...base, ...summary };
       next.updatedAt = toUnixSeconds(next.updatedAt);
@@ -199,12 +230,13 @@ export class ProviderTranscriptStore {
       if (parsed && typeof parsed === "object" && "items" in parsed && "meta" in parsed) {
         const shaped = parsed as StoredShape;
         shaped.providerTurns ??= {};
+        shaped.deleted ??= {};
         for (const summary of Object.values(shaped.meta ?? {})) summary.updatedAt = toUnixSeconds(summary.updatedAt);
         return shaped;
       }
-      return { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {} }; // migrate legacy flat shape
+      return { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {}, providerTurns: {}, deleted: {} }; // migrate legacy flat shape
     } catch {
-      return { items: {}, meta: {}, providerTurns: {} };
+      return { items: {}, meta: {}, providerTurns: {}, deleted: {} };
     }
   }
 
@@ -225,6 +257,7 @@ export class ProviderTranscriptStore {
         if (meta?.originator !== "devil_codex" || meta.model_provider !== "devil") continue;
         const id = String(meta.id ?? "");
         const cwd = String(meta.cwd ?? "");
+        if (all.deleted?.[id]) continue;
         if (!id || !cwd) continue;
         const history = this.historyFromRollout(lines, id);
         const firstUser = history.find((item) => item.kind === "user")?.text ?? "새 채팅";

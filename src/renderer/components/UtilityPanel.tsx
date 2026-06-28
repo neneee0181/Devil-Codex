@@ -1,5 +1,5 @@
 import { useCallback, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { X } from "lucide-react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 import type { ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
@@ -21,8 +21,10 @@ export function UtilityPanel({
   subagentCtx,
   subagentHistory,
   subagentBusy,
+  expanded,
   onBrowserAsk,
   subagentPick,
+  onToggleExpanded,
   onSubagentPick,
   onSubagentHistory,
   onOpenSubagent,
@@ -50,8 +52,10 @@ export function UtilityPanel({
   subagentCtx: { model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
+  expanded: boolean;
   onBrowserAsk: (attachment: ThreadAttachment, text?: string) => void;
   subagentPick: Record<string, { provider: ProviderId; model: string }>;
+  onToggleExpanded: () => void;
   onSubagentPick: (id: string, pick: { provider: ProviderId; model: string }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
   onOpenSubagent: (id: string, label: string) => void;
@@ -71,10 +75,11 @@ export function UtilityPanel({
     : active?.startsWith("sidechat:") ? active.slice("sidechat:".length) : null;
 
   return (
-    <aside className={`utility-panel${open ? " open" : ""}`} aria-hidden={!open}>
+    <aside className={`utility-panel${open ? " open" : ""}${expanded ? " expanded" : ""}`} aria-hidden={!open}>
       <div className="utility-resize" onPointerDown={onResize} />
       <header className="dock-header">
         <DockTabStrip dock="right" tabs={tabs} active={active} projectName={projectName} shell={shell} subagentLabels={subagentLabels} onSelect={onSelect} onAdd={onAdd} onCloseTab={onCloseTab} />
+        <button type="button" onClick={onToggleExpanded} aria-label={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"} title={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
         <button type="button" onClick={onClose} aria-label="우측 패널 닫기"><X size={17} /></button>
       </header>
       {active === "terminal" && <TerminalSession active={open} workspace={workspace} onShell={setShellStable} />}

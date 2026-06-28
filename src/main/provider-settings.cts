@@ -163,7 +163,7 @@ const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   deepseek: ["DEEPSEEK_API_KEY"],
   xai: ["XAI_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
-  "openrouter-free": ["OPENROUTER_API_KEY"],
+  "openrouter-free": ["OPENROUTER_FREE_API_KEY"],
   groq: ["GROQ_API_KEY"],
   mistral: ["MISTRAL_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
@@ -181,8 +181,7 @@ export class ProviderSettingsStore {
   private root(): string { return join(app.getPath("userData"), "providers"); }
   private settingsPath(): string { return join(this.root(), "settings.json"); }
   private keyPath(provider: ProviderId): string {
-    const keyOwner = provider === "openrouter-free" ? "openrouter" : provider;
-    return join(this.root(), `${keyOwner}.credential`);
+    return join(this.root(), `${provider}.credential`);
   }
 
   async load(): Promise<ProviderSettings> {
