@@ -190,6 +190,31 @@ function modelKey(value: SentModelState): string {
   return `${value.provider}:${value.model}`;
 }
 
+function agentMessageKey(item: ThreadHistoryItem): string {
+  return item.id || `${item.turnId ?? ""}:${item.text}`;
+}
+
+function hasAgentMessageForTurn(items: ThreadHistoryItem[], turnId: string): boolean {
+  return items.some((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim());
+}
+
+function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
+  if (!turnId) return local;
+  const seen = new Set(local.filter((item) => item.kind === "agent").map(agentMessageKey));
+  const missing = synced.filter((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim() && !seen.has(agentMessageKey(item)));
+  return missing.length ? [...local, ...missing] : local;
+}
+
+function finalAnswerMissingNotice(turnId: string): ThreadHistoryItem {
+  return {
+    id: `missing-final-${turnId || crypto.randomUUID()}`,
+    kind: "system",
+    title: "최종 응답 본문 누락",
+    text: "Codex가 작업 완료 이벤트를 보냈지만 최종 답변 본문 이벤트가 도착하지 않았습니다. 작업 결과는 위의 활동 로그를 기준으로 확인해 주세요.",
+    turnId,
+  };
+}
+
 type PendingTurnState = {
   threadId: string;
   cwd: string;
@@ -338,7 +363,10 @@ function App(): React.JSX.Element {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [threadFindOpen, setThreadFindOpen] = useState(false);
   const [threadFindQuery, setThreadFindQuery] = useState("");
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const threadViewRef = useRef<HTMLDivElement>(null);
+  const stickToThreadBottom = useRef(true);
+  const scrolledThreadId = useRef<string | null>(null);
   const projectHeaderMenuRef = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef<ThreadHistoryItem[]>([]);
   const threadRef = useRef<ThreadRef | null>(null);
@@ -439,11 +467,41 @@ function App(): React.JSX.Element {
   }, [workspace, runtime.state]);
 
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
+  function syncThreadScrollState(node = threadViewRef.current): void {
+    if (!node) {
+      stickToThreadBottom.current = true;
+      setShowScrollToBottom(false);
+      return;
+    }
+    const hiddenBelow = node.scrollHeight - node.scrollTop - node.clientHeight;
+    const atBottom = hiddenBelow <= 140;
+    stickToThreadBottom.current = atBottom;
+    setShowScrollToBottom(!atBottom && itemsRef.current.length > 0);
+  }
+
+  function scrollThreadToBottom(): void {
+    const node = threadViewRef.current;
+    if (!node) return;
+    stickToThreadBottom.current = true;
+    setShowScrollToBottom(false);
+    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+  }
+
   useLayoutEffect(() => {
     if (view !== "thread" || !thread?.id) return;
+    if (scrolledThreadId.current !== thread.id) {
+      scrolledThreadId.current = thread.id;
+      stickToThreadBottom.current = true;
+    }
     const frame = requestAnimationFrame(() => {
       const node = threadViewRef.current;
-      if (node) node.scrollTop = node.scrollHeight;
+      if (!node) return;
+      if (stickToThreadBottom.current) {
+        node.scrollTop = node.scrollHeight;
+        setShowScrollToBottom(false);
+      } else {
+        syncThreadScrollState(node);
+      }
     });
     return () => cancelAnimationFrame(frame);
     // queuedHere: when the waiting-message panel grows/shrinks the composer gets
@@ -864,6 +922,7 @@ function App(): React.JSX.Element {
     if (event.method === "turn/completed") {
       const params = (event.params ?? {}) as Record<string, unknown>;
       const turnId = String(params.turnId ?? (params.turn as { id?: unknown } | undefined)?.id ?? "");
+      const turnStatus = String((params.turn as { status?: unknown } | undefined)?.status ?? "completed");
       const threadId = String(params.threadId ?? activeTurn.current?.threadId ?? pendingTurn.current?.threadId ?? "");
       if (compactedTurns.current.delete(turnId)) return;
       if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
@@ -878,7 +937,16 @@ function App(): React.JSX.Element {
           const localHistory = threadHistoryCache.current.get(threadId) ?? itemsRef.current;
           await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory });
           const history = await window.devilCodex.syncThreadHistory({ id: threadId });
-          threadHistoryCache.current.set(threadId, history);
+          let recoveredHistory = appendMissingAgentMessagesForTurn(localHistory, history, turnId);
+          if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
+            const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
+            if (!alreadyWarned) recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId)];
+          }
+          threadHistoryCache.current.set(threadId, recoveredHistory);
+          if (threadRef.current?.id === threadId && recoveredHistory !== localHistory) {
+            setItems(recoveredHistory);
+            itemsRef.current = recoveredHistory;
+          }
         })().catch(() => undefined);
       }, 120);
       void Promise.all([refreshThreads(), refreshChanges()]);
@@ -1912,7 +1980,7 @@ function App(): React.JSX.Element {
         <div className={`content-col${environmentOpen && view === "thread" ? " env-open" : ""}`}>
         {view === "thread" ? (
           <>
-            <div className="thread-view" ref={threadViewRef}>
+            <div className="thread-view" ref={threadViewRef} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
               {runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
               {items.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 Codex 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{visibleItems.map((item) => {
@@ -1921,6 +1989,7 @@ function App(): React.JSX.Element {
                 return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} onEditUserMessage={editUserMessageFrom} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
+            <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
             <Composer busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onReview={() => openUtility("review")} onStatus={() => void showWorkspaceStatus()} onMcp={() => openView("plugins")} onFeedback={() => void sendFeedback()} />
 

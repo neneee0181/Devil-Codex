@@ -43,6 +43,25 @@ function threadTitle(thread: Record<string, unknown>): string {
   return String(thread.title ?? thread.name ?? thread.preview ?? "New thread").trim() || "New thread";
 }
 
+function permissionRequestFields(approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Record<string, ThreadApprovalPolicy | ThreadSandboxMode> {
+  return {
+    approvalPolicy,
+    approval_policy: approvalPolicy,
+    sandbox: sandboxMode,
+    sandboxMode,
+    sandbox_mode: sandboxMode,
+  };
+}
+
+function isPermissionParameterError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /approvalPolicy|approval_policy|sandboxMode|sandbox_mode|sandbox|unknown field|unknown parameter|invalid params|invalid request/i.test(message);
+}
+
+function shouldFallbackWithoutPermissions(approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): boolean {
+  return approvalPolicy === "on-request" && sandboxMode === "workspace-write";
+}
+
 export class CodexAppServer extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private lineBuffer = "";
@@ -123,13 +142,25 @@ export class CodexAppServer extends EventEmitter {
     await this.ensureConnected();
     const approvalPolicy = input.approvalPolicy ?? "on-request";
     const sandboxMode = input.sandboxMode ?? "workspace-write";
-    const result = (await this.request("thread/start", {
+    const baseParams = {
       cwd: input.cwd,
       model: input.model,
       ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
-      approvalPolicy,
-      sandbox: sandboxMode,
-    })) as { thread?: { id?: string } };
+    };
+    let result: { thread?: { id?: string } };
+    try {
+      result = (await this.request("thread/start", {
+        ...baseParams,
+        ...permissionRequestFields(approvalPolicy, sandboxMode),
+      })) as { thread?: { id?: string } };
+    } catch (error) {
+      if (!isPermissionParameterError(error)) throw error;
+      if (!shouldFallbackWithoutPermissions(approvalPolicy, sandboxMode)) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Codex app-server rejected requested permissions (${approvalPolicy}, ${sandboxMode}): ${message}`);
+      }
+      result = (await this.request("thread/start", baseParams)) as { thread?: { id?: string } };
+    }
     const id = result.thread?.id;
     if (!id) throw new Error("Codex app-server returned a thread without an id");
     await syncStockThreadPermissions(id, input.cwd, approvalPolicy, sandboxMode).catch(() => undefined);
@@ -345,16 +376,15 @@ export class CodexAppServer extends EventEmitter {
     const requestedSandbox = input.sandboxMode ?? "workspace-write";
     const permissionParams = {
       ...baseParams,
-      approvalPolicy: requestedApprovalPolicy,
-      sandbox: requestedSandbox,
+      ...permissionRequestFields(requestedApprovalPolicy, requestedSandbox),
     };
-    await syncStockThreadPermissions(input.threadId, input.cwd, permissionParams.approvalPolicy, permissionParams.sandbox).catch(() => undefined);
+    await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox).catch(() => undefined);
     try {
       await this.request("turn/start", permissionParams);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!/approvalPolicy|sandbox|unknown field|unknown parameter|invalid params|invalid request/i.test(message)) throw error;
-      if (requestedApprovalPolicy !== "on-request" || requestedSandbox !== "workspace-write") {
+      if (!isPermissionParameterError(error)) throw error;
+      if (!shouldFallbackWithoutPermissions(requestedApprovalPolicy, requestedSandbox)) {
         throw new Error(`Codex app-server rejected requested permissions (${requestedApprovalPolicy}, ${requestedSandbox}): ${message}`);
       }
       await this.request("turn/start", baseParams);

@@ -420,6 +420,8 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
       ...(turnStatus === "failed" ? { error: recentAppServerError() } : {}),
       sidecars: pendingDiagnostics.sidecars,
       sidecarActual,
+      sandboxMode: pendingDiagnostics.sandboxMode,
+      approvalPolicy: pendingDiagnostics.approvalPolicy,
     });
   }
   void providerReconciler.hasPending(threadId).then((pending) => pending ? providerReconciler.completeExternalTurn(threadId) : null).then((result) => {

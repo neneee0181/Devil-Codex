@@ -280,6 +280,10 @@ button:active:not(:disabled) { transform: scale(.96); }
 .thread-view::-webkit-scrollbar-track { background: transparent; }
 .thread-view::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: #555; background-clip: content-box; }
 .thread-view:hover::-webkit-scrollbar-thumb { background: #737373; }
+.scroll-to-bottom-button { position: absolute; z-index: 22; right: max(clamp(20px, 6vw, 120px), calc(50% - 425px)); bottom: 154px; display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid #343434; border-radius: 999px; background: #1d1d1df2; color: #f2f2f2; box-shadow: inset 0 1px 0 #ffffff12, 0 10px 28px #0008; backdrop-filter: blur(16px); }
+.scroll-to-bottom-button:hover { border-color: #505050; background: #272727f5; transform: translateY(-1px); }
+.scroll-to-bottom-button:active { transform: translateY(0) scale(.96); }
+.content-col.env-open .scroll-to-bottom-button { right: max(348px, calc(50% - 425px)); }
 /* keep timeline clear of the floating environment card (top-right) */
 .content-col.env-open .thread-view { padding-right: max(clamp(20px, 6vw, 120px), 348px); }
 .runtime-banner { display: block; max-width: 850px; margin: 0 auto 22px; border: 1px solid #684f31; border-radius: 8px; background: #242424; color: #e7b978; padding: 9px 12px; font-size: 12px; }
