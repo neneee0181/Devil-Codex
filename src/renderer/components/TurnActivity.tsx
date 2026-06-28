@@ -289,21 +289,42 @@ function diagnosticSummary(entry: ThreadActivityEntry): string {
   return [provider ? `provider ${provider}` : "", route, web ? `web ${web}` : "", failures && failures !== "none" ? `fail ${failures}` : ""].filter(Boolean).join(" · ");
 }
 
+function latestRunningEntry(entries: ThreadActivityEntry[]): ThreadActivityEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.status === "inProgress") return entry;
+  }
+  return undefined;
+}
+
+function thinkingStatusText(entry: ThreadActivityEntry | undefined): string {
+  if (!entry) return "생각중";
+  if (entry.kind === "command") return commandKind(entry.title) === "search" ? "코드 살펴보는 중" : commandKind(entry.title) === "read" ? "파일 읽는 중" : "명령 실행 중";
+  if (entry.kind === "mcp") return "도구 작업 중";
+  if (entry.kind === "webSearch") return "웹 검색 중";
+  if (entry.kind === "fileChange") return "변경 정리 중";
+  if (entry.kind === "subagent") return "서브에이전트 작업 중";
+  if (entry.kind === "reasoning") return "생각중";
+  if (entry.kind === "message") return "응답 작성 중";
+  return "생각중";
+}
+
 export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; onOpenFile: (path: string) => void }): React.JSX.Element {
   const running = item.status === "inProgress";
   const failed = item.status === "failed";
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(running);
-  const [, tick] = useState(0);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     if (failed) { setOpen(true); return; }
     if (!running) { setOpen(false); return; }
     setOpen(true);
-    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
+    const timer = window.setInterval(() => setTick((value) => value + 1), 700);
     return () => window.clearInterval(timer);
   }, [failed, running]);
   const elapsed = running ? Date.now() - (item.startedAt ?? Date.now()) : item.durationMs ?? 0;
   const entries = item.activities ?? [];
+  const runningEntry = latestRunningEntry(entries);
   const diagnosticsEntries = entries.filter((entry) => entry.kind === "diagnostic");
   const summary = useMemo(() => {
     const commands = entries.filter((entry) => entry.kind === "command").length;
@@ -316,17 +337,32 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
     return labels.join(" · ");
   }, [entries]);
   const label = running ? `${durationLabel(elapsed)} 동안 작업 중` : failed ? `${durationLabel(elapsed)} 동안 작업 실패` : `${durationLabel(elapsed)} 동안 작업`;
+  const dots = ".".repeat((tick % 3) + 1);
+  const liveStatus = running ? `${thinkingStatusText(runningEntry)}${dots}` : failed ? "작업 실패" : "작업 완료";
 
   const motionTransition = reduceMotion ? { duration: 0 } : { duration: .22, ease: [.22, 1, .36, 1] as const };
 
   return <motion.section layout="position" transition={motionTransition} className={`timeline-item turn-activity${open ? " open" : ""}${running ? " running" : ""}${failed ? " failed" : ""}`}>
-    <button type="button" className="turn-activity-toggle" onClick={() => setOpen((value) => !value)}><span>{label}</span><ChevronRight size={16} /></button>
+    <button type="button" className="turn-activity-toggle" onClick={() => setOpen((value) => !value)}>
+      <span className="turn-activity-title-group">
+        <span>{label}</span>
+        <span className={`turn-activity-live${running ? " running" : failed ? " failed" : ""}`}>
+          <Bot size={14} />
+          <span className="turn-activity-live-text">{liveStatus}</span>
+        </span>
+      </span>
+      <ChevronRight size={16} />
+    </button>
     <AnimatePresence initial={false}>
       {!open && diagnosticsEntries.length > 0 && <motion.div className="activity-diagnostic-strip" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={motionTransition}><Activity size={14} /><span>Provider 진단</span><small>{diagnosticSummary(diagnosticsEntries[0])}</small></motion.div>}
     </AnimatePresence>
     <AnimatePresence initial={false}>
       {open && <motion.div className="turn-activity-body" initial={{ height: 0, opacity: 0, y: -4 }} animate={{ height: "auto", opacity: 1, y: 0 }} exit={{ height: 0, opacity: 0, y: -4 }} transition={motionTransition}>
-        <div className="activity-thinking-body">{summary && <div className="activity-summary"><SquareTerminal size={15} />{summary}</div>}<ActivityEntries entries={entries} onOpenFile={onOpenFile} /></div>
+        <div className="activity-thinking-body">
+          {running && <div className="activity-live-banner"><span className="activity-live-pulse" /><Bot size={15} /><strong>{liveStatus}</strong></div>}
+          {summary && <div className="activity-summary"><SquareTerminal size={15} />{summary}</div>}
+          <ActivityEntries entries={entries} onOpenFile={onOpenFile} />
+        </div>
       </motion.div>}
     </AnimatePresence>
   </motion.section>;

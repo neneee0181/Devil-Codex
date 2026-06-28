@@ -181,6 +181,8 @@ type PendingTurnState = {
   attachments?: string[];
   attachmentDetails?: ThreadAttachment[];
   sidecars?: SidecarSettings;
+  approvalPolicy?: import("../shared/contracts").ThreadApprovalPolicy;
+  sandboxMode?: import("../shared/contracts").ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   retriedAfterCompaction: boolean;
@@ -1194,7 +1196,7 @@ function App(): React.JSX.Element {
     const queueThread = !options.forceNewThread && thread ? thread : null;
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -1212,11 +1214,11 @@ function App(): React.JSX.Element {
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id)]);
       }
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       pendingTurn.current = pending;
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
-      await window.devilCodex.sendTurn({ threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...turnOptions });
+      await window.devilCodex.sendTurn({ threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions });
       window.setTimeout(() => { void refreshThreads(); void refreshProjects(); }, 700);
     } catch (error) {
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "요청 실패", text: String(error) }]);

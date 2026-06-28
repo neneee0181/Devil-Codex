@@ -13,12 +13,22 @@ export const DEVIL_PROVIDER = "devil";
 const BEGIN = "# >>> devil-codex provider (managed) >>>";
 const END = "# <<< devil-codex provider (managed) <<<";
 
-function stripBlock(source: string): string {
-  const begin = source.indexOf(BEGIN);
-  if (begin < 0) return source;
-  const end = source.indexOf(END, begin);
-  if (end < 0) return source.slice(0, begin).trimEnd() + "\n";
-  return (source.slice(0, begin) + source.slice(end + END.length)).replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+function stripCommentLine(source: string, marker: string): string {
+  return source.replace(new RegExp(`^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:\\r?\\n)?`, "m"), "");
+}
+
+function stripTable(source: string, header: string): string {
+  const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(^\\s*\\[${escaped}\\]\\s*\\r?\\n)([\\s\\S]*?)(?=^\\s*\\[[^\\]]+\\]\\s*\\r?\\n|\\Z)`, "m");
+  return source.replace(pattern, "");
+}
+
+function normalizeSpacing(source: string): string {
+  return source.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+function stripProviderBlock(source: string): string {
+  return normalizeSpacing(stripCommentLine(stripCommentLine(stripTable(source, "model_providers.devil"), BEGIN), END));
 }
 
 function block(port: number, secret: string): string {
@@ -58,7 +68,7 @@ async function read(): Promise<string> {
 export async function registerDevilProvider(port: number, secret = ""): Promise<void> {
   const source = await read();
   await backupOnce(source);
-  const cleaned = stripBlock(source).trimEnd();
+  const cleaned = stripProviderBlock(source).trimEnd();
   const next = `${cleaned ? cleaned + "\n\n" : ""}${block(port, secret)}`;
   await mkdir(dirname(CONFIG_PATH), { recursive: true });
   await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
@@ -67,7 +77,7 @@ export async function registerDevilProvider(port: number, secret = ""): Promise<
 export async function unregisterDevilProvider(): Promise<void> {
   const source = await read();
   if (!source.includes(BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripBlock(source), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, stripProviderBlock(source), { encoding: "utf8", mode: 0o600 });
 }
 
 // Register the embedded-browser MCP so Codex (and external models via the proxy)
@@ -76,19 +86,22 @@ export async function unregisterDevilProvider(): Promise<void> {
 const MCP_BEGIN = "# >>> devil-codex browser mcp (managed) >>>";
 const MCP_END = "# <<< devil-codex browser mcp (managed) <<<";
 
-function stripNamed(source: string, begin: string, end: string): string {
-  const b = source.indexOf(begin);
-  if (b < 0) return source;
-  const e = source.indexOf(end, b);
-  if (e < 0) return source.slice(0, b).trimEnd() + "\n";
-  return (source.slice(0, b) + source.slice(e + end.length)).replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+function stripManagedMcpTables(source: string, begin: string, end: string, names: string[]): string {
+  let next = source;
+  for (const name of names) {
+    next = stripTable(next, `mcp_servers.${name}`);
+    next = stripTable(next, `mcp_servers.${name}.env`);
+  }
+  next = stripCommentLine(next, begin);
+  next = stripCommentLine(next, end);
+  return normalizeSpacing(next);
 }
 
 function toml(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
 
 export async function registerDevilBrowserMcp(input: { execPath: string; script: string; sock: string; secret: string; computerScript?: string; computerSock?: string; computerSecret?: string }): Promise<void> {
   const source = await read();
-  const cleaned = stripNamed(source, MCP_BEGIN, MCP_END).trimEnd();
+  const cleaned = stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]).trimEnd();
   const lines = [
     MCP_BEGIN,
     `[mcp_servers.devil_browser]`,
@@ -128,7 +141,7 @@ export async function registerDevilBrowserMcp(input: { execPath: string; script:
 export async function unregisterDevilBrowserMcp(): Promise<void> {
   const source = await read();
   if (!source.includes(MCP_BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripNamed(source, MCP_BEGIN, MCP_END), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), { encoding: "utf8", mode: 0o600 });
 }
 
 // "Ask the user" MCP — a structured multiple-choice prompt (like Claude Code's
@@ -140,7 +153,7 @@ const ASK_END = "# <<< devil-codex ask mcp (managed) <<<";
 
 export async function registerDevilAskMcp(input: { execPath: string; script: string; sock: string; secret: string }): Promise<void> {
   const source = await read();
-  const cleaned = stripNamed(source, ASK_BEGIN, ASK_END).trimEnd();
+  const cleaned = stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]).trimEnd();
   const block = [
     ASK_BEGIN,
     `[mcp_servers.devil_ask]`,
@@ -164,5 +177,5 @@ export async function registerDevilAskMcp(input: { execPath: string; script: str
 export async function unregisterDevilAskMcp(): Promise<void> {
   const source = await read();
   if (!source.includes(ASK_BEGIN)) return;
-  await writeFile(CONFIG_PATH, stripNamed(source, ASK_BEGIN, ASK_END), { encoding: "utf8", mode: 0o600 });
+  await writeFile(CONFIG_PATH, stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), { encoding: "utf8", mode: 0o600 });
 }

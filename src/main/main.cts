@@ -71,6 +71,30 @@ const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
 const activeThreadServerTurns = new Set<string>();
+const approvalRequestServers = new Map<string, CodexAppServer>();
+// Threads whose rollout is currently loaded on their (live) per-thread server.
+// A fresh/replaced server doesn't know an existing thread until it's resumed —
+// without this a restart or prune leaves "thread not found" on the next turn.
+const loadedThreads = new Set<string>();
+
+// Codex app-server reports auth/usage/model errors on stderr (emitted as
+// "diagnostic"), not as structured turn events — so a failed turn otherwise
+// surfaces only a generic "no detail" message. Keep a rolling buffer and attach
+// the likely error line to the failed turn's Provider 진단 card.
+const appServerStderr: string[] = [];
+function recordAppServerStderr(line: string): void {
+  for (const part of String(line ?? "").split(/\r?\n/)) {
+    const trimmed = part.trim();
+    if (trimmed) appServerStderr.push(trimmed);
+  }
+  if (appServerStderr.length > 120) appServerStderr.splice(0, appServerStderr.length - 120);
+}
+function recentAppServerError(): string | undefined {
+  if (!appServerStderr.length) return undefined;
+  const errish = appServerStderr.filter((line) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(line));
+  const picked = (errish.length ? errish : appServerStderr).slice(-4);
+  return picked.join(" | ").slice(0, 600) || undefined;
+}
 let terminalManager: TerminalManager | undefined;
 const execFileAsync = promisify(execFile);
 const settingsStore = new CodexSettingsStore();
@@ -283,6 +307,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   const item = (params.item ?? {}) as Record<string, unknown>;
   const turn = (params.turn ?? {}) as Record<string, unknown>;
   const turnId = String(params.turnId ?? turn.id ?? "");
+  const terminalTurn = event.method === "turn/completed" || event.method === "turn/aborted" || event.method === "turn/interrupted";
   touchThreadServer(threadId);
   if (event.method === "turn/started") {
     activeThreadServerTurns.add(threadId);
@@ -292,10 +317,12 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
     nativeFileChangeTurns.add(turnKey(threadId, turnId));
     return;
   }
-  if (event.method !== "turn/completed") return;
+  if (!terminalTurn) return;
   activeThreadServerTurns.delete(threadId);
   pruneThreadServers();
-  const turnStatus = String(turn.status ?? "completed");
+  const turnStatus = event.method === "turn/completed"
+    ? String(turn.status ?? "completed")
+    : String(params.reason ?? turn.status ?? "aborted");
   void emitSyntheticFileChanges({ threadId, ...(turnId ? { turnId } : {}), status: turnStatus === "failed" ? "failed" : "completed" });
   const pendingDiagnostics = pendingProviderDiagnostics.get(threadId);
   if (pendingDiagnostics) {
@@ -308,6 +335,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
       provider: pendingDiagnostics.provider,
       model: pendingDiagnostics.model,
       status: turnStatus === "failed" ? "failed" : "completed",
+      ...(turnStatus === "failed" ? { error: recentAppServerError() } : {}),
       sidecars: pendingDiagnostics.sidecars,
       sidecarActual,
     });
@@ -587,7 +615,11 @@ function baseServerCwd(): string {
 
 function attachAppServerEvents(instance: CodexAppServer, reportStatus: boolean): CodexAppServer {
   if (reportStatus) instance.on("status", (status) => sendToRenderer("app-server:status", status));
+  instance.on("diagnostic", (line: string) => recordAppServerStderr(line));
   instance.on("event", (event) => {
+    if (event.requestId !== undefined && (event.method === "item/commandExecution/requestApproval" || event.method === "item/fileChange/requestApproval")) {
+      approvalRequestServers.set(String(event.requestId), instance);
+    }
     sendToRenderer("app-server:event", event);
     handleAppServerEvent(event);
   });
@@ -607,6 +639,28 @@ function server(): CodexAppServer {
 function restartAppServer(): void {
   appServer?.dispose();
   appServer = undefined;
+  // Turns run on per-thread servers; dropping only the global one would leave
+  // them holding stale auth/config (e.g. after a re-login). Clear them too so
+  // the next turn spawns a fresh child that reloads ~/.codex auth.
+  for (const instance of threadServers.values()) instance.dispose();
+  threadServers.clear();
+  threadServerLastUsed.clear();
+  activeThreadServerTurns.clear();
+  approvalRequestServers.clear();
+  loadedThreads.clear();
+}
+
+// Resume an existing thread on its server when that server is fresh (after a
+// restart/prune), so a turn can be sent. No-op once the thread is loaded.
+async function ensureThreadLoaded(input: { threadId: string; model: string; cwd?: string; modelProvider?: string }): Promise<void> {
+  if (loadedThreads.has(input.threadId)) return;
+  await threadServer(input.threadId).resumeThread({
+    id: input.threadId,
+    model: input.model,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+    ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+  });
+  loadedThreads.add(input.threadId);
 }
 
 function touchThreadServer(threadId: string): void {
@@ -623,6 +677,7 @@ function pruneThreadServers(): void {
     threadServers.get(threadId)?.dispose();
     threadServers.delete(threadId);
     threadServerLastUsed.delete(threadId);
+    loadedThreads.delete(threadId);
   }
 }
 
@@ -647,6 +702,7 @@ function threadServer(threadId: string): CodexAppServer {
 function restartThreadServer(threadId: string): CodexAppServer {
   threadServers.get(threadId)?.dispose();
   threadServerLastUsed.delete(threadId);
+  loadedThreads.delete(threadId);
   return bindThreadServer(threadId, createAppServer(false));
 }
 
@@ -732,9 +788,15 @@ app.whenReady().then(async () => {
   // The app-server reads model providers when it connects. Register Devil's
   // local proxy before the renderer can start its first external-provider turn.
   await startCodexProxy();
-  void providerReconciler.reconcilePending().then((result) => {
-    if (result.attempted && result.failed) console.warn("[devil-codex reconcile] pending recovery incomplete", result);
-  }).catch((error) => console.warn("[devil-codex reconcile]", error instanceof Error ? error.message : error));
+  void (async () => {
+    const pending = await providerReconciler.reconcilePending();
+    if (pending.attempted && pending.failed) console.warn("[devil-codex reconcile] pending recovery incomplete", pending);
+    // A forced stop can leave a thread permanently tagged with the temporary
+    // "devil" provider even after the pending journal is gone. Sweep those on
+    // startup so stock Codex keeps listing the thread.
+    const lingering = await providerReconciler.recoverLingeringDevilThreads();
+    if (lingering.attempted && lingering.failed) console.warn("[devil-codex reconcile] lingering recovery incomplete", lingering);
+  })().catch((error) => console.warn("[devil-codex reconcile]", error instanceof Error ? error.message : error));
   createWindow();
   initAutoUpdate(() => windowRef);
 
@@ -787,7 +849,12 @@ app.whenReady().then(async () => {
   ipcMain.handle("browser:ai-read", () => browserView.aiReadText());
   ipcMain.handle("ask:respond", (_event, input: { id: string; answers: import("./ask-control-server.cjs").AskAnswerPayload[] | null }) => { askControl.resolve(input.id, input.answers); });
   ipcMain.handle("runtime:status", () => server().getStatus());
-  ipcMain.handle("runtime:connect", () => server().connect());
+  ipcMain.handle("runtime:connect", () => {
+    // Treat an explicit (re)connect as "reload everything": drop stale children
+    // so fresh auth/config (e.g. after a Codex re-login) takes effect.
+    restartAppServer();
+    return server().connect();
+  });
   ipcMain.handle("update:check", () => checkForUpdatesNow(() => windowRef));
   ipcMain.handle("update:install", () => installUpdate(() => windowRef));
   ipcMain.handle("subagent:info", (_event, input) => providerReconciler.getSubagentInfo(input.id));
@@ -842,7 +909,7 @@ app.whenReady().then(async () => {
     return oauthLogin(oauthProvider, () => { void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status)); });
   });
   ipcMain.handle("providers:logout", async (_event, input) => {
-    if (input.provider === "codex") await codexCliLogout("codex");
+    if (input.provider === "codex") { await codexCliLogout("codex"); restartAppServer(); }
     else await oauthLogout(input.provider === "claude" ? "claude-code" : "copilot");
     return combinedAuthStatus();
   });
@@ -856,7 +923,9 @@ app.whenReady().then(async () => {
     // the global server() leaves the command waiting forever (5-min hang on the
     // first command/file approval). Fall back to the global server only when no
     // live thread server matches.
-    const target = (input.threadId ? threadServers.get(input.threadId) : undefined) ?? server();
+    const requestKey = String(input.requestId);
+    const target = approvalRequestServers.get(requestKey) ?? (input.threadId ? threadServers.get(input.threadId) : undefined) ?? server();
+    approvalRequestServers.delete(requestKey);
     return target.respondApproval(input);
   });
   ipcMain.handle("thread:create", async (_event, input) => {
@@ -867,6 +936,7 @@ app.whenReady().then(async () => {
         const thread = await instance.createThread({ ...input, model: `${input.provider}:${input.model}`, modelProvider: "devil" });
         bindThreadServer(thread.id, instance);
         bound = true;
+        loadedThreads.add(thread.id);
         await providerTranscripts.saveMeta({ ...thread, provider: input.provider, title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
         return thread;
       }
@@ -875,6 +945,7 @@ app.whenReady().then(async () => {
       const thread = await instance.createThread({ ...input, model: input.provider && input.provider !== "codex" ? "gpt-5.4" : input.model });
       bindThreadServer(thread.id, instance);
       bound = true;
+      loadedThreads.add(thread.id);
       return thread;
     } catch (error) {
       if (!bound) instance.dispose();
@@ -907,11 +978,13 @@ app.whenReady().then(async () => {
       // Provider thread still has a native Codex shell from `thread/start`.
       // Resume it opportunistically so Codex app-server can load its mirror,
       // but never block Devil's local transcript if Codex rejects that shell.
-      await threadServer(input.id).resumeThread(input).catch(() => undefined);
+      await threadServer(input.id).resumeThread(input).then(() => loadedThreads.add(input.id)).catch(() => undefined);
       return { id: input.id, cwd: meta?.cwd ?? "", model: meta?.model || input.model };
     }
     const instance = threadServer(input.id);
-    return instance.resumeThread(input);
+    const ref = await instance.resumeThread(input);
+    loadedThreads.add(input.id);
+    return ref;
   });
   ipcMain.handle("thread:rename", async (_event, input) => {
     const name = String(input.name ?? "").trim();
@@ -1024,7 +1097,11 @@ app.whenReady().then(async () => {
         // to patch (already created with modelProvider:"devil") → just proceed.
         const switched = await providerReconciler.prepareExternalTurn(input.threadId);
         if (switched) {
-          await restartThreadServer(input.threadId).resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).catch(() => undefined);
+          await restartThreadServer(input.threadId).resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
+        } else {
+          // Thread server may be fresh (after a restart/prune) — resume so the
+          // rollout is loaded before the turn, else "thread not found".
+          await ensureThreadLoaded({ threadId: input.threadId, model: routedModel, cwd: input.cwd, modelProvider: "devil" });
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -1104,6 +1181,7 @@ app.whenReady().then(async () => {
     codexProxy.setSidecarSettings(input.threadId, input.sidecars);
     try {
       await rememberTurnFileSnapshot(input.threadId, input.cwd);
+      await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd });
       await threadServer(input.threadId).sendTurn(turnInput);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

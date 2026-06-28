@@ -17,6 +17,12 @@ type SuggestionTrigger = {
 };
 
 export type ComposerAttachment = ThreadAttachment;
+const APPROVAL_MODE_KEY = "devil-codex:approval-mode";
+
+function storedApprovalMode(): ApprovalMode {
+  const value = localStorage.getItem(APPROVAL_MODE_KEY);
+  return value === "ask" || value === "agent" || value === "full" ? value : "agent";
+}
 
 const LONG_PASTE_THRESHOLD = 1800;
 
@@ -84,7 +90,7 @@ export function Composer({
   onFeedback: () => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("agent");
+  const [approvalMode, setApprovalModeState] = useState<ApprovalMode>(() => storedApprovalMode());
   const [goalMode, setGoalMode] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
@@ -94,6 +100,10 @@ export function Composer({
   const attachmentInput = useRef<HTMLInputElement>(null);
   const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions) : [], [trigger, skillOptions]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
+  const setApprovalMode = (value: ApprovalMode): void => {
+    setApprovalModeState(value);
+    localStorage.setItem(APPROVAL_MODE_KEY, value);
+  };
 
   // Inject a browser screenshot/annotation into the composer so the user can ask
   // about the page (keyed on nonce so repeats re-fire).

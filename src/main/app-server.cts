@@ -320,14 +320,14 @@ export class CodexAppServer extends EventEmitter {
     await this.request("feedback/upload", { classification: "other", reason, threadId: input.threadId ?? null, includeLogs: false });
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; skills?: Array<{ name: string; path: string }>; attachments?: string[]; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }): Promise<void> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; skills?: Array<{ name: string; path: string }>; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }): Promise<void> {
     await this.ensureConnected();
     const items = [
       ...(input.skills ?? []).map((skill) => ({ type: "skill", name: skill.name, path: skill.path })),
       { type: "text", text: input.text, text_elements: [] },
       ...(input.attachments ?? []).map((url) => ({ type: "image", url })),
     ];
-    await this.request("turn/start", {
+    const baseParams = {
       threadId: input.threadId,
       cwd: input.cwd,
       model: input.model,
@@ -335,7 +335,19 @@ export class CodexAppServer extends EventEmitter {
       reasoning: { effort: input.reasoningEffort ?? "medium" },
       service_tier: input.responseSpeed === "fast" ? "priority" : "default",
       serviceTier: input.responseSpeed === "fast" ? "priority" : "default",
-    });
+    };
+    const permissionParams = {
+      ...baseParams,
+      approvalPolicy: input.approvalPolicy ?? "on-request",
+      sandbox: input.sandboxMode ?? "workspace-write",
+    };
+    try {
+      await this.request("turn/start", permissionParams);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/approvalPolicy|sandbox|unknown field|unknown parameter|invalid params|invalid request/i.test(message)) throw error;
+      await this.request("turn/start", baseParams);
+    }
   }
 
   async interruptTurn(input: { threadId: string; turnId?: string }): Promise<void> {

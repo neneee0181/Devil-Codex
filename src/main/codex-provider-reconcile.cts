@@ -50,6 +50,12 @@ export interface ReconcileResult {
   error?: string;
 }
 
+export interface ReconcileSweepResult {
+  attempted: number;
+  recovered: number;
+  failed: number;
+}
+
 // A freshly created thread has no state_5.sqlite row / rollout until its first
 // turn starts. That is not an error — the provider patch is simply skipped and
 // reconciled after the turn. Distinguished by type so callers never string-match.
@@ -126,6 +132,34 @@ async function readSessionMeta(path: string, threadId: string): Promise<{ lines:
 
 export class CodexProviderReconciler {
   private writes = Promise.resolve();
+
+  async recoverLingeringDevilThreads(): Promise<ReconcileSweepResult> {
+    if (!existsSync(STATE_DB_PATH)) return { attempted: 0, recovered: 0, failed: 0 };
+    const db = new DatabaseSync(STATE_DB_PATH);
+    let rows: Array<{ id?: string }> = [];
+    try {
+      db.exec("PRAGMA busy_timeout = 2000");
+      ensureColumns(db);
+      rows = db.prepare("SELECT id FROM threads WHERE model_provider = ?").all(EXTERNAL_TURN_PROVIDER) as Array<{ id?: string }>;
+    } finally {
+      db.close();
+    }
+
+    let recovered = 0;
+    let failed = 0;
+    for (const row of rows) {
+      const threadId = String(row.id ?? "");
+      if (!threadId) continue;
+      try {
+        // Preserve the stored model; only the temporary provider flip should be undone.
+        await this.patchThreadProvider(threadId, TARGET_PROVIDER);
+        recovered += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { attempted: rows.length, recovered, failed };
+  }
 
   // Read a subagent thread's Codex-assigned nickname (e.g. "Laplace") and its
   // model from the state DB + rollout session_meta. Used by the side-chat to
