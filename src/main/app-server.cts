@@ -43,14 +43,19 @@ function threadTitle(thread: Record<string, unknown>): string {
   return String(thread.title ?? thread.name ?? thread.preview ?? "New thread").trim() || "New thread";
 }
 
-function permissionRequestFields(approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Record<string, ThreadApprovalPolicy | ThreadSandboxMode> {
-  return {
-    approvalPolicy,
-    approval_policy: approvalPolicy,
-    sandbox: sandboxMode,
-    sandboxMode,
-    sandbox_mode: sandboxMode,
-  };
+// thread/start and thread/resume take the sandbox as a SandboxMode string in
+// the `sandbox` field (camelCase RPC name, kebab value e.g. "danger-full-access").
+function threadPermissionFields(approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Record<string, unknown> {
+  return { approvalPolicy, sandbox: sandboxMode };
+}
+
+// turn/start overrides permissions per-turn with `approvalPolicy` and the
+// structured `sandboxPolicy` object ({ type: "dangerFullAccess" } | ...).
+// The TurnStartParams struct has no `sandbox`/`sandboxMode` field, so the old
+// mode-string keys were silently dropped and every turn ran at the thread's
+// stale default (read-only) regardless of the UI selection.
+function turnPermissionFields(approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode, cwd: string): Record<string, unknown> {
+  return { approvalPolicy, sandboxPolicy: stockSandboxPolicy(sandboxMode, cwd) };
 }
 
 function isPermissionParameterError(error: unknown): boolean {
@@ -151,7 +156,7 @@ export class CodexAppServer extends EventEmitter {
     try {
       result = (await this.request("thread/start", {
         ...baseParams,
-        ...permissionRequestFields(approvalPolicy, sandboxMode),
+        ...threadPermissionFields(approvalPolicy, sandboxMode),
       })) as { thread?: { id?: string } };
     } catch (error) {
       if (!isPermissionParameterError(error)) throw error;
@@ -376,7 +381,7 @@ export class CodexAppServer extends EventEmitter {
     const requestedSandbox = input.sandboxMode ?? "workspace-write";
     const permissionParams = {
       ...baseParams,
-      ...permissionRequestFields(requestedApprovalPolicy, requestedSandbox),
+      ...turnPermissionFields(requestedApprovalPolicy, requestedSandbox, input.cwd),
     };
     await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox).catch(() => undefined);
     try {
