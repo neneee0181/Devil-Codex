@@ -212,7 +212,7 @@ export interface AppInfo {
   platform: NodeJS.Platform;
 }
 
-export type WindowControlAction = "close" | "minimize" | "maximize";
+export type WindowControlAction = "close" | "minimize" | "maximize" | "quit";
 
 export interface BrowserState { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; }
 

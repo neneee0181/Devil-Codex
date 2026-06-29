@@ -39,8 +39,31 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
+const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
+
+function stripEditedContinuationTitle(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  const markerIndex = text.lastIndexOf(EDITED_USER_MESSAGE_MARKER);
+  if (markerIndex >= 0) return text.slice(markerIndex + EDITED_USER_MESSAGE_MARKER.length).trim();
+  if (!text.startsWith(EDITED_CONTINUATION_PREFIX)) return text;
+  const lastUserIndex = text.lastIndexOf("사용자:");
+  if (lastUserIndex > EDITED_CONTINUATION_PREFIX.length) return text.slice(lastUserIndex + "사용자:".length).trim();
+  return "수정된 대화";
+}
+
+function compactThreadText(value: unknown, fallback: string, maxLength: number): string {
+  const text = stripEditedContinuationTitle(String(value ?? "").trim()) || fallback;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 function threadTitle(thread: Record<string, unknown>): string {
-  return String(thread.title ?? thread.name ?? thread.preview ?? "New thread").trim() || "New thread";
+  return compactThreadText(thread.title ?? thread.name ?? thread.preview, "New thread", 64);
+}
+
+function threadPreview(value: unknown): string {
+  return compactThreadText(value, "", 160);
 }
 
 // thread/start and thread/resume take the sandbox as a SandboxMode string in
@@ -186,7 +209,7 @@ export class CodexAppServer extends EventEmitter {
       cwd: String(thread.cwd ?? input.cwd),
       model: "gpt-5.4",
       title: threadTitle(thread),
-      preview: String(thread.preview ?? ""),
+      preview: threadPreview(thread.preview),
       updatedAt: Number(thread.updatedAt ?? 0),
       archived: input.archived ?? false,
     }));
@@ -205,7 +228,7 @@ export class CodexAppServer extends EventEmitter {
       cwd: String(thread.cwd ?? ""),
       model: "gpt-5.4",
       title: threadTitle(thread),
-      preview: String(thread.preview ?? ""),
+      preview: threadPreview(thread.preview),
       updatedAt: Number(thread.updatedAt ?? 0),
       archived: input.archived ?? false,
     }));
@@ -230,7 +253,7 @@ export class CodexAppServer extends EventEmitter {
         cwd: String(thread.cwd ?? ""),
         model: "gpt-5.4",
         title: threadTitle(thread),
-        preview: String(entry.snippet ?? thread.preview ?? ""),
+        preview: threadPreview(entry.snippet ?? thread.preview),
         updatedAt: Number(thread.updatedAt ?? 0),
         archived: input.archived ?? false,
       }];

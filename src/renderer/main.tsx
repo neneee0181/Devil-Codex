@@ -8,8 +8,9 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
+import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
 import type { ApprovalMode } from "./components/ApprovalPicker";
 import { UtilityPanel } from "./components/UtilityPanel";
@@ -233,6 +234,64 @@ type PendingTurnState = {
 };
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
+type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; requests: number; source: "context" | "requestLog" };
+type ThreadTokenUsageSummary = { totalTokens: number; maxTokens?: number; requestTokens: number; models: ThreadTokenModelUsage[] };
+
+function compactTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
+  return `${Math.round(value).toLocaleString()}`;
+}
+
+function compactUsageReset(value: string | number | null | undefined): string {
+  if (value == null) return "";
+  const normalized = typeof value === "number" && value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleString("ko-KR", sameYear ? { month: "short", day: "numeric" } : { year: "2-digit", month: "short", day: "numeric" });
+}
+
+function providerDisplayName(provider: ProviderId | "unknown", providers: ProviderInfo[]): string {
+  if (provider === "unknown") return "알 수 없음";
+  return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider);
+}
+
+function summarizeThreadTokenUsage(input: { threadId?: string; items: ThreadHistoryItem[]; contextUsage?: ContextUsage; provider?: ProviderId; model: string; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[] }): ThreadTokenUsageSummary {
+  const rows = new Map<string, ThreadTokenModelUsage>();
+  for (const entry of input.requestLog) {
+    if (!entry.threadId || entry.threadId !== input.threadId || !entry.usage) continue;
+    const key = `${entry.provider}:${entry.model}`;
+    const row = rows.get(key) ?? { key, label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`, totalTokens: 0, inputTokens: 0, outputTokens: 0, requests: 0, source: "requestLog" as const };
+    row.inputTokens += entry.usage.inputTokens;
+    row.outputTokens += entry.usage.outputTokens;
+    row.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
+    row.requests += 1;
+    rows.set(key, row);
+  }
+  const requestTokens = [...rows.values()].reduce((sum, row) => sum + row.totalTokens, 0);
+  if (input.contextUsage?.usedTokens) {
+    const key = `${input.provider ?? "codex"}:${input.model}:context`;
+    rows.set(key, {
+      key,
+      label: `${providerDisplayName(input.provider ?? "codex", input.providers)} · ${input.model}`,
+      totalTokens: input.contextUsage.usedTokens,
+      inputTokens: 0,
+      outputTokens: 0,
+      requests: input.items.filter((item) => item.kind === "user").length,
+      source: "context",
+    });
+  }
+  const models = [...rows.values()].sort((a, b) => Number(a.source === "requestLog") - Number(b.source === "requestLog") || b.totalTokens - a.totalTokens);
+  return {
+    totalTokens: input.contextUsage?.usedTokens ?? requestTokens,
+    maxTokens: input.contextUsage?.maxTokens,
+    requestTokens,
+    models,
+  };
+}
 
 function App(): React.JSX.Element {
   const [runtime, setRuntime] = useState<RuntimeStatus>(defaultStatus);
@@ -335,6 +394,7 @@ function App(): React.JSX.Element {
   const [openTargets, setOpenTargets] = useState<OpenWorkspaceTarget[]>([]);
   const [shellMenuOpen, setShellMenuOpen] = useState<ShellMenuKey | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [accountUsageOpen, setAccountUsageOpen] = useState(false);
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [utilityPanelOpen, setUtilityPanelOpen] = useState(false);
   // Tabs are tool kinds or "subagent:<threadId>" entries (multiple allowed).
@@ -388,6 +448,7 @@ function App(): React.JSX.Element {
   const navigationBack = useRef<NavigationEntry[]>([]);
   const navigationForward = useRef<NavigationEntry[]>([]);
   useDismissShellPopovers(closePopovers);
+  const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
   useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
@@ -504,9 +565,11 @@ function App(): React.JSX.Element {
       }
     });
     return () => cancelAnimationFrame(frame);
+    // items: agent responses stream by updating text/activity on existing
+    // timeline items, so length alone misses the most common growth path.
     // queuedHere: when the waiting-message panel grows/shrinks the composer gets
     // taller, so re-pin to bottom to keep the latest message above it.
-  }, [thread?.id, items.length, view, queuedHere]);
+  }, [thread?.id, items, view, queuedHere]);
 
   // Re-read codex settings whenever the user leaves the Settings view (via back
   // button, palette, anywhere). SettingsView owns a separate settings hook, so
@@ -558,10 +621,20 @@ function App(): React.JSX.Element {
     });
   }, [items]);
   const contextUsage = useMemo(() => estimateContextUsage(items, model), [items, model]);
+  const threadTokenUsage = useMemo(() => summarizeThreadTokenUsage({
+    threadId: thread?.id,
+    items,
+    contextUsage,
+    provider: providers.settings?.provider,
+    model,
+    providers: providers.settings?.providers ?? [],
+    requestLog: quickUsage.requestLog,
+  }), [thread?.id, items, contextUsage, providers.settings?.provider, providers.settings?.providers, model, quickUsage.requestLog]);
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
   }, [dedupedItems, threadFindQuery]);
+  const visibleSearchResults = useMemo(() => searchResults.filter((summary) => !hiddenThreadIds.includes(summary.id) && !sideThreadSet.has(summary.id)), [searchResults, hiddenThreadIds, sideThreadSet]);
   // Subagents spawned in this thread, for the environment "하위 에이전트" list.
   const subagents = useMemo(() => {
     const byThread = new Map<string, { id: string; label: string }>();
@@ -1004,16 +1077,19 @@ function App(): React.JSX.Element {
   }
 
   function navigationSnapshot(): NavigationEntry {
+    if (thread?.id) threadHistoryCache.current.set(thread.id, itemsRef.current);
     return { view, thread, workspace, items, projectDraft, environmentOpen, settingsSection, search };
   }
 
   function restoreNavigation(entry: NavigationEntry): void {
     activeResume.current = entry.thread?.id ?? null;
     threadRef.current = entry.thread;
+    const restoredItems = entry.thread?.id ? threadHistoryCache.current.get(entry.thread.id) ?? entry.items : entry.items;
     setView(entry.view);
     setThread(entry.thread);
     setWorkspace(entry.workspace);
-    setItems(entry.items);
+    setItems(restoredItems);
+    itemsRef.current = restoredItems;
     setProjectDraft(entry.projectDraft);
     setEnvironmentOpen(entry.environmentOpen);
     setSettingsSection(entry.settingsSection);
@@ -1338,6 +1414,17 @@ function App(): React.JSX.Element {
     return lines.length ? `아래는 편집 지점 이전 대화입니다. 이 맥락만 유지하고, 이어지는 사용자 메시지부터 새로 계속하세요.\n\n${lines.join("\n\n")}` : "";
   }
 
+  function threadTitleFromPrompt(text: string): string {
+    const title = text.replace(/\s+/g, " ").trim() || "새 채팅";
+    return title.length > 64 ? `${title.slice(0, 61).trimEnd()}...` : title;
+  }
+
+  function updateThreadTitle(threadId: string, title: string): void {
+    pendingThreads.current.set(threadId, { ...(pendingThreads.current.get(threadId) ?? { id: threadId, cwd: workspace, model, preview: "", updatedAt: Math.floor(Date.now() / 1000), archived: false }), title });
+    setThreads((current) => current.map((summary) => summary.id === threadId ? { ...summary, title } : summary));
+    setProjects((current) => current.map((group) => ({ ...group, threads: group.threads.map((summary) => summary.id === threadId ? { ...summary, title } : summary) })));
+  }
+
   async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; model?: string; replaceFromItemId?: string; contextPrefix?: string } = {}): Promise<void> {
     const attachmentContext = attachmentContextForModel(input.attachments);
     const imageAttachments = input.attachments.filter((item) => item.kind === "image").map((item) => item.url ?? item.path);
@@ -1360,10 +1447,15 @@ function App(): React.JSX.Element {
     const userItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "user", text: displayText, attachments: attachmentDetails };
     const replaceIndex = options.replaceFromItemId ? itemsRef.current.findIndex((item) => item.id === options.replaceFromItemId) : -1;
     const replacingFromEdit = replaceIndex >= 0;
+    const replacedThread = replacingFromEdit ? thread : null;
     // Same chat still running → queue this follow-up instead of dropping it.
     // It auto-sends the instant the current turn finishes (startQueuedTurn), so
     // short requests can be stacked and answered back-to-back.
     const queueThread = !options.forceNewThread && thread ? thread : null;
+    if (activeThreadBusy && replacingFromEdit) {
+      setExternalError("작업이 진행 중일 때는 이전 메시지를 다시 시작할 수 없습니다. 현재 응답을 중지하거나 완료된 뒤 다시 편집해 주세요.");
+      return;
+    }
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
       const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions, retriedAfterCompaction: false };
@@ -1385,9 +1477,13 @@ function App(): React.JSX.Element {
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
-        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: promptText.slice(0, 56), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
+        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
-        setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id)]);
+        setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id && summary.id !== replacedThread?.id)]);
+      }
+      if (replacingFromEdit && replacedThread && replacedThread.id !== activeThread.id) {
+        moveThreadUiState(replacedThread.id, activeThread.id);
+        hideThreadIdLocally(replacedThread.id);
       }
       const sidecars = readSidecarSettings();
       const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions, retriedAfterCompaction: false };
@@ -1395,6 +1491,13 @@ function App(): React.JSX.Element {
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
       await window.devilCodex.sendTurn({ threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, ...permissions, ...turnOptions });
+      if (replacingFromEdit) {
+        const cleanTitle = threadTitleFromPrompt(promptText);
+        updateThreadTitle(activeThread.id, cleanTitle);
+        await window.devilCodex.renameThread({ id: activeThread.id, name: cleanTitle, cwd: workspace, model: sendModel, preview: displayText }).catch((error) => {
+          console.warn("[devil-codex] edited thread title rename failed", error);
+        });
+      }
       window.setTimeout(() => { void refreshThreads(); void refreshProjects(); }, 700);
     } catch (error) {
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "요청 실패", text: String(error) }]);
@@ -1480,15 +1583,43 @@ function App(): React.JSX.Element {
 
   function hideThread(summary: ThreadSummary): void {
     setThreadContextMenu(null);
-    setHiddenThreadIds((current) => {
-      const next = [...new Set([...current, summary.id])];
-      localStorage.setItem("devil-codex:hidden-threads", JSON.stringify(next));
-      return next;
-    });
-    setThreads((current) => current.filter((item) => item.id !== summary.id));
+    hideThreadIdLocally(summary.id);
     if (thread?.id === summary.id) {
       setThread(null);
       setItems([]);
+    }
+  }
+
+  function hideThreadIdLocally(threadId: string): void {
+    if (!threadId) return;
+    setHiddenThreadIds((current) => {
+      const next = [...new Set([...current, threadId])];
+      localStorage.setItem("devil-codex:hidden-threads", JSON.stringify(next));
+      return next;
+    });
+    setThreads((current) => current.filter((item) => item.id !== threadId));
+    setProjects((current) => current.map((group) => ({ ...group, threads: group.threads.filter((item) => item.id !== threadId) })));
+    setSearchResults((current) => current.filter((item) => item.id !== threadId));
+    pendingThreads.current.delete(threadId);
+  }
+
+  function moveThreadUiState(fromThreadId: string, toThreadId: string): void {
+    if (!fromThreadId || !toThreadId || fromThreadId === toThreadId) return;
+    setPinnedThreads((current) => {
+      if (!current.includes(fromThreadId)) return current;
+      const next = [...new Set([...current.filter((id) => id !== fromThreadId), toThreadId])];
+      localStorage.setItem("devil-codex:pinned-threads", JSON.stringify(next));
+      return next;
+    });
+    setSideChatsByThread((current) => {
+      const from = current[fromThreadId];
+      if (!from?.length) return current;
+      const next = { ...current, [toThreadId]: [...from, ...(current[toThreadId] ?? [])] };
+      delete next[fromThreadId];
+      return next;
+    });
+    if (panelByThread.current[fromThreadId] && !panelByThread.current[toThreadId]) {
+      panelByThread.current[toThreadId] = panelByThread.current[fromThreadId];
     }
   }
 
@@ -1661,6 +1792,7 @@ function App(): React.JSX.Element {
     setOpenMenuOpen(false);
     setShellMenuOpen(null);
     setAccountMenuOpen(false);
+    setAccountUsageOpen(false);
     setThreadMenuOpen(false);
     setOpenProjectMenu(null);
     setProjectHeaderMenuOpen(false);
@@ -1937,7 +2069,8 @@ function App(): React.JSX.Element {
             <div className="menu-divider" />
             <button onClick={() => { openView("settings"); setAccountMenuOpen(false); }}><Settings size={17} />설정<kbd>{shortcut("⌘,")}</kbd></button>
             <div className="menu-divider" />
-            <button onClick={() => openSettingsSection("사용량 및 청구")}><Target size={17} />남은 사용량<ChevronRight size={15} className="chev" /></button>
+            <button onClick={() => setAccountUsageOpen((open) => !open)}><Target size={17} />남은 사용량<ChevronDown size={15} className={accountUsageOpen ? "chev open" : "chev"} /></button>
+            <AnimatePresence>{accountUsageOpen && <AccountUsageInline entries={quickUsage.report?.entries ?? []} state={quickUsage.state} onDetails={() => openSettingsSection("사용량 및 청구")} />}</AnimatePresence>
           </motion.div>}</AnimatePresence>
           <button className={view === "settings" ? "settings-button selected" : "settings-button"} onClick={() => { const next = !accountMenuOpen; closePopovers(); setAccountMenuOpen(next); }}><Settings />설정</button>
         </div>
@@ -1993,10 +2126,10 @@ function App(): React.JSX.Element {
 
             <Composer busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onReview={() => openUtility("review")} onStatus={() => void showWorkspaceStatus()} onMcp={() => openView("plugins")} onFeedback={() => void sendFeedback()} />
 
-            <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
+            <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} tokenUsage={threadTokenUsage} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
         ) : view === "search" ? (
-          <SearchView query={search} onQuery={setSearch} threads={searchResults} loading={searchBusy} onOpen={resumeThread} />
+          <SearchView query={search} onQuery={setSearch} threads={visibleSearchResults} loading={searchBusy} onOpen={resumeThread} />
         ) : view === "archive" ? (
           <ArchivedThreadsView threads={archivedThreads} loading={archivedBusy} onBack={() => openView("thread")} onOpen={(summary) => void resumeThread(summary)} onRestore={(summary) => void unarchiveThread(summary)} relativeTime={relativeTime} />
         ) : view === "settings" ? (
@@ -2091,7 +2224,7 @@ function WindowsTitlebar({
                     <button type="button" onClick={onSettings}><span>Settings...</span><kbd>Ctrl+,</kbd></button>
                     <div className="windows-app-menu-divider" />
                     <button type="button" onClick={onLogOut}><span>Log Out</span></button>
-                    <button type="button" onClick={() => onWindowAction("close")}><span>Exit</span><kbd>Ctrl+Q</kbd></button>
+                    <button type="button" onClick={() => onWindowAction("quit")}><span>Exit</span><kbd>Ctrl+Q</kbd></button>
                   </>
                 )}
                 {menuOpen === "edit" && (
@@ -2401,10 +2534,33 @@ function collectEnvironmentSources(items: ThreadHistoryItem[]): EnvironmentSourc
   return [...urls.values()].slice(0, 8);
 }
 
-function EnvironmentCard({ cwd, changes, sources, subagents, sideChats, onRefresh, onReview, onGit, onCodexWeb, onUsage, onOpenSource, onError, onOpenSubagent, onOpenSide }: {
+function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUsageEntry[]; state: string; onDetails: () => void }): React.JSX.Element {
+  const entry = entries.find((item) => item.windows.length > 0) ?? entries[0];
+  const message = state === "loading" || state === "idle"
+    ? "사용량을 불러오는 중..."
+    : !entry
+      ? "표시할 사용량이 없습니다."
+      : entry.error
+        ? `오류: ${entry.error}`
+        : entry.unavailable ?? "";
+  return <motion.div className="account-usage-panel" initial={{ opacity: 0, height: 0, y: -4 }} animate={{ opacity: 1, height: "auto", y: 0 }} exit={{ opacity: 0, height: 0, y: -4 }} transition={{ duration: .16 }}>
+    {entry?.windows.length ? <>
+      {entry.label !== "Codex" && <small className="account-usage-provider">{entry.label}</small>}
+      {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
+        <strong>{window.label}</strong>
+        <span>{Math.round(window.remainingPercent)}%</span>
+        <time>{compactUsageReset(window.resetsAt)}</time>
+      </div>)}
+    </> : <p>{message}</p>}
+    <button type="button" className="account-usage-details" onClick={onDetails}>자세히 보기</button>
+  </motion.div>;
+}
+
+function EnvironmentCard({ cwd, changes, sources, tokenUsage, subagents, sideChats, onRefresh, onReview, onGit, onCodexWeb, onUsage, onOpenSource, onError, onOpenSubagent, onOpenSide }: {
   cwd: string;
   changes: WorkspaceChanges;
   sources: EnvironmentSource[];
+  tokenUsage: ThreadTokenUsageSummary;
   subagents: Array<{ id: string; label: string }>;
   sideChats: Array<{ id: string; label: string }>;
   onRefresh: () => Promise<WorkspaceChanges>;
@@ -2480,6 +2636,23 @@ function EnvironmentCard({ cwd, changes, sources, subagents, sideChats, onRefres
       </div>}
     </div>}
     {gitAvailable && <button className="environment-row" onClick={onGit}><span><UploadCloud />커밋 또는 푸시</span></button>}
+    {(tokenUsage.totalTokens > 0 || tokenUsage.models.length > 0) && <>
+      <div className="environment-divider" />
+      <div className="environment-caption">토큰</div>
+      <div className="environment-token-card">
+        <div className="environment-token-head">
+          <span><Target />현재 스레드</span>
+          <strong>{compactTokenCount(tokenUsage.totalTokens)}{tokenUsage.maxTokens ? ` / ${compactTokenCount(tokenUsage.maxTokens)}` : ""}</strong>
+        </div>
+        {tokenUsage.maxTokens && <progress value={Math.min(tokenUsage.totalTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />}
+        <div className="environment-token-models">
+          {tokenUsage.models.slice(0, 3).map((row) => <div key={row.key}>
+            <span><strong>{row.label}</strong><small>{row.source === "context" ? "현재 컨텍스트" : `${row.requests}개 요청 · 입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`}</small></span>
+            <b>{compactTokenCount(row.totalTokens)}</b>
+          </div>)}
+        </div>
+      </div>
+    </>}
     {sideChats.length > 0 && <>
       <div className="environment-divider" />
       <div className="environment-caption">곁가지 대화</div>

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, shell, Tray } from "electron";
 import { config as loadEnv } from "dotenv";
 import { join, resolve } from "node:path";
 import { access, mkdir as fsMkdir } from "node:fs/promises";
@@ -84,13 +84,13 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!windowRef) return;
-    if (windowRef.isMinimized()) windowRef.restore();
-    windowRef.focus();
+    showMainWindow();
   });
 }
 
 let windowRef: BrowserWindow | undefined;
+let trayRef: Tray | undefined;
+let isQuitting = false;
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
 const browserControlSecret = randomBytes(24).toString("hex");
@@ -485,6 +485,32 @@ function configureMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function appIconPath(): string {
+  return join(app.getAppPath(), "build", process.platform === "win32" ? "icon.ico" : "icon.png");
+}
+
+function showMainWindow(): void {
+  if (!windowRef || windowRef.isDestroyed()) createWindow();
+  if (!windowRef) return;
+  if (windowRef.isMinimized()) windowRef.restore();
+  windowRef.show();
+  windowRef.focus();
+}
+
+function createBackgroundTray(): void {
+  if (trayRef) return;
+  trayRef = new Tray(appIconPath());
+  trayRef.setToolTip("Devil Codex - 백그라운드에서 실행 중");
+  trayRef.setContextMenu(Menu.buildFromTemplate([
+    { label: "Devil Codex 열기", click: () => showMainWindow() },
+    { label: "새 채팅", click: () => { showMainWindow(); sendCommand("new-thread"); } },
+    { label: "설정", click: () => { showMainWindow(); sendCommand("settings"); } },
+    { type: "separator" },
+    { label: "Devil Codex 종료", click: () => { isQuitting = true; app.quit(); } },
+  ]));
+  trayRef.on("click", () => showMainWindow());
+}
+
 const openTargetLabels: Record<ExternalTarget, string> = {
   vscode: "VS Code",
   visualstudio: "Visual Studio",
@@ -655,17 +681,26 @@ function createWindow(): void {
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 19, y: 19 },
     backgroundColor: "#181818",
-    icon: join(app.getAppPath(), "build", "icon.png"),
+    icon: appIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: join(__dirname, "preload.cjs"),
       webviewTag: true,
+      backgroundThrottling: false,
     },
   });
 
   // Capture the embedded browser's guest WebContents for one control path.
   windowRef.webContents.on("did-attach-webview", (_event, guest) => browserView.attach(guest));
+  windowRef.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    windowRef?.hide();
+  });
+  windowRef.on("closed", () => {
+    windowRef = undefined;
+  });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) windowRef.loadURL(devUrl);
@@ -802,8 +837,31 @@ function rolloutSkewNotice(): ThreadHistoryItem {
   return { id: "rollout-version-skew", kind: "system", text: "이 대화는 더 최신 버전의 Codex로 작성되어, 현재 Devil Codex에 번들된 codex 버전으로는 열 수 없습니다. Devil Codex를 최신 버전으로 업데이트하면 동기화됩니다." };
 }
 
+const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
+const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
+
+function stripEditedContinuationText(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const markerIndex = clean.lastIndexOf(EDITED_USER_MESSAGE_MARKER);
+  if (markerIndex >= 0) return clean.slice(markerIndex + EDITED_USER_MESSAGE_MARKER.length).trim();
+  if (!clean.startsWith(EDITED_CONTINUATION_PREFIX)) return clean;
+  const lastUserIndex = clean.lastIndexOf("사용자:");
+  if (lastUserIndex > EDITED_CONTINUATION_PREFIX.length) return clean.slice(lastUserIndex + "사용자:".length).trim();
+  return "수정된 대화";
+}
+
+function compactThreadText(text: string, fallback: string, maxLength: number): string {
+  const clean = stripEditedContinuationText(text) || fallback;
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
 function titleFromText(text: string): string {
-  return text.trim().slice(0, 60) || "새 채팅";
+  return compactThreadText(text, "새 채팅", 60);
+}
+
+function previewFromText(text: string): string {
+  return compactThreadText(text, "", 80);
 }
 
 async function externalThreadTitle(threadId: string, fallbackText: string): Promise<string | undefined> {
@@ -881,6 +939,7 @@ async function startCodexProxy(): Promise<void> {
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   configureMenu();
+  createBackgroundTray();
   // The app-server reads model providers when it connects. Register Devil's
   // local proxy before the renderer can start its first external-provider turn.
   await startCodexProxy();
@@ -909,8 +968,13 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (process.platform === "darwin" && panes[input.kind]) return shell.openExternal(panes[input.kind]);
     return undefined;
   });
-  ipcMain.handle("app:window-control", (_event, input: { action: "close" | "minimize" | "maximize" }) => {
+  ipcMain.handle("app:window-control", (_event, input: { action: "close" | "minimize" | "maximize" | "quit" }) => {
     const target = BrowserWindow.getFocusedWindow() ?? windowRef;
+    if (input.action === "quit") {
+      isQuitting = true;
+      app.quit();
+      return;
+    }
     if (!target) return;
     if (input.action === "close") target.close();
     if (input.action === "minimize") target.minimize();
@@ -1268,7 +1332,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             cwd: input.cwd ?? "",
             model: input.model,
             provider: input.provider,
-            preview: input.text.slice(0, 80),
+            preview: previewFromText(input.text),
             updatedAt: Date.now(),
             ...(title ? { title } : {}),
           });
@@ -1313,7 +1377,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         cwd: input.cwd ?? "",
         model: input.model,
         provider: input.provider,
-        preview: input.text.slice(0, 80),
+        preview: previewFromText(input.text),
         updatedAt: Date.now(),
         ...(firstTurn ? { title: titleFromText(input.text) } : {}),
       });
@@ -1352,16 +1416,15 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await threadServer(input.threadId).interruptTurn(input);
   });
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on("activate", () => showMainWindow());
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (isQuitting && process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   appServer?.dispose();
   for (const instance of threadServers.values()) instance.dispose();
   threadServers.clear();

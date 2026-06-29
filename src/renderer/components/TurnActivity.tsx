@@ -361,9 +361,9 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
     <AnimatePresence initial={false}>
       {open && <motion.div className="turn-activity-body" initial={{ height: 0, opacity: 0, y: -4 }} animate={{ height: "auto", opacity: 1, y: 0 }} exit={{ height: 0, opacity: 0, y: -4 }} transition={motionTransition}>
         <div className="activity-thinking-body">
-          {running && <div className="activity-live-banner"><span className="activity-live-pulse" /><Bot size={15} /><strong>{liveStatus}</strong></div>}
           {summary && <div className="activity-summary"><SquareTerminal size={15} />{summary}</div>}
           <ActivityEntries entries={entries} onOpenFile={onOpenFile} />
+          {running && <div className="activity-live-banner activity-live-banner-bottom"><span className="activity-live-pulse" /><Bot size={15} /><strong>{liveStatus}</strong></div>}
         </div>
       </motion.div>}
     </AnimatePresence>
