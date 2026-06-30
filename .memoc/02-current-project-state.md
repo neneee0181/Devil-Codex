@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-06-30T16:31:00+09:00
+updated: 2026-06-30T18:05:33+09:00
 status: active
 tags:
   - memoc
@@ -15,6 +15,7 @@ Last synced: 2026-06-30
 
 ## Current Status
 
+- Update detection fix (2026-06-30): GitHub latest release API returned published `v0.0.19` with Windows installer and `latest.yml`, so the feed was valid. `src/renderer/main.tsx` now calls `window.devilCodex.checkForUpdates()` immediately after subscribing to `onUpdateState`, preventing missed startup events. `src/main/auto-update.cts` now polls every 5 minutes while packaged instead of every 6 hours, so a background-running old app can notice a freshly published release without restart. No version bump; `npm run build` passes.
 - Windows tray/release fix (2026-06-30): v0.0.19 adds packaged `build/icon.ico`, resolves packaged/app resource icon paths before creating tray/window icons, uses `nativeImage` resized to 16px for the Windows tray, and routes tray/menu/window Exit through `quitApp()` which destroys the tray and calls `app.quit()`. `src/main/contracts.cts` now matches shared `WindowControlAction` with `quit`. `npm run build` and `git diff --check` pass; tag `v0.0.19` should trigger the installer workflow after push.
 - Environment thread-token fix (2026-06-30): `src/main/codex-token-usage.cts` reads Codex rollout `token_count.total_token_usage`/`last_token_usage` snapshots by thread id and attaches them to `ThreadHistoryItem` as `cumulativeTokenUsage`/`tokenUsage` during `thread:read` and `thread:sync-history`. `src/renderer/main.tsx` no longer uses `contextUsage.usedTokens` as the current-thread total; the environment card now shows total thread usage from real usage fields and displays current context as a separate secondary gauge. `npm run build` passes, and a smoke check for thread `019f0efd-0c74-7551-94e6-2ce3dc6db4c7` read cumulative `810598` tokens.
 - IPC readiness race fix (2026-06-30): installed v0.0.17 contained the handler and normal startup `createWindow()` was after handler registration, so `No handler registered for 'runtime:status'` could only come from early `showMainWindow()` paths (`second-instance`/tray/activate) creating a renderer before IPC registration completed. `src/main/main.cts` now gates `showMainWindow()` behind `ipcHandlersReady`, queues early show requests, creates the tray only after handler registration, and then creates/shows the window. Version bumped to `0.0.18`; `npm run build` passes, built order check shows `runtime:status` before startup `createWindow()`, and local `npm start` spawned renderer plus `vendor/codex/codex.exe app-server --stdio`.

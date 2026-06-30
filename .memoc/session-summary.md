@@ -3,20 +3,20 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-27T22:05:00
-updated: 2026-06-30T16:31:00+09:00
+updated: 2026-06-30T18:05:33+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-06-30T16:31:00+09:00
+Last: 2026-06-30T18:05:33+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
-- v0.0.19 includes the environment token-total fix plus a Windows tray fix: packaged `build/icon.ico` is included, tray icon creation uses `nativeImage` resized for Windows, and all Exit paths call `quitApp()` so the tray/background process fully terminates.
+- Update detection fix is committed on top of v0.0.19 without a version bump: renderer now calls `checkForUpdates()` after subscribing to update state, and packaged apps poll GitHub latest every 5 minutes instead of every 6 hours.
 
 ## Verify
 - `npm run build` passes.
-- `git diff --check` passes for touched files. Release push/tag is expected to trigger the installer workflow.
+- GitHub latest release API returned `v0.0.19` with Windows assets, so the remaining issue was stale/missed polling state.

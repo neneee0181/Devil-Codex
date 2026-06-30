@@ -91,7 +91,7 @@ export function initAutoUpdate(getWindow: () => BrowserWindow | undefined): void
   const check = async () => send(await checkLatest());
 
   setTimeout(() => void check(), 8000);
-  setInterval(() => void check(), 6 * 60 * 60 * 1000);
+  setInterval(() => void check(), 5 * 60 * 1000);
 }
 
 export async function checkForUpdatesNow(getWindow?: () => BrowserWindow | undefined): Promise<void> {

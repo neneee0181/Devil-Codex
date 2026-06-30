@@ -517,7 +517,11 @@ function App(): React.JSX.Element {
     return dispose;
   }, []);
 
-  useEffect(() => window.devilCodex.onUpdateState((state) => setUpdate(state)), []);
+  useEffect(() => {
+    const dispose = window.devilCodex.onUpdateState((state) => setUpdate(state));
+    void window.devilCodex.checkForUpdates();
+    return dispose;
+  }, []);
   // When the AI drives the browser (devil_browser MCP), open/focus the browser
   // tab so the user watches it act.
   useEffect(() => window.devilCodex.onBrowserActivate(() => { openUtility("browser"); setUtilityPanelOpen(true); }), []);
