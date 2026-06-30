@@ -1,5 +1,5 @@
 import { app, safeStorage, shell } from "electron";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
@@ -71,6 +71,8 @@ export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const modelCache = new Map<string, { models: ProviderModel[]; fetchedAt: number }>();
 const quotaCache = new Map<string, { windows: ProviderUsageWindow[]; fetchedAt: number }>();
 let antigravityLoginInProgress = false;
+let antigravityLoginSession = 0;
+let activeCallback: { server: Server; timeout: ReturnType<typeof setTimeout>; reject: (error: Error) => void } | null = null;
 
 function root(): string { return join(app.getPath("userData"), "providers"); }
 function tokenPath(): string { return join(root(), "antigravity.oauth"); }
@@ -223,8 +225,31 @@ async function refreshAntigravityToken(refreshToken: string, signal?: AbortSigna
   return projectId ? { ...creds, projectId } : creds;
 }
 
+function closeActiveCallback(error?: Error): void {
+  const active = activeCallback;
+  if (!active) return;
+  activeCallback = null;
+  clearTimeout(active.timeout);
+  try { active.server.closeAllConnections?.(); } catch { /* best effort */ }
+  try { active.server.close(); } catch { /* best effort */ }
+  if (error) active.reject(error);
+}
+
 function waitForAntigravityCallback(expectedState: string): Promise<string> {
+  closeActiveCallback(new Error("Antigravity OAuth 로그인 요청이 새 요청으로 교체되었습니다."));
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout>;
+    const finish = (error?: Error, code?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (activeCallback?.server === server) activeCallback = null;
+      clearTimeout(timeout);
+      try { server.closeAllConnections?.(); } catch { /* best effort */ }
+      try { server.close(); } catch { /* best effort */ }
+      if (error) reject(error);
+      else resolve(code ?? "");
+    };
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${CALLBACK_PORT}`);
       if (url.pathname !== "/callback") { res.writeHead(404); res.end(); return; }
@@ -232,19 +257,31 @@ function waitForAntigravityCallback(expectedState: string): Promise<string> {
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       const page = (msg: string, ok: boolean): string => `<!DOCTYPE html><meta charset="utf8"><body style="font-family:-apple-system,sans-serif;background:#121212;color:#e2e2e2;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h2 style="color:${ok ? "#6ad08a" : "#ef7770"}">${msg}</h2><p style="color:#888">devil-codex로 돌아가세요.</p></div></body>`;
-      if (error || state !== expectedState || !code) {
+      const stateMatches = state === expectedState;
+      if (error) {
         res.writeHead(error ? 200 : 400, { "content-type": "text/html" });
-        res.end(page(error ? `로그인 실패: ${error}` : "잘못된 콜백", false));
-        server.close(); reject(new Error(error || "Antigravity OAuth 콜백 오류"));
+        res.end(page(`로그인 실패: ${error}`, false));
+        if (stateMatches) finish(new Error(`Antigravity OAuth 오류: ${error}`));
+        return;
+      }
+      if (!code) {
+        res.writeHead(400, { "content-type": "text/html" });
+        res.end(page("인증 코드가 없는 콜백입니다. 새 로그인 창에서 다시 진행하세요.", false));
+        return;
+      }
+      if (!stateMatches) {
+        res.writeHead(400, { "content-type": "text/html" });
+        res.end(page("이전 로그인 창의 콜백입니다. 가장 최근에 열린 Google 로그인 창을 사용하세요.", false));
         return;
       }
       res.writeHead(200, { "content-type": "text/html" });
       res.end(page("Antigravity 연결됨! 탭을 닫아도 됩니다.", true));
-      server.close(); resolve(code);
+      finish(undefined, code);
     });
-    server.on("error", reject);
+    server.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    timeout = setTimeout(() => finish(new Error("Antigravity 로그인 시간 초과")), 5 * 60 * 1000);
+    activeCallback = { server, timeout, reject: (error) => finish(error) };
     server.listen(CALLBACK_PORT, "127.0.0.1");
-    setTimeout(() => { server.close(); reject(new Error("Antigravity 로그인 시간 초과")); }, 5 * 60 * 1000);
   });
 }
 
@@ -270,6 +307,7 @@ export async function antigravityStatus(): Promise<boolean> {
 }
 
 export async function antigravityLogin(onDone: () => void): Promise<null> {
+  const session = ++antigravityLoginSession;
   antigravityLoginInProgress = true;
   const { verifier, challenge } = pkce();
   const state = randomBytes(16).toString("hex");
@@ -289,17 +327,23 @@ export async function antigravityLogin(onDone: () => void): Promise<null> {
   void (async () => {
     try {
       await writeToken(await exchangeAntigravityCode(await wait, verifier));
-    } catch {
+    } catch (error) {
       // The UI observes status staying false.
+      console.warn("[devil-codex antigravity] login failed:", error instanceof Error ? error.message : String(error));
     } finally {
-      antigravityLoginInProgress = false;
-      onDone();
+      if (antigravityLoginSession === session) {
+        antigravityLoginInProgress = false;
+        onDone();
+      }
     }
   })();
   return null;
 }
 
 export async function antigravityLogout(): Promise<void> {
+  antigravityLoginSession += 1;
+  antigravityLoginInProgress = false;
+  closeActiveCallback(new Error("Antigravity OAuth 로그인 요청이 로그아웃으로 취소되었습니다."));
   if (existsSync(tokenPath())) await unlink(tokenPath());
   modelCache.clear();
   quotaCache.clear();

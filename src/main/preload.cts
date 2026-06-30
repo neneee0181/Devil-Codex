@@ -117,6 +117,11 @@ const api: DevilCodexApi = {
     ipcRenderer.on("provider:auth", handler);
     return () => ipcRenderer.removeListener("provider:auth", handler);
   },
+  onProviderUsageChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("provider:usage-changed", handler);
+    return () => ipcRenderer.removeListener("provider:usage-changed", handler);
+  },
   openWorkspace: (input) => ipcRenderer.invoke("workspace:open-external", input),
   respondApproval: (input) => ipcRenderer.invoke("approval:respond", input),
   sendTurn: (input) => ipcRenderer.invoke("turn:send", input),

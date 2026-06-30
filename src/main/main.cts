@@ -41,6 +41,13 @@ async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; 
   return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot, antigravity };
 }
 
+type UsageCacheProvider = "codex" | "claude-code" | "copilot" | "antigravity";
+const USAGE_CACHE_PROVIDERS: readonly UsageCacheProvider[] = ["codex", "claude-code", "copilot", "antigravity"];
+
+function isUsageCacheProvider(provider: ProviderId | "unknown"): provider is UsageCacheProvider {
+  return (USAGE_CACHE_PROVIDERS as readonly string[]).includes(provider);
+}
+
 function safeProjectName(value: unknown): string {
   const text = String(value ?? "").trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ");
   return text || "새 프로젝트";
@@ -216,6 +223,9 @@ const codexProxy = new CodexProxyServer((message) => {
       },
     },
   });
+}, (event) => {
+  if (event.completed && isUsageCacheProvider(event.provider)) clearProviderUsageCache(event.provider);
+  sendToRenderer("provider:usage-changed", { provider: event.provider, completed: event.completed, at: Date.now() });
 });
 
 function usesCodexProxy(provider?: string): boolean {

@@ -42,6 +42,7 @@ async function loadProxySecret(): Promise<string> {
 }
 const providerSettings = new ProviderSettingsStore();
 let reportProxyError: ((message: string) => void) | undefined;
+let reportRequestLogChanged: ((event: { provider: ProviderRequestLogEntry["provider"]; completed: boolean }) => void) | undefined;
 const sidecarSettingsByThread = new Map<string, SidecarSettings>();
 const sidecarStatsByThread = new Map<string, SidecarStats>();
 const requestLog: ProviderRequestLogEntry[] = [];
@@ -175,13 +176,16 @@ function startRequestLog(entry: ProviderRequestLogEntry): void {
   requestLog.unshift(entry);
   requestLog.splice(REQUEST_LOG_LIMIT);
   persistRequestLog();
+  reportRequestLogChanged?.({ provider: entry.provider, completed: false });
 }
 
 function finishRequestLog(id: string, patch: Partial<ProviderRequestLogEntry>): void {
   const index = requestLog.findIndex((entry) => entry.id === id);
   if (index < 0) return;
-  requestLog[index] = { ...requestLog[index]!, ...patch };
+  const next = { ...requestLog[index]!, ...patch };
+  requestLog[index] = next;
   persistRequestLog();
+  reportRequestLogChanged?.({ provider: next.provider, completed: true });
 }
 
 function logUsage(usage: OcxUsage | undefined): ProviderRequestLogEntry["usage"] | undefined {
@@ -433,8 +437,9 @@ export class CodexProxyServer {
   private port = 0;
   private secret = "";
 
-  constructor(onProxyError?: (message: string) => void) {
+  constructor(onProxyError?: (message: string) => void, onRequestLogChanged?: (event: { provider: ProviderRequestLogEntry["provider"]; completed: boolean }) => void) {
     reportProxyError = onProxyError;
+    reportRequestLogChanged = onRequestLogChanged;
   }
 
   secretToken(): string { return this.secret; }
