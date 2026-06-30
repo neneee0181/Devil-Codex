@@ -305,16 +305,8 @@ function addTokenUsageRow(rows: Map<string, ThreadTokenModelUsage>, input: { key
   rows.set(input.key, row);
 }
 
-function latestCumulativeTokenUsage(items: ThreadHistoryItem[]): ProviderTokenUsage | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const usage = items[index].cumulativeTokenUsage;
-    if (usage && providerTokenTotal(usage) > 0) return usage;
-  }
-  return undefined;
-}
-
 function tokenUsageRowDetail(row: ThreadTokenModelUsage): string {
-  const prefix = row.source === "cumulative" ? "총 누적" : `${row.requests}개 요청`;
+  const prefix = `${row.requests}개 요청`;
   const parts = [prefix];
   if (row.inputTokens > 0 || row.outputTokens > 0) parts.push(`입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`);
   if (row.cachedInputTokens > 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
@@ -331,19 +323,14 @@ function summarizeThreadTokenUsage(input: { threadId?: string; items: ThreadHist
   const requestTokens = [...rows.values()].reduce((sum, row) => sum + row.totalTokens, 0);
   const provider = input.provider ?? "codex";
   const label = `${providerDisplayName(provider, input.providers)} · ${input.model}`;
-  const cumulativeUsage = latestCumulativeTokenUsage(input.items);
-  if (cumulativeUsage) {
-    addTokenUsageRow(rows, { key: `${provider}:${input.model}:cumulative`, label, usage: cumulativeUsage, requests: Math.max(1, input.items.filter((item) => item.kind === "user").length), source: "cumulative" });
-  } else {
-    const seen = new Set<string>();
-    for (const item of input.items) {
-      const usage = item.tokenUsage;
-      if (!usage || providerTokenTotal(usage) <= 0) continue;
-      const usageKey = item.turnId || item.id;
-      if (seen.has(usageKey)) continue;
-      seen.add(usageKey);
-      addTokenUsageRow(rows, { key: `${provider}:${input.model}:turns`, label, usage, requests: 1, source: "turnUsage" });
-    }
+  const seen = new Set<string>();
+  for (const item of input.items) {
+    const usage = item.tokenUsage;
+    if (!usage || providerTokenTotal(usage) <= 0) continue;
+    const usageKey = item.turnId || item.id;
+    if (seen.has(usageKey)) continue;
+    seen.add(usageKey);
+    addTokenUsageRow(rows, { key: `${provider}:${input.model}:turns`, label, usage, requests: 1, source: "turnUsage" });
   }
   const priority: Record<ThreadTokenModelUsage["source"], number> = { cumulative: 0, turnUsage: 0, requestLog: 1 };
   const models = [...rows.values()].sort((a, b) => priority[a.source] - priority[b.source] || b.totalTokens - a.totalTokens);

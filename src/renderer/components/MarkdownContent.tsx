@@ -26,11 +26,15 @@ function richMarkdown(text: string): string {
   let fenced = false;
   return text.split("\n").map((line) => {
     if (line.trimStart().startsWith("```")) { fenced = !fenced; return line; }
-    if (fenced || line.includes("](")) return line;
+    if (fenced) return line;
+    const normalizedLinks = line
+      .replace(/`(\[[^\]]+\]\(devil-file:[^)]+\))`/g, "$1")
+      .replace(/\[`([^`]+)`\]\(devil-file:([^)]+)\)/g, "[$1](devil-file:$2)");
+    if (normalizedLinks.includes("](")) return normalizedLinks;
     if (line.trim() === "첨부 파일:") return "";
-    const image = line.replace(/((?:\/[\w.@%+~ -]+)+\.(?:png|jpe?g|gif|webp|svg))/gi, (path) => `![${path.split("/").at(-1)}](devil-image:${encodeURIComponent(path)})`);
-    if (image !== line) return image;
-    return line.replace(/\b((?:[\w.@+-]+[\\/])*[\w.@+-]+\.(?:tsx?|jsx?|css|json|md|cjs|mjs|py|go|rs|java|kt|swift|html|ya?ml|toml|sql|sh))\b/g, (path) => `[${path}](devil-file:${encodeURIComponent(path)})`);
+    const image = normalizedLinks.replace(/((?:\/[\w.@%+~ -]+)+\.(?:png|jpe?g|gif|webp|svg))/gi, (path) => `![${path.split("/").at(-1)}](devil-image:${encodeURIComponent(path)})`);
+    if (image !== normalizedLinks) return image;
+    return normalizedLinks.replace(/\b((?:[\w.@+-]+[\\/])*[\w.@+-]+\.(?:tsx?|jsx?|css|json|md|cjs|mjs|py|go|rs|java|kt|swift|html|ya?ml|toml|sql|sh))\b/g, (path) => `[${path}](devil-file:${encodeURIComponent(path)})`);
   }).join("\n");
 }
 
