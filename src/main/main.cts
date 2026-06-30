@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, shell, Tray } from "electron";
 import { config as loadEnv } from "dotenv";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { access, mkdir as fsMkdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -30,6 +31,7 @@ import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, p
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
+import { attachCodexTokenSnapshot, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
 
@@ -67,6 +69,10 @@ function stripInternalDirectives(text: string): string {
 
 function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
   return items.map((item) => item.kind === "user" ? { ...item, text: stripInternalDirectives(item.text) } : item);
+}
+
+async function attachCodexTokenUsage(threadId: string, items: ThreadHistoryItem[]): Promise<ThreadHistoryItem[]> {
+  return attachCodexTokenSnapshot(items, await readCodexTokenSnapshot(threadId));
 }
 
 function escapeRegExp(value: string): string {
@@ -488,7 +494,28 @@ function configureMenu(): void {
 }
 
 function appIconPath(): string {
-  return join(app.getAppPath(), "build", process.platform === "win32" ? "icon.ico" : "icon.png");
+  const filename = process.platform === "win32" ? "icon.ico" : "icon.png";
+  const fallback = process.platform === "win32" ? "icon.png" : "icon.ico";
+  const candidates = [
+    join(process.resourcesPath, "build", filename),
+    join(app.getAppPath(), "build", filename),
+    join(process.resourcesPath, "build", fallback),
+    join(app.getAppPath(), "build", fallback),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+function trayIconImage(): Electron.NativeImage {
+  const image = nativeImage.createFromPath(appIconPath());
+  if (process.platform === "win32" && !image.isEmpty()) return image.resize({ width: 16, height: 16 });
+  return image;
+}
+
+function quitApp(): void {
+  isQuitting = true;
+  trayRef?.destroy();
+  trayRef = undefined;
+  app.quit();
 }
 
 function showMainWindow(): void {
@@ -505,14 +532,14 @@ function showMainWindow(): void {
 
 function createBackgroundTray(): void {
   if (trayRef) return;
-  trayRef = new Tray(appIconPath());
+  trayRef = new Tray(trayIconImage());
   trayRef.setToolTip("Devil Codex - 백그라운드에서 실행 중");
   trayRef.setContextMenu(Menu.buildFromTemplate([
     { label: "Devil Codex 열기", click: () => showMainWindow() },
     { label: "새 채팅", click: () => { showMainWindow(); sendCommand("new-thread"); } },
     { label: "설정", click: () => { showMainWindow(); sendCommand("settings"); } },
     { type: "separator" },
-    { label: "Devil Codex 종료", click: () => { isQuitting = true; app.quit(); } },
+    { label: "Devil Codex 종료", click: () => quitApp() },
   ]));
   trayRef.on("click", () => showMainWindow());
 }
@@ -975,8 +1002,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("app:window-control", (_event, input: { action: "close" | "minimize" | "maximize" | "quit" }) => {
     const target = BrowserWindow.getFocusedWindow() ?? windowRef;
     if (input.action === "quit") {
-      isQuitting = true;
-      app.quit();
+      quitApp();
       return;
     }
     if (!target) return;
@@ -1198,13 +1224,13 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       try { native = await server().readThread(input); }
       catch (error) { if (isRolloutVersionSkew(error) && local.length === 0) return [rolloutSkewNotice()]; }
       if (native.length > local.length) {
-        return stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native))));
+        return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)))));
       }
-      return stripInternalDirectivesFromHistory(local);
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(local));
     }
     try {
       const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-      return stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id)));
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
     } catch (error) {
       if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
       throw error;
@@ -1218,14 +1244,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:sync-history", async (_event, input) => {
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await server().readThread(input));
-      return stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id)));
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
     }
     const local = await providerTranscripts.read(input.id);
     const native = await server().readThread(input).catch(() => []);
     if (native.length > local.length) {
-      return stripInternalDirectivesFromHistory(await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)));
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native))));
     }
-    return stripInternalDirectivesFromHistory(local);
+    return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(local));
   });
   ipcMain.handle("thread:projects", async (_event, input) => {
     const archived = (input ?? {}).archived ?? false;
@@ -1434,6 +1460,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  trayRef?.destroy();
+  trayRef = undefined;
   appServer?.dispose();
   for (const instance of threadServers.values()) instance.dispose();
   threadServers.clear();

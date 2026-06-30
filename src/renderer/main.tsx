@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -234,8 +234,8 @@ type PendingTurnState = {
 };
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
-type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; requests: number; source: "context" | "requestLog" };
-type ThreadTokenUsageSummary = { totalTokens: number; maxTokens?: number; requestTokens: number; models: ThreadTokenModelUsage[] };
+type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; reasoningOutputTokens: number; requests: number; source: "cumulative" | "turnUsage" | "requestLog" };
+type ThreadTokenUsageSummary = { totalTokens: number; contextTokens?: number; maxTokens?: number; requestTokens: number; models: ThreadTokenModelUsage[] };
 
 function compactTokenCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -259,34 +259,76 @@ function providerDisplayName(provider: ProviderId | "unknown", providers: Provid
   return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider);
 }
 
+function providerTokenTotal(usage: ProviderTokenUsage): number {
+  return usage.totalTokens && usage.totalTokens > 0 ? usage.totalTokens : usage.inputTokens + usage.outputTokens;
+}
+
+function addTokenUsageRow(rows: Map<string, ThreadTokenModelUsage>, input: { key: string; label: string; usage: ProviderTokenUsage; requests: number; source: ThreadTokenModelUsage["source"] }): void {
+  const row = rows.get(input.key) ?? {
+    key: input.key,
+    label: input.label,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    requests: 0,
+    source: input.source,
+  };
+  row.inputTokens += input.usage.inputTokens;
+  row.outputTokens += input.usage.outputTokens;
+  row.cachedInputTokens += input.usage.cachedInputTokens ?? 0;
+  row.reasoningOutputTokens += input.usage.reasoningOutputTokens ?? 0;
+  row.totalTokens += providerTokenTotal(input.usage);
+  row.requests += input.requests;
+  rows.set(input.key, row);
+}
+
+function latestCumulativeTokenUsage(items: ThreadHistoryItem[]): ProviderTokenUsage | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const usage = items[index].cumulativeTokenUsage;
+    if (usage && providerTokenTotal(usage) > 0) return usage;
+  }
+  return undefined;
+}
+
+function tokenUsageRowDetail(row: ThreadTokenModelUsage): string {
+  const prefix = row.source === "cumulative" ? "총 누적" : `${row.requests}개 요청`;
+  const parts = [prefix];
+  if (row.inputTokens > 0 || row.outputTokens > 0) parts.push(`입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`);
+  if (row.cachedInputTokens > 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
+  return parts.join(" · ");
+}
+
 function summarizeThreadTokenUsage(input: { threadId?: string; items: ThreadHistoryItem[]; contextUsage?: ContextUsage; provider?: ProviderId; model: string; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[] }): ThreadTokenUsageSummary {
   const rows = new Map<string, ThreadTokenModelUsage>();
   for (const entry of input.requestLog) {
     if (!entry.threadId || entry.threadId !== input.threadId || !entry.usage) continue;
     const key = `${entry.provider}:${entry.model}`;
-    const row = rows.get(key) ?? { key, label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`, totalTokens: 0, inputTokens: 0, outputTokens: 0, requests: 0, source: "requestLog" as const };
-    row.inputTokens += entry.usage.inputTokens;
-    row.outputTokens += entry.usage.outputTokens;
-    row.totalTokens += entry.usage.inputTokens + entry.usage.outputTokens;
-    row.requests += 1;
-    rows.set(key, row);
+    addTokenUsageRow(rows, { key, label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`, usage: entry.usage, requests: 1, source: "requestLog" });
   }
   const requestTokens = [...rows.values()].reduce((sum, row) => sum + row.totalTokens, 0);
-  if (input.contextUsage?.usedTokens) {
-    const key = `${input.provider ?? "codex"}:${input.model}:context`;
-    rows.set(key, {
-      key,
-      label: `${providerDisplayName(input.provider ?? "codex", input.providers)} · ${input.model}`,
-      totalTokens: input.contextUsage.usedTokens,
-      inputTokens: 0,
-      outputTokens: 0,
-      requests: input.items.filter((item) => item.kind === "user").length,
-      source: "context",
-    });
+  const provider = input.provider ?? "codex";
+  const label = `${providerDisplayName(provider, input.providers)} · ${input.model}`;
+  const cumulativeUsage = latestCumulativeTokenUsage(input.items);
+  if (cumulativeUsage) {
+    addTokenUsageRow(rows, { key: `${provider}:${input.model}:cumulative`, label, usage: cumulativeUsage, requests: Math.max(1, input.items.filter((item) => item.kind === "user").length), source: "cumulative" });
+  } else {
+    const seen = new Set<string>();
+    for (const item of input.items) {
+      const usage = item.tokenUsage;
+      if (!usage || providerTokenTotal(usage) <= 0) continue;
+      const usageKey = item.turnId || item.id;
+      if (seen.has(usageKey)) continue;
+      seen.add(usageKey);
+      addTokenUsageRow(rows, { key: `${provider}:${input.model}:turns`, label, usage, requests: 1, source: "turnUsage" });
+    }
   }
-  const models = [...rows.values()].sort((a, b) => Number(a.source === "requestLog") - Number(b.source === "requestLog") || b.totalTokens - a.totalTokens);
+  const priority: Record<ThreadTokenModelUsage["source"], number> = { cumulative: 0, turnUsage: 0, requestLog: 1 };
+  const models = [...rows.values()].sort((a, b) => priority[a.source] - priority[b.source] || b.totalTokens - a.totalTokens);
   return {
-    totalTokens: input.contextUsage?.usedTokens ?? requestTokens,
+    totalTokens: models.reduce((sum, row) => sum + row.totalTokens, 0),
+    contextTokens: input.contextUsage?.usedTokens,
     maxTokens: input.contextUsage?.maxTokens,
     requestTokens,
     models,
@@ -628,10 +670,10 @@ function App(): React.JSX.Element {
     items,
     contextUsage,
     provider: providers.settings?.provider,
-    model,
+    model: thread?.model || model,
     providers: providers.settings?.providers ?? [],
     requestLog: quickUsage.requestLog,
-  }), [thread?.id, items, contextUsage, providers.settings?.provider, providers.settings?.providers, model, quickUsage.requestLog]);
+  }), [thread?.id, thread?.model, items, contextUsage, providers.settings?.provider, providers.settings?.providers, model, quickUsage.requestLog]);
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
@@ -2642,21 +2684,27 @@ function EnvironmentCard({ cwd, changes, sources, tokenUsage, subagents, sideCha
       </div>}
     </div>}
     {gitAvailable && <button className="environment-row" onClick={onGit}><span><UploadCloud />커밋 또는 푸시</span></button>}
-    {(tokenUsage.totalTokens > 0 || tokenUsage.models.length > 0) && <>
+    {(tokenUsage.totalTokens > 0 || tokenUsage.models.length > 0 || tokenUsage.contextTokens) && <>
       <div className="environment-divider" />
       <div className="environment-caption">토큰</div>
       <div className="environment-token-card">
         <div className="environment-token-head">
           <span><Target />현재 스레드</span>
-          <strong>{compactTokenCount(tokenUsage.totalTokens)}{tokenUsage.maxTokens ? ` / ${compactTokenCount(tokenUsage.maxTokens)}` : ""}</strong>
+          <strong>{tokenUsage.totalTokens > 0 ? compactTokenCount(tokenUsage.totalTokens) : "기록 없음"}</strong>
         </div>
-        {tokenUsage.maxTokens && <progress value={Math.min(tokenUsage.totalTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />}
-        <div className="environment-token-models">
+        {tokenUsage.contextTokens && tokenUsage.maxTokens && <>
+          <div className="environment-token-context">
+            <span>현재 컨텍스트</span>
+            <b>{compactTokenCount(tokenUsage.contextTokens)} / {compactTokenCount(tokenUsage.maxTokens)}</b>
+          </div>
+          <progress value={Math.min(tokenUsage.contextTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />
+        </>}
+        {tokenUsage.models.length > 0 && <div className="environment-token-models">
           {tokenUsage.models.slice(0, 3).map((row) => <div key={row.key}>
-            <span><strong>{row.label}</strong><small>{row.source === "context" ? "현재 컨텍스트" : `${row.requests}개 요청 · 입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`}</small></span>
+            <span><strong>{row.label}</strong><small>{tokenUsageRowDetail(row)}</small></span>
             <b>{compactTokenCount(row.totalTokens)}</b>
           </div>)}
-        </div>
+        </div>}
       </div>
     </>}
     {sideChats.length > 0 && <>

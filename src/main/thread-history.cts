@@ -1,4 +1,4 @@
-import type { ContextUsage, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem } from "./contracts.cjs";
+import type { ContextUsage, ProviderTokenUsage, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem } from "./contracts.cjs";
 
 type RawItem = Record<string, unknown>;
 type RawTurn = Record<string, unknown> & { items?: RawItem[] };
@@ -17,6 +17,49 @@ function baseName(path: string): string {
 function finiteNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function tokenNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as RawItem;
+  const inputTokens = tokenNumber(raw.inputTokens ?? raw.input_tokens ?? raw.promptTokens ?? raw.prompt_tokens) ?? 0;
+  const outputTokens = tokenNumber(raw.outputTokens ?? raw.output_tokens ?? raw.completionTokens ?? raw.completion_tokens) ?? 0;
+  const totalTokens = tokenNumber(raw.totalTokens ?? raw.total_tokens) ?? inputTokens + outputTokens;
+  if (totalTokens <= 0) return undefined;
+  const cachedInputTokens = tokenNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
+  const reasoningOutputTokens = tokenNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens,
+  };
+}
+
+function tokenUsageField(raw: RawItem, ...keys: string[]): ProviderTokenUsage | undefined {
+  for (const key of keys) {
+    const usage = tokenUsageFromRaw(raw[key]);
+    if (usage) return usage;
+  }
+  return undefined;
+}
+
+function turnTokenUsageFromRaw(turn: RawItem): { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage } {
+  const info = (turn.info ?? {}) as RawItem;
+  const tokenUsage = tokenUsageField(turn, "lastTokenUsage", "last_token_usage", "usage", "tokenUsage", "token_usage")
+    ?? tokenUsageField(info, "lastTokenUsage", "last_token_usage");
+  const cumulativeTokenUsage = tokenUsageField(turn, "totalTokenUsage", "total_token_usage", "cumulativeTokenUsage", "cumulative_token_usage")
+    ?? tokenUsageField(info, "totalTokenUsage", "total_token_usage");
+  return {
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(cumulativeTokenUsage ? { cumulativeTokenUsage } : {}),
+  };
 }
 
 function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefined {
@@ -187,6 +230,7 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
       status: String(turn.status ?? "completed") as ThreadHistoryItem["status"],
       durationMs: Number(turn.durationMs ?? (startedAt && completedAt ? (completedAt - startedAt) * 1000 : 0)), startedAt: startedAt * 1000,
       contextUsage: contextUsageFromRaw(turn),
+      ...turnTokenUsageFromRaw(turn),
     });
     history.push(...finalMessages);
   }

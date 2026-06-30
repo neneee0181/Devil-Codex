@@ -58,6 +58,8 @@ export interface ThreadHistoryItem {
   startedAt?: number;
   activities?: ThreadActivityEntry[];
   contextUsage?: ContextUsage;
+  tokenUsage?: ProviderTokenUsage;
+  cumulativeTokenUsage?: ProviderTokenUsage;
 }
 
 export interface ContextUsage {
@@ -139,7 +141,7 @@ export interface DeviceCodeInfo { userCode: string; verificationUri: string; exp
 export interface ProviderUsageWindow { label: string; usedPercent: number; remainingPercent: number; resetsAt?: string | number | null; }
 export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot"; label: string; connected: boolean; windows: ProviderUsageWindow[]; unavailable?: string; error?: string; updatedAt: number; }
 export interface ProviderUsageReport { entries: ProviderUsageEntry[]; }
-export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningOutputTokens?: number; }
+export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; }
 export interface ProviderRequestLogEntry {
   id: string;
   provider: ProviderId | "unknown";

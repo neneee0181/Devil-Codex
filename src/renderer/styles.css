@@ -722,6 +722,8 @@ button:active:not(:disabled) { transform: scale(.96); }
 .environment-token-head span { display: flex; min-width: 0; gap: 7px; align-items: center; color: #cfcfcf; font-size: 12.5px; }
 .environment-token-head svg { flex: 0 0 14px; width: 14px; height: 14px; color: #b8b8b8; }
 .environment-token-head strong { flex: 0 0 auto; font-size: 12.5px; font-weight: 650; }
+.environment-token-context { display: flex; justify-content: space-between; gap: 10px; align-items: center; color: #a7a7a7; font-size: 11px; }
+.environment-token-context b { color: #d0d0d0; font-size: 11px; font-weight: 600; }
 .environment-token-card progress { width: 100%; height: 5px; overflow: hidden; border: 0; border-radius: 999px; background: #3b3b3b; }
 .environment-token-card progress::-webkit-progress-bar { border-radius: 999px; background: #3b3b3b; }
 .environment-token-card progress::-webkit-progress-value { border-radius: 999px; background: #d8d8d8; }

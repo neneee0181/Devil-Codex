@@ -1,4 +1,4 @@
-import type { AppServerEvent, ContextUsage, ThreadActivityEntry, ThreadHistoryItem } from "../shared/contracts";
+import type { AppServerEvent, ContextUsage, ProviderTokenUsage, ThreadActivityEntry, ThreadHistoryItem } from "../shared/contracts";
 
 type RawItem = Record<string, unknown>;
 
@@ -11,6 +11,57 @@ function diffCounts(diff: string): { additions: number; deletions: number } {
 function finiteNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function tokenNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as RawItem;
+  const inputTokens = tokenNumber(raw.inputTokens ?? raw.input_tokens ?? raw.promptTokens ?? raw.prompt_tokens) ?? 0;
+  const outputTokens = tokenNumber(raw.outputTokens ?? raw.output_tokens ?? raw.completionTokens ?? raw.completion_tokens) ?? 0;
+  const totalTokens = tokenNumber(raw.totalTokens ?? raw.total_tokens) ?? inputTokens + outputTokens;
+  if (totalTokens <= 0) return undefined;
+  const cachedInputTokens = tokenNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
+  const reasoningOutputTokens = tokenNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens,
+  };
+}
+
+function tokenUsageField(raw: RawItem, ...keys: string[]): ProviderTokenUsage | undefined {
+  for (const key of keys) {
+    const usage = tokenUsageFromRaw(raw[key]);
+    if (usage) return usage;
+  }
+  return undefined;
+}
+
+function tokenUsageSnapshotFromRaw(...values: Array<unknown>): { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage } | undefined {
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const raw = value as RawItem;
+    const payload = (raw.payload ?? {}) as RawItem;
+    const info = (raw.info ?? payload.info ?? {}) as RawItem;
+    const tokenUsage = tokenUsageField(raw, "lastTokenUsage", "last_token_usage", "usage", "tokenUsage", "token_usage")
+      ?? tokenUsageField(info, "lastTokenUsage", "last_token_usage");
+    const cumulativeTokenUsage = tokenUsageField(raw, "totalTokenUsage", "total_token_usage", "cumulativeTokenUsage", "cumulative_token_usage")
+      ?? tokenUsageField(info, "totalTokenUsage", "total_token_usage");
+    if (tokenUsage || cumulativeTokenUsage) {
+      return {
+        ...(tokenUsage ? { tokenUsage } : {}),
+        ...(cumulativeTokenUsage ? { cumulativeTokenUsage } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefined {
@@ -121,6 +172,14 @@ function upsertEntry(items: ThreadHistoryItem[], turnId: string, entry: ThreadAc
   });
 }
 
+function applyTokenUsageSnapshot(items: ThreadHistoryItem[], turnId: string, snapshot: { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage }): ThreadHistoryItem[] {
+  return updateActivity(items, turnId, (activity) => ({
+    ...activity,
+    ...(snapshot.tokenUsage ? { tokenUsage: snapshot.tokenUsage } : {}),
+    ...(snapshot.cumulativeTokenUsage ? { cumulativeTokenUsage: snapshot.cumulativeTokenUsage } : {}),
+  }));
+}
+
 function appendEntryText(items: ThreadHistoryItem[], turnId: string, itemId: string, kind: ThreadActivityEntry["kind"], delta: string): ThreadHistoryItem[] {
   return updateActivity(items, turnId, (activity) => {
     const entries = activity.activities ?? [];
@@ -185,6 +244,13 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
   const explicitTurnId = String(params.turnId ?? (params.turn as RawItem | undefined)?.id ?? "");
   const turnId = explicitTurnId || latestActivityTurnId(items);
   const item = params.item as RawItem | undefined;
+  const liveTokenUsage = tokenUsageSnapshotFromRaw(params);
+  const payload = (params.payload ?? {}) as RawItem;
+  const tokenEvent = /token/i.test(event.method) || String(params.type ?? payload.type ?? "") === "token_count";
+
+  if (turnId && liveTokenUsage && tokenEvent) {
+    return applyTokenUsageSnapshot(items, turnId, liveTokenUsage);
+  }
 
   if (event.method === "turn/started" && turnId) {
     const turn = (params.turn ?? {}) as RawItem;
@@ -195,7 +261,15 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     const turn = (params.turn ?? {}) as RawItem;
     const status = String(turn.status ?? "completed") as ThreadHistoryItem["status"];
     const contextUsage = contextUsageFromRaw(turn, params);
-    const completed = updateActivity(items, turnId, (activity) => ({ ...activity, status, durationMs: Number(turn.durationMs ?? (Date.now() - (activity.startedAt ?? Date.now()))), contextUsage: contextUsage ?? activity.contextUsage }));
+    const tokenUsage = tokenUsageSnapshotFromRaw(turn, params);
+    const completed = updateActivity(items, turnId, (activity) => ({
+      ...activity,
+      status,
+      durationMs: Number(turn.durationMs ?? (Date.now() - (activity.startedAt ?? Date.now()))),
+      contextUsage: contextUsage ?? activity.contextUsage,
+      ...(tokenUsage?.tokenUsage ? { tokenUsage: tokenUsage.tokenUsage } : {}),
+      ...(tokenUsage?.cumulativeTokenUsage ? { cumulativeTokenUsage: tokenUsage.cumulativeTokenUsage } : {}),
+    }));
     const activity = completed.find((current) => current.kind === "activity" && current.turnId === turnId);
     if (status === "failed" && activity && !hasFailureEntry(activity)) {
       return upsertEntry(completed, turnId, {
