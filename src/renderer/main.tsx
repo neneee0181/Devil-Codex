@@ -35,11 +35,13 @@ import "./styles.css";
 
 type AppView = "thread" | "search" | "archive" | "plugins" | "automations" | "settings";
 type NavigationEntry = { view: AppView; thread: ThreadRef | null; workspace: string; items: ThreadHistoryItem[]; projectDraft: boolean; environmentOpen: boolean; settingsSection: string; search: string };
+type TextPromptState = { title: string; label: string; initialValue: string; placeholder?: string; confirmLabel: string; resolve: (value: string | null) => void };
 type ProjectSortMode = "manual" | "created" | "updated";
 type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
 type EnvironmentSource = { url: string; label: string };
 type ShellMenuKey = "file" | "edit" | "view" | "help";
 type SentModelState = { provider: ProviderId; model: string };
+type ThreadScrollPosition = { top: number; atBottom: boolean; updatedAt: number };
 
 const defaultStatus: RuntimeStatus = {
   state: "ready",
@@ -57,6 +59,25 @@ const defaultChanges: WorkspaceChanges = {
 
 const SIDE_CHAT_NAMES = ["Laplace", "Curie", "Euler", "Gauss", "Turing", "Lovelace", "Hopper", "Tesla", "Newton", "Fermi", "Bohr", "Pascal", "Fourier", "Riemann", "Noether", "Maxwell", "Planck", "Feynman", "Ada", "Hilbert"];
 const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
+const THREAD_SCROLL_POSITIONS_KEY = "devil-codex:thread-scroll-positions";
+
+function readThreadScrollPositions(): Record<string, ThreadScrollPosition> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(THREAD_SCROLL_POSITIONS_KEY) ?? "{}") as Record<string, ThreadScrollPosition>;
+    return Object.fromEntries(Object.entries(raw).filter(([threadId, value]) => threadId && Number.isFinite(value?.top)));
+  } catch {
+    return {};
+  }
+}
+
+function writeThreadScrollPositions(input: Record<string, ThreadScrollPosition>): void {
+  try {
+    const compact = Object.fromEntries(Object.entries(input).sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, 120));
+    localStorage.setItem(THREAD_SCROLL_POSITIONS_KEY, JSON.stringify(compact));
+  } catch {
+    // Losing scroll persistence is better than breaking chat navigation.
+  }
+}
 
 function changesFromTurn(items: ThreadHistoryItem[], turnId: string | undefined, branch: string): WorkspaceChanges {
   if (!turnId) return { ...defaultChanges, branch };
@@ -458,10 +479,14 @@ function App(): React.JSX.Element {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [threadFindOpen, setThreadFindOpen] = useState(false);
   const [threadFindQuery, setThreadFindQuery] = useState("");
+  const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const threadViewRef = useRef<HTMLDivElement>(null);
   const stickToThreadBottom = useRef(true);
   const scrolledThreadId = useRef<string | null>(null);
+  const pendingScrollRestoreThread = useRef<string | null>(null);
+  const threadScrollPositions = useRef<Record<string, ThreadScrollPosition>>(readThreadScrollPositions());
+  const scrollPersistFrame = useRef<number | null>(null);
   const projectHeaderMenuRef = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef<ThreadHistoryItem[]>([]);
   const threadRef = useRef<ThreadRef | null>(null);
@@ -488,6 +513,11 @@ function App(): React.JSX.Element {
   useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
   useEffect(() => { runningTurnsRef.current = runningTurns; }, [runningTurns]);
+  useEffect(() => () => {
+    saveCurrentThreadScrollPosition();
+    if (scrollPersistFrame.current != null) cancelAnimationFrame(scrollPersistFrame.current);
+    writeThreadScrollPositions(threadScrollPositions.current);
+  }, []);
 
   useEffect(() => {
     const dispose = window.devilCodex.onAppServerEvent((event) => receiveEvent(event));
@@ -560,6 +590,9 @@ function App(): React.JSX.Element {
 
   useEffect(() => { localStorage.setItem("devil-codex:sidebar-width", String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem("devil-codex:utility-width", String(utilityWidth)); }, [utilityWidth]);
+  useEffect(() => {
+    if (view !== "thread") scrolledThreadId.current = null;
+  }, [view]);
 
   useEffect(() => {
     if (!workspace || runtime.state !== "connected") { setAvailableSkills([]); return; }
@@ -569,6 +602,31 @@ function App(): React.JSX.Element {
   }, [workspace, runtime.state]);
 
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
+  function scheduleThreadScrollPersist(): void {
+    if (scrollPersistFrame.current != null) return;
+    scrollPersistFrame.current = requestAnimationFrame(() => {
+      scrollPersistFrame.current = null;
+      writeThreadScrollPositions(threadScrollPositions.current);
+    });
+  }
+
+  function rememberThreadScrollPosition(threadId: string, top: number, atBottom: boolean): void {
+    if (!threadId || !Number.isFinite(top)) return;
+    threadScrollPositions.current = {
+      ...threadScrollPositions.current,
+      [threadId]: { top: Math.max(0, top), atBottom, updatedAt: Date.now() },
+    };
+    scheduleThreadScrollPersist();
+  }
+
+  function saveCurrentThreadScrollPosition(): void {
+    const node = threadViewRef.current;
+    const threadId = threadRef.current?.id;
+    if (!node || !threadId) return;
+    const hiddenBelow = node.scrollHeight - node.scrollTop - node.clientHeight;
+    rememberThreadScrollPosition(threadId, node.scrollTop, hiddenBelow <= 140);
+  }
+
   function syncThreadScrollState(node = threadViewRef.current): void {
     if (!node) {
       stickToThreadBottom.current = true;
@@ -579,6 +637,7 @@ function App(): React.JSX.Element {
     const atBottom = hiddenBelow <= 140;
     stickToThreadBottom.current = atBottom;
     setShowScrollToBottom(!atBottom && itemsRef.current.length > 0);
+    if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, node.scrollTop, atBottom);
   }
 
   function scrollThreadToBottom(): void {
@@ -587,20 +646,37 @@ function App(): React.JSX.Element {
     stickToThreadBottom.current = true;
     setShowScrollToBottom(false);
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, node.scrollHeight, true);
   }
 
   useLayoutEffect(() => {
     if (view !== "thread" || !thread?.id) return;
-    if (scrolledThreadId.current !== thread.id) {
+    const firstRenderForThread = scrolledThreadId.current !== thread.id;
+    if (firstRenderForThread) {
       scrolledThreadId.current = thread.id;
-      stickToThreadBottom.current = true;
+      const saved = threadScrollPositions.current[thread.id];
+      stickToThreadBottom.current = saved ? saved.atBottom : true;
+      pendingScrollRestoreThread.current = saved && !saved.atBottom ? thread.id : null;
     }
     const frame = requestAnimationFrame(() => {
       const node = threadViewRef.current;
       if (!node) return;
+      const saved = threadScrollPositions.current[thread.id];
+      if (pendingScrollRestoreThread.current === thread.id && saved && !saved.atBottom) {
+        const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        node.scrollTop = Math.min(saved.top, maxTop);
+        stickToThreadBottom.current = false;
+        setShowScrollToBottom(itemsRef.current.length > 0);
+        if (itemsRef.current.length > 0 || maxTop >= saved.top) {
+          pendingScrollRestoreThread.current = null;
+          syncThreadScrollState(node);
+        }
+        return;
+      }
       if (stickToThreadBottom.current) {
         node.scrollTop = node.scrollHeight;
         setShowScrollToBottom(false);
+        rememberThreadScrollPosition(thread.id, node.scrollTop, true);
       } else {
         syncThreadScrollState(node);
       }
@@ -629,6 +705,7 @@ function App(): React.JSX.Element {
   const isGeneralChatWorkspace = basenamePath(workspace) === "new-chat";
   const hasStartedThread = Boolean(activeSummary && items.length > 0);
   const canUseThreadMenu = view === "thread" && hasStartedThread;
+  const composerDraftKey = thread?.id ?? `${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
   const canOpenWorkspace = Boolean(workspace && !isGeneralChatWorkspace && openTargets.length > 0);
   const activeThreadBusy = Boolean(thread?.id ? runningTurns[thread.id] : busy);
   const runningThreadIds = useMemo(() => new Set(Object.keys(runningTurns)), [runningTurns]);
@@ -1134,6 +1211,7 @@ function App(): React.JSX.Element {
   }
 
   function navigationSnapshot(): NavigationEntry {
+    saveCurrentThreadScrollPosition();
     if (thread?.id) threadHistoryCache.current.set(thread.id, itemsRef.current);
     return { view, thread, workspace, items, projectDraft, environmentOpen, settingsSection, search };
   }
@@ -1274,8 +1352,18 @@ function App(): React.JSX.Element {
     finally { setArchivedBusy(false); }
   }
 
+  function openTextPrompt(input: Omit<TextPromptState, "resolve">): Promise<string | null> {
+    return new Promise((resolve) => setTextPrompt({ ...input, resolve }));
+  }
+
   async function sendFeedback(): Promise<void> {
-    const reason = window.prompt("Codex에 보낼 피드백")?.trim();
+    const reason = (await openTextPrompt({
+      title: "피드백 보내기",
+      label: "Codex에 보낼 피드백",
+      initialValue: "",
+      placeholder: "피드백 내용을 입력하세요",
+      confirmLabel: "보내기",
+    }))?.trim();
     if (!reason) return;
     try {
       await window.devilCodex.uploadFeedback({ reason, ...(thread?.id ? { threadId: thread.id } : {}) });
@@ -1582,8 +1670,15 @@ function App(): React.JSX.Element {
 
   function renameProject(): void {
     setProjectMenuOpen(false);
-    const next = window.prompt("프로젝트 이름 변경", projectName)?.trim();
-    if (next) setProjectAlias(next);
+    void openTextPrompt({
+      title: "프로젝트 이름 변경",
+      label: "이름",
+      initialValue: projectName,
+      confirmLabel: "변경",
+    }).then((value) => {
+      const next = value?.trim();
+      if (next) setProjectAlias(next);
+    });
   }
 
   function toggleProjectPin(): void {
@@ -1686,6 +1781,11 @@ function App(): React.JSX.Element {
     if (panelByThread.current[fromThreadId] && !panelByThread.current[toThreadId]) {
       panelByThread.current[toThreadId] = panelByThread.current[fromThreadId];
     }
+    const scrollState = threadScrollPositions.current[fromThreadId];
+    if (scrollState && !threadScrollPositions.current[toThreadId]) {
+      threadScrollPositions.current = { ...threadScrollPositions.current, [toThreadId]: scrollState };
+      scheduleThreadScrollPersist();
+    }
   }
 
   function openThreadContextMenu(event: ReactMouseEvent, summary: ThreadSummary): void {
@@ -1762,13 +1862,20 @@ function App(): React.JSX.Element {
   function renameProjectCwd(cwd: string): void {
     setOpenProjectMenu(null);
     const current = projectAliases[cwd] || basenamePath(cwd);
-    const next = window.prompt("프로젝트 이름 변경", current)?.trim();
-    if (next === undefined) return;
-    setProjectAliases((prev) => {
-      const map = { ...prev };
-      if (next) map[cwd] = next; else delete map[cwd];
-      localStorage.setItem("devil-codex:project-aliases", JSON.stringify(map));
-      return map;
+    void openTextPrompt({
+      title: "프로젝트 이름 변경",
+      label: "이름",
+      initialValue: current,
+      confirmLabel: "변경",
+    }).then((value) => {
+      if (value === null) return;
+      const next = value.trim();
+      setProjectAliases((prev) => {
+        const map = { ...prev };
+        if (next) map[cwd] = next; else delete map[cwd];
+        localStorage.setItem("devil-codex:project-aliases", JSON.stringify(map));
+        return map;
+      });
     });
   }
 
@@ -2189,7 +2296,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onReview={() => openUtility("review")} onStatus={() => void showWorkspaceStatus()} onMcp={() => openView("plugins")} onFeedback={() => void sendFeedback()} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onReview={() => openUtility("review")} onStatus={() => void showWorkspaceStatus()} onMcp={() => openView("plugins")} onFeedback={() => void sendFeedback()} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} tokenUsage={threadTokenUsage} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -2215,6 +2322,7 @@ function App(): React.JSX.Element {
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}
       {projectCreateOpen && <ProjectCreateDialog onClose={() => setProjectCreateOpen(false)} onExisting={() => void openExistingProject()} onCreate={() => void createLocalProject()} />}
       {renameThreadTarget && <RenameThreadDialog value={renameThreadDraft} busy={renameThreadBusy} onValue={setRenameThreadDraft} onSubmit={() => void submitRenameThread()} onClose={() => { if (!renameThreadBusy) setRenameThreadTarget(null); }} />}
+      {textPrompt && <TextPromptDialog state={textPrompt} onClose={() => setTextPrompt(null)} />}
       {approvalQueue[0] && <ApprovalRequestDialog prompt={approvalQueue[0]} responding={approvalResponding} onDecision={(decision) => void respondToApproval(decision)} />}
       {commandPaletteOpen && <CommandPalette recentThreads={commandPaletteThreads} activeThreadId={thread?.id ?? null} hasActiveThread={Boolean(activeSummary)} onClose={() => setCommandPaletteOpen(false)} onOpenThread={(summary) => { setCommandPaletteOpen(false); void resumeThread(summary); }} onRun={runPaletteCommand} />}
       <AskUserModal />
@@ -2385,6 +2493,33 @@ function RenameThreadDialog({ value, busy, onValue, onSubmit, onClose }: { value
         <footer>
           <button type="button" className="secondary" onClick={onClose} disabled={busy}>취소</button>
           <button type="submit" className="primary" disabled={busy || !value.trim()}>변경</button>
+        </footer>
+      </motion.form>
+    </div>,
+    document.body,
+  );
+}
+
+function TextPromptDialog({ state, onClose }: { state: TextPromptState; onClose: () => void }): React.JSX.Element {
+  const [value, setValue] = useState(state.initialValue);
+  const finish = (next: string | null): void => {
+    state.resolve(next);
+    onClose();
+  };
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finish(null); }}>
+      <motion.form className="text-prompt-dialog" initial={{ opacity: 0, scale: .97, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: 6 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }} onSubmit={(event) => { event.preventDefault(); finish(value); }}>
+        <header>
+          <h2>{state.title}</h2>
+          <button type="button" onClick={() => finish(null)} aria-label="닫기"><X size={20} /></button>
+        </header>
+        <label>
+          <span>{state.label}</span>
+          <input autoFocus value={value} placeholder={state.placeholder} onChange={(event) => setValue(event.target.value)} />
+        </label>
+        <footer>
+          <button type="button" className="secondary" onClick={() => finish(null)}>취소</button>
+          <button type="submit" className="primary">{state.confirmLabel}</button>
         </footer>
       </motion.form>
     </div>,

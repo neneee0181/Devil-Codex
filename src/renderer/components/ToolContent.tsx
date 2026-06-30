@@ -33,6 +33,32 @@ const INSPECTOR_SCRIPT = `(function(){return new Promise(function(resolve){
 type SideChatTarget = { thread: { id: string; label: string }; model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
 const sideChatModelPageSize = 10;
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false };
+const SIDE_CHAT_DRAFTS_KEY = "devil-codex:side-chat-drafts";
+
+function readSideChatDrafts(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SIDE_CHAT_DRAFTS_KEY) ?? "{}") as Record<string, string>;
+    return Object.fromEntries(Object.entries(raw).filter(([key, value]) => key && typeof value === "string"));
+  } catch {
+    return {};
+  }
+}
+
+function readSideChatDraft(threadId: string): string {
+  return readSideChatDrafts()[threadId] ?? "";
+}
+
+function writeSideChatDraft(threadId: string, draft: string): void {
+  if (!threadId) return;
+  try {
+    const drafts = readSideChatDrafts();
+    if (draft.trim()) drafts[threadId] = draft;
+    else delete drafts[threadId];
+    localStorage.setItem(SIDE_CHAT_DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    // Draft persistence is best-effort.
+  }
+}
 
 function providerUsableForPicker(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
   if (!provider.models.length) return false;
@@ -544,13 +570,14 @@ const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
 export function SideChat({ target, history, busy, pick, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: { provider: ProviderId; model: string }; onPick: (pick: { provider: ProviderId; model: string }) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
   const { thread, cwd, providers } = target;
   const [loaded, setLoaded] = useState(history !== undefined);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => readSideChatDraft(thread.id));
   const [sending, setSending] = useState(false);
   // Picked model is persisted by the parent (per subagent) so it survives tab switches.
   const picked = pick ?? { provider: target.provider, model: target.model };
   const attach = useAttachments();
   const fileInput = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { writeSideChatDraft(thread.id, draft); }, [thread.id, draft]);
 
   const load = useCallback(async (): Promise<void> => {
     try { onHistory(await window.devilCodex.readThread({ id: thread.id })); }
@@ -569,6 +596,7 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
     const atts = attach.attachments;
     if ((!text && atts.length === 0) || sending || busy || !attach.ready) return;
     setDraft("");
+    writeSideChatDraft(thread.id, "");
     const images = atts.filter((a) => a.kind === "image").map((a) => a.url ?? a.path ?? "").filter(Boolean);
     setSending(true);
     // The app-server doesn't echo the turn input as a userMessage event for the
@@ -629,6 +657,7 @@ function DiffPreview({ diff, loading, onSend, onApplyHunk }: { diff: WorkspaceDi
   const [commentLine, setCommentLine] = useState<ParsedDiffLine | null>(null);
   const [comment, setComment] = useState("");
   const [hunkBusy, setHunkBusy] = useState<string | null>(null);
+  const [pendingRevertHunk, setPendingRevertHunk] = useState<string | null>(null);
   const [mode, setMode] = useState<"unified" | "split">("unified");
   if (loading) return <div className="diff-preview-panel muted">변경 사항을 불러오는 중…</div>;
   if (!diff) return <div className="diff-preview-panel muted">검토할 파일을 선택하세요.</div>;
@@ -641,17 +670,39 @@ function DiffPreview({ diff, loading, onSend, onApplyHunk }: { diff: WorkspaceDi
     setComment("");
     setCommentLine(null);
   };
-  const applyHunk = async (hunk: string, action: "stage" | "revert"): Promise<void> => {
-    if (action === "revert" && !window.confirm("이 hunk의 작업공간 변경을 되돌릴까요?")) return;
+  const applyHunk = async (hunk: string, action: "stage" | "revert", confirmed = false): Promise<void> => {
+    if (action === "revert" && !confirmed) {
+      setPendingRevertHunk(hunk);
+      return;
+    }
     setHunkBusy(hunk);
     try { await onApplyHunk({ path: diff.path, hunk, action }); } finally { setHunkBusy(null); }
   };
   const openComment = (line: ParsedDiffLine | undefined): void => { if (line?.oldLine != null || line?.newLine != null) { setCommentLine(line); setComment(""); } };
   const changeMode = (next: "unified" | "split"): void => { setMode(next); setCommentLine(null); };
   const reviewForm = commentLine && <div className="inline-review-comment"><header><strong>{diff.path}:{commentLine.newLine ?? commentLine.oldLine}</strong><button type="button" onClick={() => setCommentLine(null)}><X size={14} /></button></header><textarea autoFocus value={comment} onChange={(event) => setComment(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) send(); }} placeholder="이 줄에 대한 의견을 입력하세요" /><button type="button" disabled={!comment.trim()} onClick={send}><Send size={13} />Codex에 보내기</button></div>;
-  return <section className="diff-preview-panel"><header><FileText size={15} /><strong>{diff.path}</strong><span className="diff-mode"><button type="button" className={mode === "unified" ? "active" : ""} onClick={() => changeMode("unified")}>Unified</button><button type="button" className={mode === "split" ? "active" : ""} onClick={() => changeMode("split")}>Split</button></span><span><i>+{diff.additions}</i> <b>-{diff.deletions}</b></span></header>{mode === "unified" ? <div className="diff-lines">{lines.map((line) => <div key={line.id}>
+  return <>
+  <section className="diff-preview-panel"><header><FileText size={15} /><strong>{diff.path}</strong><span className="diff-mode"><button type="button" className={mode === "unified" ? "active" : ""} onClick={() => changeMode("unified")}>Unified</button><button type="button" className={mode === "split" ? "active" : ""} onClick={() => changeMode("split")}>Split</button></span><span><i>+{diff.additions}</i> <b>-{diff.deletions}</b></span></header>{mode === "unified" ? <div className="diff-lines">{lines.map((line) => <div key={line.id}>
     {line.kind === "hunk" && line.hunk && <div className="diff-hunk-actions"><code>{line.text}</code><button type="button" disabled={hunkBusy !== null} onClick={() => void applyHunk(line.hunk!, "stage")}>hunk 스테이징</button><button type="button" disabled={hunkBusy !== null} onClick={() => void applyHunk(line.hunk!, "revert")}><RotateCcw size={12} />되돌리기</button></div>}
     {line.kind !== "hunk" && <button type="button" className={`diff-line ${line.kind}`} disabled={line.oldLine == null && line.newLine == null} onClick={() => openComment(line)}><span>{line.oldLine ?? ""}</span><span>{line.newLine ?? ""}</span><code>{line.text || " "}</code></button>}
     {commentLine?.id === line.id && reviewForm}
-  </div>)}</div> : <><div className="split-diff-lines">{toSplitDiffRows(lines).map((row) => row.hunk ? <div className="split-hunk" key={row.id}>{row.hunk.text}</div> : <div className="split-row" key={row.id}><button type="button" className={`split-cell ${row.old?.kind ?? "empty"}`} disabled={!row.old} onClick={() => openComment(row.old)}><span>{row.old?.oldLine ?? ""}</span><code>{row.old?.text.replace(/^[+-]/, "") ?? ""}</code></button><button type="button" className={`split-cell ${row.next?.kind ?? "empty"}`} disabled={!row.next} onClick={() => openComment(row.next)}><span>{row.next?.newLine ?? ""}</span><code>{row.next?.text.replace(/^[+-]/, "") ?? ""}</code></button></div>)}</div>{reviewForm}</>}</section>;
+  </div>)}</div> : <><div className="split-diff-lines">{toSplitDiffRows(lines).map((row) => row.hunk ? <div className="split-hunk" key={row.id}>{row.hunk.text}</div> : <div className="split-row" key={row.id}><button type="button" className={`split-cell ${row.old?.kind ?? "empty"}`} disabled={!row.old} onClick={() => openComment(row.old)}><span>{row.old?.oldLine ?? ""}</span><code>{row.old?.text.replace(/^[+-]/, "") ?? ""}</code></button><button type="button" className={`split-cell ${row.next?.kind ?? "empty"}`} disabled={!row.next} onClick={() => openComment(row.next)}><span>{row.next?.newLine ?? ""}</span><code>{row.next?.text.replace(/^[+-]/, "") ?? ""}</code></button></div>)}</div>{reviewForm}</>}</section>
+  {pendingRevertHunk && <ConfirmActionDialog title="hunk 되돌리기" message="이 hunk의 작업공간 변경을 되돌릴까요?" confirmLabel="되돌리기" onCancel={() => setPendingRevertHunk(null)} onConfirm={() => { const hunk = pendingRevertHunk; setPendingRevertHunk(null); void applyHunk(hunk, "revert", true); }} />}
+  </>;
+}
+
+function ConfirmActionDialog({ title, message, confirmLabel, onCancel, onConfirm }: { title: string; message: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }): React.JSX.Element {
+  return createPortal(
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <motion.section className="confirm-dialog" initial={{ opacity: 0, scale: .97, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: 6 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }} role="alertdialog" aria-modal="true">
+        <header><h2>{title}</h2><button type="button" onClick={onCancel} aria-label="닫기"><X size={18} /></button></header>
+        <p>{message}</p>
+        <footer>
+          <button type="button" className="secondary" onClick={onCancel}>취소</button>
+          <button type="button" className="danger" onClick={onConfirm}>{confirmLabel}</button>
+        </footer>
+      </motion.section>
+    </div>,
+    document.body,
+  );
 }

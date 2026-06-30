@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
@@ -18,6 +18,61 @@ type SuggestionTrigger = {
 
 export type ComposerAttachment = ThreadAttachment;
 const APPROVAL_MODE_KEY = "devil-codex:approval-mode";
+const COMPOSER_DRAFTS_KEY = "devil-codex:composer-drafts";
+type ComposerDraftSnapshot = { draft: string; goalMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
+
+function readComposerDrafts(): Record<string, ComposerDraftSnapshot> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COMPOSER_DRAFTS_KEY) ?? "{}") as Record<string, ComposerDraftSnapshot>;
+    return Object.fromEntries(Object.entries(raw).filter(([key, value]) => key && typeof value?.draft === "string"));
+  } catch {
+    return {};
+  }
+}
+
+function readComposerDraft(key: string): Omit<ComposerDraftSnapshot, "updatedAt"> {
+  const stored = readComposerDrafts()[key];
+  return {
+    draft: stored?.draft ?? "",
+    goalMode: stored?.goalMode === true,
+    attachments: Array.isArray(stored?.attachments) ? stored.attachments : [],
+    skills: Array.isArray(stored?.skills) ? stored.skills.filter((item) => typeof item === "string") : [],
+  };
+}
+
+function writeComposerDraft(key: string, snapshot: Omit<ComposerDraftSnapshot, "updatedAt">): void {
+  if (!key) return;
+  try {
+    const drafts = readComposerDrafts();
+    if (!snapshot.draft.trim() && !snapshot.goalMode && snapshot.attachments.length === 0 && snapshot.skills.length === 0) delete drafts[key];
+    else drafts[key] = { ...snapshot, updatedAt: Date.now() };
+    const compact = Object.fromEntries(Object.entries(drafts).sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, 80));
+    localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(compact));
+  } catch {
+    try {
+      const drafts = readComposerDrafts();
+      drafts[key] = {
+        ...snapshot,
+        attachments: snapshot.attachments.map(({ content: _content, url: _url, ...item }) => item),
+        updatedAt: Date.now(),
+      };
+      localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(drafts));
+    } catch {
+      // Draft persistence is best-effort; quota errors should not block typing.
+    }
+  }
+}
+
+function clearComposerDraft(key: string): void {
+  if (!key) return;
+  try {
+    const drafts = readComposerDrafts();
+    delete drafts[key];
+    localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    // Ignore storage failures.
+  }
+}
 
 function storedApprovalMode(): ApprovalMode {
   const value = localStorage.getItem(APPROVAL_MODE_KEY);
@@ -37,6 +92,7 @@ export type ComposerInput = {
 };
 
 export function Composer({
+  draftKey,
   busy,
   queued = [],
   onEditQueued,
@@ -63,6 +119,7 @@ export function Composer({
   onMcp,
   onFeedback,
 }: {
+  draftKey: string;
   busy: boolean;
   queued?: Array<{ id: string; text: string }>;
   onEditQueued?: (id: string, text: string) => void;
@@ -89,21 +146,36 @@ export function Composer({
   onMcp: () => void;
   onFeedback: () => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState("");
+  const initialDraft = useMemo(() => readComposerDraft(draftKey), []);
+  const [draft, setDraft] = useState(initialDraft.draft);
   const [approvalMode, setApprovalModeState] = useState<ApprovalMode>(() => storedApprovalMode());
-  const [goalMode, setGoalMode] = useState(false);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
+  const [goalMode, setGoalMode] = useState(initialDraft.goalMode);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(initialDraft.attachments);
+  const [skills, setSkills] = useState<string[]>(initialDraft.skills);
   const [trigger, setTrigger] = useState<SuggestionTrigger | null>(null);
   const [activeSuggestion, setActiveSuggestion] = useState(0);
   const editor = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
+  const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
   const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions) : [], [trigger, skillOptions]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const setApprovalMode = (value: ApprovalMode): void => {
     setApprovalModeState(value);
     localStorage.setItem(APPROVAL_MODE_KEY, value);
   };
+
+  useLayoutEffect(() => {
+    if (editor.current) editor.current.innerText = draft;
+  }, []);
+
+  useEffect(() => {
+    latestDraft.current = { draft, goalMode, attachments, skills };
+    writeComposerDraft(draftKey, latestDraft.current);
+  }, [draftKey, draft, goalMode, attachments, skills]);
+
+  useEffect(() => () => {
+    writeComposerDraft(draftKey, latestDraft.current);
+  }, [draftKey]);
 
   // Inject a browser screenshot/annotation into the composer so the user can ask
   // about the page (keyed on nonce so repeats re-fire).
@@ -261,11 +333,13 @@ export function Composer({
   };
 
   const clearDraft = (): void => {
+    latestDraft.current = { draft: "", goalMode: false, attachments: [], skills: [] };
     setDraft("");
     setAttachments([]);
     setSkills([]);
     setGoalMode(false);
     setTrigger(null);
+    clearComposerDraft(draftKey);
     if (editor.current) editor.current.innerHTML = "";
   };
 
