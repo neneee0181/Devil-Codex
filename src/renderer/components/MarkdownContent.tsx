@@ -22,6 +22,12 @@ function CodeBlock({ children }: { children: ReactNode }): React.JSX.Element {
   return <div className="markdown-code"><button type="button" onClick={() => void copy()} aria-label="코드 복사">{copied ? <Check size={15} /> : <Copy size={15} />}</button><pre>{children}</pre></div>;
 }
 
+function fileLinkFromCode(value: string): { label: string; path: string } | null {
+  const match = value.trim().match(/^\[([^\]]+)\]\(devil-file:([^)]+)\)$/);
+  if (!match) return null;
+  return { label: match[1], path: decodeURIComponent(match[2]) };
+}
+
 function richMarkdown(text: string): string {
   let fenced = false;
   return text.split("\n").map((line) => {
@@ -66,6 +72,10 @@ export function MarkdownContent({ text, onOpenFile }: { text: string; onOpenFile
       urlTransform={(url) => url}
       components={{
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+        code: ({ children }) => {
+          const file = fileLinkFromCode(nodeText(children));
+          return file ? <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(file.path.replace(/^file:\/\//, ""))}>{file.label}</button> : <code>{children}</code>;
+        },
         img: ({ src, alt }) => {
           if (!src) return null;
           if (src.startsWith("devil-image:")) return <LocalImage path={decodeURIComponent(src.slice(12))} onOpen={openImage} />;
