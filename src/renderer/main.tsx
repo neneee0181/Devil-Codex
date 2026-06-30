@@ -18,6 +18,7 @@ import { BottomDock } from "./components/BottomDock";
 import type { ToolKind } from "./components/ToolLauncherMenu";
 import { TimelineCard } from "./components/TimelineCard";
 import { ArchivedThreadsView } from "./components/ArchivedThreadsView";
+import type { SlashCommandId } from "./components/ComposerSuggestions";
 import { ApprovalRequestDialog } from "./components/ApprovalRequestDialog";
 import { AskUserModal } from "./components/AskUserModal";
 import { GitWorkflowDialog } from "./components/GitWorkflowDialog";
@@ -60,6 +61,9 @@ const defaultChanges: WorkspaceChanges = {
 const SIDE_CHAT_NAMES = ["Laplace", "Curie", "Euler", "Gauss", "Turing", "Lovelace", "Hopper", "Tesla", "Newton", "Fermi", "Bohr", "Pascal", "Fourier", "Riemann", "Noether", "Maxwell", "Planck", "Feynman", "Ada", "Hilbert"];
 const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
 const THREAD_SCROLL_POSITIONS_KEY = "devil-codex:thread-scroll-positions";
+const PET_VISIBLE_KEY = "devil-codex:pet-visible";
+const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
+const ENVIRONMENT_SOURCE_LIMIT = 8;
 
 function readThreadScrollPositions(): Record<string, ThreadScrollPosition> {
   try {
@@ -214,6 +218,29 @@ function storedResponseSpeed(): ResponseSpeed {
   return localStorage.getItem("devil-codex:response-speed") === "fast" ? "fast" : "standard";
 }
 
+function storedPetVisible(): boolean {
+  return localStorage.getItem(PET_VISIBLE_KEY) === "true";
+}
+
+function formatTokenShort(value: number | undefined): string {
+  if (!Number.isFinite(value ?? NaN)) return "-";
+  const numeric = Number(value);
+  if (numeric >= 1_000_000) return `${Math.round(numeric / 100_000) / 10}M`;
+  if (numeric >= 1_000) return `${Math.round(numeric / 100) / 10}k`;
+  return String(Math.round(numeric));
+}
+
+function reasoningEffortLabel(value: ReasoningEffort): string {
+  if (value === "low") return "낮음";
+  if (value === "high") return "높음";
+  if (value === "xhigh") return "매우 높음";
+  return "중간";
+}
+
+function responseSpeedLabel(value: ResponseSpeed): string {
+  return value === "fast" ? "고속" : "표준";
+}
+
 function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatus["state"]): boolean {
   if (!provider) return false;
   if (provider.id === "codex") return runtimeState === "connected";
@@ -279,8 +306,36 @@ type PendingTurnState = {
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
 type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
-type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; reasoningOutputTokens: number; requests: number; source: "cumulative" | "turnUsage" | "requestLog" };
-type ThreadTokenUsageSummary = { totalTokens: number; contextTokens?: number; maxTokens?: number; contextOverflow: boolean; requestTokens: number; models: ThreadTokenModelUsage[] };
+type ThreadUsageModel = {
+  key: string;
+  label: string;
+  provider: ProviderId | "unknown";
+  model: string;
+  requests: number;
+  completed: number;
+  failed: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  estimatedCost: number;
+  pricedTokens: number;
+};
+type ThreadUsageSummary = {
+  requests: number;
+  completed: number;
+  failed: number;
+  totalTokens: number;
+  estimatedCost: number;
+  pricedTokens: number;
+  contextTokens?: number;
+  maxTokens?: number;
+  contextOverflow: boolean;
+  models: ThreadUsageModel[];
+};
+type UsagePricing = { input: number; output: number; cachedInput?: number };
 
 function compactTokenCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -296,74 +351,134 @@ function compactUsageReset(value: string | number | null | undefined): string {
   if (Number.isNaN(date.getTime())) return String(value);
   const now = new Date();
   const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleString("ko-KR", sameYear ? { month: "short", day: "numeric" } : { year: "2-digit", month: "short", day: "numeric" });
+  const day = date.toLocaleDateString("ko-KR", sameYear ? { month: "short", day: "numeric" } : { year: "2-digit", month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time}`;
 }
 
 function providerDisplayName(provider: ProviderId | "unknown", providers: ProviderInfo[]): string {
   if (provider === "unknown") return "알 수 없음";
-  return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider);
+  return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider === "antigravity" ? "Antigravity" : provider);
 }
 
 function providerTokenTotal(usage: ProviderTokenUsage): number {
   return usage.totalTokens && usage.totalTokens > 0 ? usage.totalTokens : usage.inputTokens + usage.outputTokens;
 }
 
-function addTokenUsageRow(rows: Map<string, ThreadTokenModelUsage>, input: { key: string; label: string; usage: ProviderTokenUsage; requests: number; source: ThreadTokenModelUsage["source"] }): void {
-  const row = rows.get(input.key) ?? {
-    key: input.key,
-    label: input.label,
-    totalTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
-    reasoningOutputTokens: 0,
-    requests: 0,
-    source: input.source,
-  };
-  row.inputTokens += input.usage.inputTokens;
-  row.outputTokens += input.usage.outputTokens;
-  row.cachedInputTokens += input.usage.cachedInputTokens ?? 0;
-  row.reasoningOutputTokens += input.usage.reasoningOutputTokens ?? 0;
-  row.totalTokens += providerTokenTotal(input.usage);
-  row.requests += input.requests;
-  rows.set(input.key, row);
+function pricingForUsage(provider: ProviderId | "unknown", model: string): UsagePricing | null {
+  const id = model.toLowerCase();
+  if (provider === "openrouter-free") return { input: 0, output: 0 };
+  if (provider === "openai" || provider === "codex") {
+    if (id.includes("gpt-5.5-pro") || id.includes("gpt-5.4-pro")) return { input: 15, output: 90, cachedInput: 1.5 };
+    if (id.includes("gpt-5.5") || id.includes("gpt-5.4") || id.includes("gpt-5")) return { input: 1.25, output: 10, cachedInput: 0.125 };
+    if (id.includes("gpt-4.1-mini")) return { input: 0.4, output: 1.6, cachedInput: 0.1 };
+    if (id.includes("gpt-4.1")) return { input: 2, output: 8, cachedInput: 0.5 };
+  }
+  if (provider === "anthropic" || provider === "claude-code") {
+    if (id.includes("haiku")) return { input: 0.8, output: 4, cachedInput: 0.08 };
+    if (id.includes("opus")) return { input: 15, output: 75, cachedInput: 1.5 };
+    if (id.includes("sonnet") || id.includes("claude")) return { input: 3, output: 15, cachedInput: 0.3 };
+  }
+  if (provider === "google" || provider === "antigravity") {
+    if (id.includes("flash-lite")) return { input: 0.1, output: 0.4 };
+    if (id.includes("flash")) return { input: 0.3, output: 2.5 };
+    if (id.includes("pro")) return { input: 1.25, output: 10 };
+  }
+  if (provider === "deepseek") {
+    if (id.includes("reasoner")) return { input: 0.55, output: 2.19, cachedInput: 0.14 };
+    return { input: 0.27, output: 1.1, cachedInput: 0.07 };
+  }
+  return null;
 }
 
-function tokenUsageRowDetail(row: ThreadTokenModelUsage): string {
-  const prefix = `${row.requests}개 요청`;
-  const parts = [prefix];
+function estimateProviderUsageCost(provider: ProviderId | "unknown", model: string, usage: ProviderTokenUsage): { cost: number; pricedTokens: number } {
+  const pricing = pricingForUsage(provider, model);
+  if (!pricing) return { cost: 0, pricedTokens: 0 };
+  const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
+  const uncachedInput = Math.max(0, usage.inputTokens - cached);
+  const inputCost = uncachedInput * pricing.input / 1_000_000;
+  const cachedCost = cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
+  const outputCost = usage.outputTokens * pricing.output / 1_000_000;
+  return { cost: inputCost + cachedCost + outputCost, pricedTokens: usage.inputTokens + usage.outputTokens };
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  if (value < 1) return `$${value.toFixed(3)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+function formatDurationShort(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`;
+}
+
+function threadUsageCostLabel(cost: number, pricedTokens: number, totalTokens: number): string {
+  if (cost > 0 || pricedTokens > 0) return formatUsd(cost);
+  return totalTokens > 0 ? "단가 미정" : "$0";
+}
+
+function threadUsageRowDetail(row: ThreadUsageModel): string {
+  const parts = [`요청 ${row.requests}회`];
+  if (row.completed > 0) parts.push(`완료 ${row.completed}회`);
+  if (row.failed > 0) parts.push(`실패 ${row.failed}회`);
+  if (row.completed > 0 && row.durationMs > 0) parts.push(`평균 ${formatDurationShort(row.durationMs / row.completed)}`);
   if (row.inputTokens > 0 || row.outputTokens > 0) parts.push(`입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`);
   if (row.cachedInputTokens > 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
   return parts.join(" · ");
 }
 
-function summarizeThreadTokenUsage(input: { threadId?: string; items: ThreadHistoryItem[]; contextUsage?: ContextUsage; provider?: ProviderId; model: string; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[] }): ThreadTokenUsageSummary {
-  const rows = new Map<string, ThreadTokenModelUsage>();
+function summarizeThreadUsage(input: { threadId?: string; contextUsage?: ContextUsage; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[] }): ThreadUsageSummary {
+  const rows = new Map<string, ThreadUsageModel>();
   for (const entry of input.requestLog) {
-    if (!entry.threadId || entry.threadId !== input.threadId || !entry.usage) continue;
+    if (!input.threadId || !entry.threadId || entry.threadId !== input.threadId) continue;
     const key = `${entry.provider}:${entry.model}`;
-    addTokenUsageRow(rows, { key, label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`, usage: entry.usage, requests: 1, source: "requestLog" });
+    const row = rows.get(key) ?? {
+      key,
+      label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`,
+      provider: entry.provider,
+      model: entry.model || "unknown",
+      requests: 0,
+      completed: 0,
+      failed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      durationMs: 0,
+      estimatedCost: 0,
+      pricedTokens: 0,
+    };
+    row.requests += 1;
+    if (entry.status === "completed") row.completed += 1;
+    if (entry.status === "failed") row.failed += 1;
+    row.durationMs += entry.durationMs ?? 0;
+    if (entry.usage) {
+      row.inputTokens += entry.usage.inputTokens;
+      row.outputTokens += entry.usage.outputTokens;
+      row.cachedInputTokens += entry.usage.cachedInputTokens ?? 0;
+      row.reasoningOutputTokens += entry.usage.reasoningOutputTokens ?? 0;
+      row.totalTokens += providerTokenTotal(entry.usage);
+      const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
+      row.estimatedCost += cost.cost;
+      row.pricedTokens += cost.pricedTokens;
+    }
+    rows.set(key, row);
   }
-  const requestTokens = [...rows.values()].reduce((sum, row) => sum + row.totalTokens, 0);
-  const provider = input.provider ?? "codex";
-  const label = `${providerDisplayName(provider, input.providers)} · ${input.model}`;
-  const seen = new Set<string>();
-  for (const item of input.items) {
-    const usage = item.tokenUsage;
-    if (!usage || providerTokenTotal(usage) <= 0) continue;
-    const usageKey = item.turnId || item.id;
-    if (seen.has(usageKey)) continue;
-    seen.add(usageKey);
-    addTokenUsageRow(rows, { key: `${provider}:${input.model}:turns`, label, usage, requests: 1, source: "turnUsage" });
-  }
-  const priority: Record<ThreadTokenModelUsage["source"], number> = { cumulative: 0, turnUsage: 0, requestLog: 1 };
-  const models = [...rows.values()].sort((a, b) => priority[a.source] - priority[b.source] || b.totalTokens - a.totalTokens);
+  const models = [...rows.values()].sort((a, b) => b.estimatedCost - a.estimatedCost || b.totalTokens - a.totalTokens || b.requests - a.requests);
   return {
+    requests: models.reduce((sum, row) => sum + row.requests, 0),
+    completed: models.reduce((sum, row) => sum + row.completed, 0),
+    failed: models.reduce((sum, row) => sum + row.failed, 0),
     totalTokens: models.reduce((sum, row) => sum + row.totalTokens, 0),
+    estimatedCost: models.reduce((sum, row) => sum + row.estimatedCost, 0),
+    pricedTokens: models.reduce((sum, row) => sum + row.pricedTokens, 0),
     contextTokens: input.contextUsage?.usedTokens,
     maxTokens: input.contextUsage?.maxTokens,
     contextOverflow: Boolean(input.contextUsage?.usedTokens && input.contextUsage?.maxTokens && input.contextUsage.usedTokens > input.contextUsage.maxTokens),
-    requestTokens,
     models,
   };
 }
@@ -471,6 +586,7 @@ function App(): React.JSX.Element {
   // Per-main-thread right-panel tab state so returning restores open subagents.
   const panelByThread = useRef<Record<string, { tabs: string[]; active: string | null }>>({});
   const [externalError, setExternalError] = useState("");
+  const [petVisible, setPetVisible] = useState(storedPetVisible);
   const [permissionHint, setPermissionHint] = useState<"computer-use" | null>(null);
   // Screenshot / annotate from the embedded browser injects an image (+ optional
   // text) into the main composer so the user can ask about the page.
@@ -752,15 +868,12 @@ function App(): React.JSX.Element {
     });
   }, [items]);
   const contextUsage = useMemo(() => estimateContextUsage(items, model), [items, model]);
-  const threadTokenUsage = useMemo(() => summarizeThreadTokenUsage({
+  const threadUsage = useMemo(() => summarizeThreadUsage({
     threadId: thread?.id,
-    items,
     contextUsage,
-    provider: providers.settings?.provider,
-    model: thread?.model || model,
     providers: providers.settings?.providers ?? [],
     requestLog: quickUsage.requestLog,
-  }), [thread?.id, thread?.model, items, contextUsage, providers.settings?.provider, providers.settings?.providers, model, quickUsage.requestLog]);
+  }), [thread?.id, contextUsage, providers.settings?.providers, quickUsage.requestLog]);
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
@@ -1995,9 +2108,90 @@ function App(): React.JSX.Element {
   }
 
   async function showWorkspaceStatus(): Promise<void> {
-    const next = await window.devilCodex.getWorkspaceChanges({ cwd: workspace });
-    setChanges(next);
-    setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "워크스페이스 상태", text: `변경 ${next.files.length}개 · +${next.additions} -${next.deletions}` }]);
+    try {
+      const next = await window.devilCodex.getWorkspaceChanges({ cwd: workspace });
+      setChanges(next);
+      const contextPercent = contextUsage ? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100) : null;
+      const quota = quickUsage.report?.entries
+        .find((entry) => entry.connected && entry.windows.length > 0)
+        ?.windows.map((window) => `${window.label}: ${Math.round(window.remainingPercent)}% 남음`)
+        .join(" · ") ?? "확인 불가";
+      const statusText = [
+        `채팅 ID: ${thread?.id ?? "새 채팅"}`,
+        `작업 경로: ${workspace || "없음"}`,
+        `모델: ${modelDisplayName({ provider: providers.settings?.provider ?? "codex", model: thread?.model || model })}`,
+        `현재 컨텍스트: ${contextUsage ? `${formatTokenShort(contextUsage.usedTokens)} / ${formatTokenShort(contextUsage.maxTokens)} (${contextPercent}%)` : "알 수 없음"}`,
+        `현재 스레드 사용량: ${threadUsage.requests}회 요청 · ${threadUsageCostLabel(threadUsage.estimatedCost, threadUsage.pricedTokens, threadUsage.totalTokens)}`,
+        `속도: ${responseSpeedLabel(responseSpeed)}`,
+        `추론 수준: ${reasoningEffortLabel(reasoningEffort)}`,
+        `속도 제한/한도: ${quota}`,
+        `변경: ${next.files.length}개 · +${next.additions} -${next.deletions}`,
+      ].join("\n");
+      setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "상태", text: statusText }]);
+    } catch (error) {
+      setExternalError(`상태 확인 실패: ${String(error)}`);
+    }
+  }
+
+  async function compactActiveThread(): Promise<void> {
+    if (!thread?.id) {
+      setExternalError("압축할 채팅이 없습니다.");
+      return;
+    }
+    try {
+      markThreadRunning(thread.id);
+      setBusy(true);
+      await window.devilCodex.compactThread({ id: thread.id, cwd: workspace, model: thread.model || model });
+    } catch (error) {
+      clearThreadRunning(thread.id);
+      setBusy(false);
+      setExternalError(`컨텍스트 압축 실패: ${String(error)}`);
+    }
+  }
+
+  async function forkActiveThread(): Promise<void> {
+    if (!thread?.id) {
+      setExternalError("포크할 채팅이 없습니다.");
+      return;
+    }
+    try {
+      const forked = await window.devilCodex.forkThread({ id: thread.id, cwd: workspace, model: thread.model || model });
+      const history = await window.devilCodex.readThread({ id: forked.id }).catch(() => []);
+      threadHistoryCache.current.set(forked.id, history);
+      navigate({ view: "thread", thread: forked, workspace: forked.cwd || workspace, items: history, projectDraft: false, environmentOpen: false });
+      await Promise.all([refreshThreads(forked.cwd || workspace, { quiet: true }), refreshProjects()]);
+    } catch (error) {
+      setExternalError(`채팅 포크 실패: ${String(error)}`);
+    }
+  }
+
+  function togglePet(): void {
+    setPetVisible((visible) => {
+      const next = !visible;
+      localStorage.setItem(PET_VISIBLE_KEY, String(next));
+      return next;
+    });
+  }
+
+  function cycleReasoningEffort(): void {
+    const order: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
+    const index = order.indexOf(reasoningEffort);
+    setReasoningEffort(order[(index + 1) % order.length]);
+  }
+
+  function runSlashCommand(command: SlashCommandId): void {
+    if (command === "review") { openUtility("review"); return; }
+    if (command === "status") { void showWorkspaceStatus(); return; }
+    if (command === "mcp") { openView("plugins"); return; }
+    if (command === "feedback") { void sendFeedback(); return; }
+    if (command === "fast") { setResponseSpeed(responseSpeed === "fast" ? "standard" : "fast"); return; }
+    if (command === "model") { openSettingsSection("연결"); return; }
+    if (command === "settings") { openSettingsSection("구성"); return; }
+    if (command === "side") { void newSideChat(); return; }
+    if (command === "compact") { void compactActiveThread(); return; }
+    if (command === "reasoning") { cycleReasoningEffort(); return; }
+    if (command === "fork") { void forkActiveThread(); return; }
+    if (command === "pet") { togglePet(); return; }
   }
 
   function openView(next: AppView): void {
@@ -2392,9 +2586,9 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onReview={() => openUtility("review")} onStatus={() => void showWorkspaceStatus()} onMcp={() => openView("plugins")} onFeedback={() => void sendFeedback()} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} />
 
-            <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} tokenUsage={threadTokenUsage} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
+            <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
         ) : view === "search" ? (
           <SearchView query={search} onQuery={setSearch} threads={visibleSearchResults} loading={searchBusy} onOpen={resumeThread} />
@@ -2422,6 +2616,7 @@ function App(): React.JSX.Element {
       {approvalQueue[0] && <ApprovalRequestDialog prompt={approvalQueue[0]} responding={approvalResponding} onDecision={(decision) => void respondToApproval(decision)} />}
       {commandPaletteOpen && <CommandPalette recentThreads={commandPaletteThreads} activeThreadId={thread?.id ?? null} hasActiveThread={Boolean(activeSummary)} onClose={() => setCommandPaletteOpen(false)} onOpenThread={(summary) => { setCommandPaletteOpen(false); void resumeThread(summary); }} onRun={runPaletteCommand} />}
       <AskUserModal />
+      {petVisible && <button type="button" className="desktop-pet" onClick={togglePet} title="펫 숨기기"><Bot size={18} /><span>Devil</span><small>{activeThreadBusy ? "작업 중" : "대기 중"}</small></button>}
     </main>
   );
 }
@@ -2801,7 +2996,19 @@ function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runni
 
 function collectEnvironmentSources(items: ThreadHistoryItem[]): EnvironmentSource[] {
   const urls = new Map<string, EnvironmentSource>();
+  const recentItems: ThreadHistoryItem[] = [];
+  const seenTurns = new Set<string>();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const turnKey = item.turnId || item.id;
+    if (!seenTurns.has(turnKey)) {
+      if (seenTurns.size >= ENVIRONMENT_SOURCE_TURN_LIMIT) break;
+      seenTurns.add(turnKey);
+    }
+    recentItems.push(item);
+  }
   const addUrl = (raw: string): void => {
+    if (urls.size >= ENVIRONMENT_SOURCE_LIMIT) return;
     const cleaned = raw.replace(/[),.;\]]+$/g, "");
     if (!/^https?:\/\//i.test(cleaned) || cleaned.startsWith("data:")) return;
     try {
@@ -2816,7 +3023,7 @@ function collectEnvironmentSources(items: ThreadHistoryItem[]): EnvironmentSourc
     if (!text) return;
     for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) addUrl(match[0]);
   };
-  for (const item of items) {
+  for (const item of recentItems) {
     scan(item.text);
     scan(item.title);
     for (const attachment of item.attachments ?? []) if (attachment.url) addUrl(attachment.url);
@@ -2827,7 +3034,7 @@ function collectEnvironmentSources(items: ThreadHistoryItem[]): EnvironmentSourc
       for (const image of activity.images ?? []) addUrl(image);
     }
   }
-  return [...urls.values()].slice(0, 8);
+  return [...urls.values()];
 }
 
 function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUsageEntry[]; state: string; onDetails: () => void }): React.JSX.Element {
@@ -2852,11 +3059,12 @@ function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUs
   </motion.div>;
 }
 
-function EnvironmentCard({ cwd, changes, sources, tokenUsage, subagents, sideChats, onRefresh, onReview, onGit, onCodexWeb, onUsage, onOpenSource, onError, onOpenSubagent, onOpenSide }: {
+function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, sideChats, onRefresh, onReview, onGit, onCodexWeb, onUsage, onOpenSource, onError, onOpenSubagent, onOpenSide }: {
   cwd: string;
   changes: WorkspaceChanges;
   sources: EnvironmentSource[];
-  tokenUsage: ThreadTokenUsageSummary;
+  usage: ThreadUsageSummary;
+  usageState: "idle" | "loading" | "ready" | "error";
   subagents: Array<{ id: string; label: string }>;
   sideChats: Array<{ id: string; label: string }>;
   onRefresh: () => Promise<WorkspaceChanges>;
@@ -2932,31 +3140,38 @@ function EnvironmentCard({ cwd, changes, sources, tokenUsage, subagents, sideCha
       </div>}
     </div>}
     {gitAvailable && <button className="environment-row" onClick={onGit}><span><UploadCloud />커밋 또는 푸시</span></button>}
-    {(tokenUsage.totalTokens > 0 || tokenUsage.models.length > 0 || tokenUsage.contextTokens) && <>
+    {(usage.requests > 0 || usageState !== "idle") && <>
       <div className="environment-divider" />
-      <div className="environment-caption">토큰</div>
-      <div className="environment-token-card">
-        <div className={tokenUsage.contextOverflow ? "environment-token-head overflow" : "environment-token-head"}>
-          <span><Target />{tokenUsage.contextTokens && tokenUsage.maxTokens ? "현재 컨텍스트" : "요청 합계"}</span>
-          <strong>{tokenUsage.contextTokens && tokenUsage.maxTokens ? `${compactTokenCount(tokenUsage.contextTokens)} / ${compactTokenCount(tokenUsage.maxTokens)}` : tokenUsage.totalTokens > 0 ? compactTokenCount(tokenUsage.totalTokens) : "기록 없음"}</strong>
+      <div className="environment-caption">사용량</div>
+      <div className="environment-usage-card">
+        <div className="environment-usage-head">
+          <span><Target />현재 스레드</span>
+          <strong>{usage.requests > 0 ? `${usage.requests}회 요청` : usageState === "error" ? "불러오기 실패" : "불러오는 중"}</strong>
         </div>
-        {tokenUsage.contextTokens && tokenUsage.maxTokens && <>
-          <div className={tokenUsage.contextOverflow ? "environment-token-context overflow" : "environment-token-context"}>
-            <span>{tokenUsage.contextOverflow ? "한도 초과" : "컨텍스트 상태"}</span>
-            <b>{tokenUsage.contextOverflow ? "다음 요청에서 압축 필요" : `${Math.round((tokenUsage.contextTokens / tokenUsage.maxTokens) * 100)}% 사용`}</b>
+        {usage.contextTokens && usage.maxTokens && <>
+          <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
+            <span>현재 컨텍스트</span>
+            <b>{compactTokenCount(usage.contextTokens)} / {compactTokenCount(usage.maxTokens)}</b>
           </div>
-          <progress className={tokenUsage.contextOverflow ? "overflow" : ""} value={Math.min(tokenUsage.contextTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />
-          {tokenUsage.totalTokens > 0 && <div className="environment-token-context">
-            <span>요청 합계</span>
-            <b>{compactTokenCount(tokenUsage.totalTokens)}</b>
-          </div>}
+          <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
+            <span>컨텍스트 상태</span>
+            <b>{usage.contextOverflow ? "다음 요청에서 압축 필요" : `${Math.round((usage.contextTokens / usage.maxTokens) * 100)}% 사용`}</b>
+          </div>
+          <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.maxTokens)} max={usage.maxTokens} />
         </>}
-        {tokenUsage.models.length > 0 && <div className="environment-token-models">
-          {tokenUsage.models.slice(0, 3).map((row) => <div key={row.key}>
-            <span><strong>{row.label}</strong><small>{tokenUsageRowDetail(row)}</small></span>
-            <b>{compactTokenCount(row.totalTokens)}</b>
-          </div>)}
-        </div>}
+        {usage.requests > 0 ? <>
+          <div className="environment-usage-summary">
+            <span><small>예상 비용</small><strong>{threadUsageCostLabel(usage.estimatedCost, usage.pricedTokens, usage.totalTokens)}</strong></span>
+            <span><small>완료</small><strong>{usage.completed}회</strong></span>
+            <span><small>실패</small><strong>{usage.failed}회</strong></span>
+          </div>
+          <div className="environment-usage-models">
+            {usage.models.slice(0, 4).map((row) => <div key={row.key}>
+              <span><strong>{row.label}</strong><small>{threadUsageRowDetail(row)}</small></span>
+              <b>{threadUsageCostLabel(row.estimatedCost, row.pricedTokens, row.totalTokens)}</b>
+            </div>)}
+          </div>
+        </> : <p className="environment-usage-empty">{usageState === "error" ? "사용량 기록을 불러오지 못했습니다." : usageState === "loading" ? "이 스레드의 모델 사용량 기록을 불러오는 중입니다." : "이 스레드에서 기록된 모델 요청이 아직 없습니다."}</p>}
       </div>
     </>}
     {sideChats.length > 0 && <>

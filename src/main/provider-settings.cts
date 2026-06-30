@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
+import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
 
 export type ProviderAdapterKind = "openai-chat" | "anthropic" | "google";
 export interface ApiProviderConfig {
@@ -105,6 +106,13 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     diagnostics: "experimental",
     notes: ["Copilot 모델 목록은 metadata 기반입니다. 일부 모델은 목록에 보여도 계정에서 응답하지 않을 수 있습니다.", "128개 초과 도구는 제한/정규화됩니다.", "이미지는 vision sidecar가 텍스트 설명으로 변환해 전달합니다."],
   };
+  if (provider === "antigravity") return {
+    tools: "limited",
+    images: model.toLowerCase().includes("gemini") ? "native" : "sidecar",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["Google Antigravity OAuth + Cloud Code Assist project 경로입니다.", "모델 id는 Antigravity CCA wire id를 그대로 사용합니다.", "Gemini tool-call 연속성은 upstream thoughtSignature 정책 영향을 받을 수 있습니다."],
+  };
   if (provider === "claude-code") return {
     tools: "limited",
     images: "sidecar",
@@ -132,10 +140,19 @@ function withCapabilities(provider: ProviderId, models: ProviderModel[]): Provid
   return models.map((model) => ({ ...model, capability: model.capability ?? capabilityFor(provider, model.id) }));
 }
 
+function humanLabel(value: string): string {
+  return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function antigravityCatalogModels(): ProviderModel[] {
+  return ANTIGRAVITY_MODELS.map((id) => ({ id, label: humanLabel(id) }));
+}
+
 const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded">> = [
   { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
   { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
   { id: "copilot", label: "GitHub Copilot", kind: "login", authProvider: "copilot", keyRequired: false, models: [{ id: "gpt-5.4", label: "GPT-5.4" }, { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }] },
+  { id: "antigravity", label: "Antigravity", kind: "login", authProvider: "antigravity", keyRequired: false, models: antigravityCatalogModels() },
   { id: "openai", label: "OpenAI", kind: "apikey", keyRequired: true, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
   { id: "anthropic", label: "Anthropic", kind: "apikey", keyRequired: true, models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
   { id: "google", label: "Google", kind: "apikey", keyRequired: true, models: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }, { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" }] },
@@ -155,7 +172,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded">> = 
   { id: "vllm", label: "vLLM", kind: "apikey", keyRequired: false, models: [{ id: "default", label: "Default" }] },
   { id: "lm-studio", label: "LM Studio", kind: "apikey", keyRequired: false, models: [{ id: "local-model", label: "Local Model" }] },
 ];
-const LOGIN_IDS = new Set<ProviderId>(["codex", "claude-code", "copilot"]);
+const LOGIN_IDS = new Set<ProviderId>(["codex", "claude-code", "copilot", "antigravity"]);
 const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   openai: ["OPENAI_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],

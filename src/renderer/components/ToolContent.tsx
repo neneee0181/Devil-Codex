@@ -32,7 +32,7 @@ const INSPECTOR_SCRIPT = `(function(){return new Promise(function(resolve){
 });})();`;
 type SideChatTarget = { thread: { id: string; label: string }; model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
 const sideChatModelPageSize = 10;
-const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false };
+const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const SIDE_CHAT_DRAFTS_KEY = "devil-codex:side-chat-drafts";
 
 function readSideChatDrafts(): Record<string, string> {

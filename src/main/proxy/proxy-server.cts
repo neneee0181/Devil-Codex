@@ -12,11 +12,13 @@ import { parseRequest } from "./parser.cjs";
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
 import { buildCopilotRequest, streamCopilot } from "./copilot.cjs";
 import { buildApiKeyRequest, streamGoogle, streamOpenAiCompatible } from "./api-key.cjs";
+import { buildAntigravityRequest, streamAntigravity } from "./antigravity.cjs";
 import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxUsage } from "./types.cjs";
 import { sanitizeName } from "./tool-sanitize.cjs";
 import { buildWebSearchTool, replayEvents, runWithWebSearchLoop, shouldExposeWebSearchTool, type SidecarStats } from "./web-search-sidecar.cjs";
 import { applyVisionSidecar } from "./vision-sidecar.cjs";
 import { claudeAuth, copilotBearer, oauthModels } from "../provider-oauth.cjs";
+import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
 import { apiProviderConfig, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
 
@@ -70,6 +72,7 @@ type ProxyProvider = Exclude<ProviderId, "codex">;
 function providerLabel(provider: ProxyProvider): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "copilot") return "GitHub Copilot";
+  if (provider === "antigravity") return "Antigravity";
   if (provider === "openai") return "OpenAI";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";
@@ -95,7 +98,7 @@ function splitModel(id: string): { provider: ProxyProvider; model: string } {
   const sep = id.indexOf(":");
   if (sep > 0) {
     const p = id.slice(0, sep);
-    if (p === "claude-code" || p === "copilot" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, model: id.slice(sep + 1) };
+    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, model: id.slice(sep + 1) };
   }
   // Fallback by name shape.
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
@@ -113,7 +116,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model);
+  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model);
 }
 
 function redactSensitiveText(text: string): string {
@@ -164,7 +167,7 @@ function requestPartStats(parsed: OcxParsedRequest): { tools: number; images: nu
 }
 
 function usesNativeImages(provider: ProxyProvider): boolean {
-  if (provider === "openai" || provider === "anthropic" || provider === "google") return true;
+  if (provider === "openai" || provider === "anthropic" || provider === "google" || provider === "antigravity") return true;
   return Boolean(apiProviderConfig(provider)?.allowImages);
 }
 
@@ -272,6 +275,13 @@ async function providerEventStream(
     const reqInit = buildCopilotRequest(parsed, bearer);
     upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
     return streamCopilot(upstream);
+  }
+  if (provider === "antigravity") {
+    const auth = await antigravityAuth();
+    if (!auth) throw new Error("Antigravity 로그인이 필요합니다.");
+    const reqInit = buildAntigravityRequest(parsed, auth);
+    upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
+    return streamAntigravity(upstream);
   }
   const key = await providerSettings.readApiKey(provider);
   const reqInit = provider === "anthropic" ? buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
@@ -401,15 +411,17 @@ async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: {
 }
 
 async function handleModels(res: ServerResponse): Promise<void> {
-  const [claude, copilot, settings] = await Promise.all([
+  const [claude, copilot, antigravity, settings] = await Promise.all([
     oauthModels("claude-code").catch(() => []),
     oauthModels("copilot").catch(() => []),
+    antigravityModels().catch(() => []),
     providerSettings.load(),
   ]);
   const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && (provider.keyRequired ? provider.credentialSource !== "none" && provider.modelsLoaded : provider.modelsLoaded));
   const data = [
     ...claude.map((m) => ({ id: `claude-code:${m.id}`, object: "model", owned_by: "anthropic" })),
     ...copilot.map((m) => ({ id: `copilot:${m.id}`, object: "model", owned_by: "github" })),
+    ...antigravity.map((m) => ({ id: `antigravity:${m.id}`, object: "model", owned_by: "google" })),
     ...apiProviders.flatMap((provider) => provider.models.map((model) => ({ id: `${provider.id}:${model.id}`, object: "model", owned_by: provider.id }))),
   ];
   res.writeHead(200, { "Content-Type": "application/json" });

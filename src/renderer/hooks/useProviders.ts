@@ -26,7 +26,7 @@ export function useProviders(): {
   }, []);
 
   const syncOauthModels = useCallback((): void => {
-    (["copilot", "claude-code"] as const).forEach((provider) => {
+    (["copilot", "claude-code", "antigravity"] as const).forEach((provider) => {
       window.devilCodex.providerOauthModels({ provider }).then((models) => {
         setOauthModels((prev) => {
           const next = { ...prev };
@@ -65,6 +65,7 @@ export function useProviders(): {
         const next = { ...prev };
         if (!status.copilot) delete next.copilot;
         if (!status.claude) delete next["claude-code"];
+        if (!status.antigravity) delete next.antigravity;
         return next;
       });
       syncOauthModels();

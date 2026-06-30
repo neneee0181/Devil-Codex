@@ -156,7 +156,9 @@ function formatReset(value: string | number | null | undefined): string {
   const normalized = typeof value === "number" && value > 0 && value < 10_000_000_000 ? value * 1000 : value;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
-  return `${date.toLocaleString("ko-KR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} 초기화`;
+  const day = date.toLocaleDateString("ko-KR", { month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time} 초기화`;
 }
 
 function approvalLabel(value: string): string { return value === "never" ? "사용 안 함" : value === "untrusted" ? "항상" : "요청 시"; }
@@ -245,7 +247,7 @@ function pricingFor(provider: ProviderId | "unknown", model: string): Pricing | 
     if (id.includes("opus")) return { input: 15, output: 75, cachedInput: 1.5, label: "Claude Opus" };
     if (id.includes("sonnet") || id.includes("claude")) return { input: 3, output: 15, cachedInput: 0.3, label: "Claude Sonnet" };
   }
-  if (provider === "google") {
+  if (provider === "google" || provider === "antigravity") {
     if (id.includes("flash-lite")) return { input: 0.1, output: 0.4, label: "Gemini Flash-Lite" };
     if (id.includes("flash")) return { input: 0.3, output: 2.5, label: "Gemini Flash" };
     if (id.includes("pro")) return { input: 1.25, output: 10, label: "Gemini Pro" };
@@ -260,6 +262,7 @@ function pricingFor(provider: ProviderId | "unknown", model: string): Pricing | 
 function providerFallbackLabel(provider: ProviderId): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "copilot") return "GitHub Copilot";
+  if (provider === "antigravity") return "Antigravity";
   if (provider === "openai") return "OpenAI";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";

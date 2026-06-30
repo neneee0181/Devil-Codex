@@ -2,7 +2,8 @@ import { Check, KeyRound, LogIn, LogOut, RefreshCw, Trash2 } from "lucide-react"
 import { useEffect, useState } from "react";
 import type { ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
 
-const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false };
+const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
+const notifyProviderAuthChanged = (): void => window.dispatchEvent(new Event("devil-codex:provider-auth-changed"));
 
 function authedFor(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
   if (!provider.authProvider) return false;
@@ -87,12 +88,14 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
       const status = await window.devilCodex.providerAuthStatus().catch(() => null);
       if (status) { setAuth(status); if (status[authKey]) break; }
     }
+    notifyProviderAuthChanged();
     setBusy(null);
   };
   const logout = async (provider: ProviderInfo): Promise<void> => {
     if (!provider.authProvider) return;
     setBusy(provider.id);
     setAuth(await window.devilCodex.providerLogout({ provider: provider.authProvider }).catch(() => auth));
+    notifyProviderAuthChanged();
     setBusy(null);
   };
 

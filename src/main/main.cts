@@ -29,15 +29,16 @@ import { DesktopControlServer } from "./desktop-control-server.cjs";
 import { AskControlServer } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
-import { providerUsageReport } from "./provider-usage.cjs";
+import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
+import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
 
-async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean }> {
-  const [cli, oauth] = await Promise.all([codexCliStatus(), oauthStatus()]);
-  return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot };
+async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
+  const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
+  return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot, antigravity };
 }
 
 function safeProjectName(value: unknown): string {
@@ -1164,16 +1165,35 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("providers:refresh-models", (_event, input) => providerModels.refresh(input.provider));
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
-    if (input.provider === "codex") { codexCliLogin("codex"); return null; }
+    if (input.provider === "codex") { clearProviderUsageCache("codex"); codexCliLogin("codex"); return null; }
+    if (input.provider === "antigravity") {
+      return antigravityLogin(() => {
+        clearProviderUsageCache("antigravity");
+        void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status));
+      });
+    }
     const oauthProvider = input.provider === "claude" ? "claude-code" : "copilot";
-    return oauthLogin(oauthProvider, () => { void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status)); });
+    return oauthLogin(oauthProvider, () => {
+      clearProviderUsageCache(input.provider === "claude" ? "claude-code" : "copilot");
+      void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status));
+    });
   });
   ipcMain.handle("providers:logout", async (_event, input) => {
-    if (input.provider === "codex") { await codexCliLogout("codex"); restartAppServer(); }
-    else await oauthLogout(input.provider === "claude" ? "claude-code" : "copilot");
-    return combinedAuthStatus();
+    if (input.provider === "codex") { await codexCliLogout("codex"); clearProviderUsageCache("codex"); restartAppServer(); }
+    else if (input.provider === "antigravity") {
+      await antigravityLogout();
+      clearProviderUsageCache("antigravity");
+    }
+    else {
+      const provider = input.provider === "claude" ? "claude-code" : "copilot";
+      await oauthLogout(provider);
+      clearProviderUsageCache(provider);
+    }
+    const status = await combinedAuthStatus();
+    sendToRenderer("provider:auth", status);
+    return status;
   });
-  ipcMain.handle("providers:oauth-models", (_event, input) => oauthModels(input.provider));
+  ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels() : oauthModels(input.provider));
   ipcMain.handle("providers:usage", async () => providerUsageReport(await combinedAuthStatus()));
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
@@ -1279,6 +1299,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("thread:fork", (_event, input) => server().forkThread(input));
+  ipcMain.handle("thread:compact", async (_event, input: { id: string; cwd?: string; model: string }) => {
+    await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model });
+    await threadServer(input.id).compactThread({ threadId: input.id });
+  });
   ipcMain.handle("thread:read", async (_event, input) => {
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native

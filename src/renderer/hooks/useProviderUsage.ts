@@ -31,5 +31,18 @@ export function useProviderUsage(active: boolean): {
     void refresh();
   }, [active, refresh]);
 
+  useEffect(() => {
+    if (!active) return undefined;
+    const rerun = (): void => { void refresh(); };
+    const dispose = window.devilCodex.onProviderAuth(rerun);
+    window.addEventListener("focus", rerun);
+    window.addEventListener("devil-codex:provider-auth-changed", rerun);
+    return () => {
+      dispose();
+      window.removeEventListener("focus", rerun);
+      window.removeEventListener("devil-codex:provider-auth-changed", rerun);
+    };
+  }, [active, refresh]);
+
   return { report, requestLog, state, refresh };
 }

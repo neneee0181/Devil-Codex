@@ -4,7 +4,7 @@ import { budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } fro
 import type { ProviderId } from "../contracts.cjs";
 import { apiProviderConfig, apiProviderUrl } from "../provider-settings.cjs";
 
-type ApiKeyProvider = Exclude<ProviderId, "codex" | "claude-code" | "copilot">;
+type ApiKeyProvider = Exclude<ProviderId, "codex" | "claude-code" | "copilot" | "antigravity">;
 
 function flatten(parts: { type: string; text?: string }[]): string {
   return parts.map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
@@ -92,7 +92,7 @@ function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean): unknown
   return out;
 }
 
-function googleContents(parsed: OcxParsedRequest): unknown[] {
+export function googleContents(parsed: OcxParsedRequest): unknown[] {
   const contents: unknown[] = [];
   for (const msg of parsed.context.messages) {
     if (msg.role === "assistant") {
@@ -125,7 +125,7 @@ function googleContents(parsed: OcxParsedRequest): unknown[] {
   return contents.length ? contents : [{ role: "user", parts: [{ text: "" }] }];
 }
 
-function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
+export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
   const selected = budgetTools(parsed.tools, 24, requiredToolName(parsed));
   if (!selected.length) return undefined;
   return [{
@@ -194,20 +194,25 @@ export function buildApiKeyRequest(provider: ApiKeyProvider, parsed: OcxParsedRe
     };
   }
   if (config.adapter === "anthropic") throw new Error(`${provider}는 Anthropic adapter를 사용해야 합니다.`);
+  return {
+    url: `${apiProviderUrl(provider, `/v1beta/models/${encodeURIComponent(parsed.model)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(key)}`,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(buildGoogleGenerateContentBody(parsed)),
+  };
+}
+
+export function buildGoogleGenerateContentBody(parsed: OcxParsedRequest): Record<string, unknown> {
   const generationConfig: Record<string, unknown> = {};
   if (parsed.options.maxOutputTokens !== undefined) generationConfig.maxOutputTokens = parsed.options.maxOutputTokens;
   if (parsed.options.temperature !== undefined) generationConfig.temperature = parsed.options.temperature;
   if (parsed.options.topP !== undefined) generationConfig.topP = parsed.options.topP;
   if (parsed.options.stopSequences !== undefined) generationConfig.stopSequences = parsed.options.stopSequences;
+  const tools = googleTools(parsed);
   return {
-    url: `${apiProviderUrl(provider, `/v1beta/models/${encodeURIComponent(parsed.model)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(key)}`,
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: googleContents(parsed),
-      ...(parsed.context.instructions ? { systemInstruction: { parts: [{ text: parsed.context.instructions }] } } : {}),
-      ...(googleTools(parsed) ? { tools: googleTools(parsed) } : {}),
-      ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
-    }),
+    contents: googleContents(parsed),
+    ...(parsed.context.instructions ? { systemInstruction: { parts: [{ text: parsed.context.instructions }] } } : {}),
+    ...(tools ? { tools } : {}),
+    ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
   };
 }
 
@@ -309,14 +314,15 @@ async function* parseOpenAiCompatibleJson(providerLabel: string, response: Respo
   yield { type: "done", usage: usage ? { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } : undefined };
 }
 
-export async function* streamGoogle(response: Response): AsyncGenerator<AdapterEvent> {
+export async function* streamGoogle(response: Response, options: { label?: string; unwrapResponse?: boolean } = {}): AsyncGenerator<AdapterEvent> {
+  const label = options.label ?? "Google Gemini";
   if (!response.ok) {
     let detail = `${response.status}`;
     try { detail = await response.text(); } catch { /* ignore */ }
-    yield { type: "error", status: response.status, errorType: "upstream_error", message: providerErrorMessage("Google Gemini", response.status, detail) };
+    yield { type: "error", status: response.status, errorType: "upstream_error", message: providerErrorMessage(label, response.status, detail) };
     return;
   }
-  if (!response.body) { yield { type: "error", status: 502, errorType: "upstream_empty_response", message: "Google Gemini가 응답 본문 없이 요청을 종료했습니다." }; return; }
+  if (!response.body) { yield { type: "error", status: 502, errorType: "upstream_empty_response", message: `${label}가 응답 본문 없이 요청을 종료했습니다.` }; return; }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -334,12 +340,13 @@ export async function* streamGoogle(response: Response): AsyncGenerator<AdapterE
         if (!payload) continue;
         let data: Record<string, unknown>;
         try { data = JSON.parse(payload) as Record<string, unknown>; } catch { continue; }
-        const error = data.error as { message?: string; code?: number; status?: string } | undefined;
+        const root = options.unwrapResponse ? (data.response as Record<string, unknown> | undefined) ?? data : data;
+        const error = (data.error ?? root.error) as { message?: string; code?: number; status?: string } | undefined;
         if (error) {
-          yield { type: "error", status: error.code ?? 502, errorType: error.status ?? "upstream_error", message: providerErrorMessage("Google Gemini", error.code ?? 502, error.message ?? error.status ?? "스트림 오류") };
+          yield { type: "error", status: error.code ?? 502, errorType: error.status ?? "upstream_error", message: providerErrorMessage(label, error.code ?? 502, error.message ?? error.status ?? "스트림 오류") };
           return;
         }
-        const candidate = (data.candidates as Array<Record<string, unknown>> | undefined)?.[0];
+        const candidate = (root.candidates as Array<Record<string, unknown>> | undefined)?.[0];
         const parts = (candidate?.content as Record<string, unknown> | undefined)?.parts;
         if (Array.isArray(parts)) {
           for (const part of parts) {
@@ -354,7 +361,7 @@ export async function* streamGoogle(response: Response): AsyncGenerator<AdapterE
             if (text) yield { type: "text_delta", text };
           }
         }
-        const u = data.usageMetadata as Record<string, number> | undefined;
+        const u = root.usageMetadata as Record<string, number> | undefined;
         if (u) usage = { inputTokens: u.promptTokenCount ?? 0, outputTokens: u.candidatesTokenCount ?? 0 };
       }
     }

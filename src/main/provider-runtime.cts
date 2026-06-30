@@ -18,6 +18,7 @@ type Emit = (event: AppServerEvent) => void;
 function providerLabel(provider: ExternalProvider): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "copilot") return "GitHub Copilot";
+  if (provider === "antigravity") return "Antigravity";
   if (provider === "openai") return "OpenAI";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";
@@ -75,7 +76,7 @@ async function readSse(response: Response, provider: string, onData: (payload: R
 function delta(provider: ExternalProvider, event: Record<string, unknown>): string {
   if (provider === "openai") return String(event.delta ?? "");
   if (provider === "anthropic" || provider === "claude-code") return String((event.delta as Record<string, unknown> | undefined)?.text ?? "");
-  if (provider === "google") {
+  if (provider === "google" || provider === "antigravity") {
     const candidate = (event.candidates as Array<Record<string, unknown>> | undefined)?.[0];
     const parts = (candidate?.content as Record<string, unknown> | undefined)?.parts;
     return Array.isArray(parts) ? parts.map((part) => String((part as Record<string, unknown>).text ?? "")).join("") : "";

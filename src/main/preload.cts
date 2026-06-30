@@ -51,6 +51,7 @@ const api: DevilCodexApi = {
   resumeThread: (input) => ipcRenderer.invoke("thread:resume", input),
   renameThread: (input) => ipcRenderer.invoke("thread:rename", input),
   forkThread: (input) => ipcRenderer.invoke("thread:fork", input),
+  compactThread: (input) => ipcRenderer.invoke("thread:compact", input),
   readThread: (input) => ipcRenderer.invoke("thread:read", input),
   cacheThreadHistory: (input) => ipcRenderer.invoke("thread:cache-history", input),
   syncThreadHistory: (input) => ipcRenderer.invoke("thread:sync-history", input),

@@ -15,8 +15,9 @@ const speeds: Array<{ value: ResponseSpeed; label: string; detail: string }> = [
   { value: "standard", label: "표준", detail: "기본 속도" },
   { value: "fast", label: "고속", detail: "1.5x speed, increased usage" },
 ];
-const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false };
+const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const modelPageSize = 10;
+const notifyProviderAuthChanged = (): void => window.dispatchEvent(new Event("devil-codex:provider-auth-changed"));
 
 function capabilityLabel(value: string | undefined): string {
   if (value === "native") return "native";
@@ -153,12 +154,14 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
       const status = await window.devilCodex.providerAuthStatus().catch(() => null);
       if (status) { setAuth(status); if (status[authKey]) break; }
     }
+    notifyProviderAuthChanged();
     setBusy(null);
   };
   const logout = async (provider: ProviderInfo): Promise<void> => {
     if (!provider.authProvider) return;
     setBusy(provider.id);
     setAuth(await window.devilCodex.providerLogout({ provider: provider.authProvider }).catch(() => auth));
+    notifyProviderAuthChanged();
     setBusy(null);
   };
 

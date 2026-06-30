@@ -4,7 +4,7 @@ import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square
 import { ModelPicker } from "./ModelPicker";
 import type { ContextUsage, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
-import { ComposerSuggestions, suggestionsFor, type ComposerSuggestion } from "./ComposerSuggestions";
+import { ComposerSuggestions, suggestionsFor, type ComposerSuggestion, type SlashCommandId } from "./ComposerSuggestions";
 import type { CaretPosition } from "./composerCaret";
 import { editorSkills, editorText, getEditorCaretPosition, getEditorTextBeforeCaret, insertInlineSkill, insertPlainTextAtSelection, plainTextFromClipboard, removeEditorTrigger } from "./composerEditor";
 import { AttachmentGallery } from "./AttachmentCards";
@@ -114,10 +114,8 @@ export function Composer({
   onResponseSpeedChange,
   onSubmit,
   onStop,
-  onReview,
-  onStatus,
-  onMcp,
-  onFeedback,
+  onSlashCommand,
+  petVisible,
 }: {
   draftKey: string;
   busy: boolean;
@@ -141,10 +139,8 @@ export function Composer({
   onResponseSpeedChange: (value: ResponseSpeed) => void;
   onSubmit: (input: ComposerInput) => void;
   onStop: () => void;
-  onReview: () => void;
-  onStatus: () => void;
-  onMcp: () => void;
-  onFeedback: () => void;
+  onSlashCommand: (command: SlashCommandId) => void;
+  petVisible: boolean;
 }): React.JSX.Element {
   const initialDraft = useMemo(() => readComposerDraft(draftKey), []);
   const [draft, setDraft] = useState(initialDraft.draft);
@@ -157,7 +153,7 @@ export function Composer({
   const editor = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
-  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions) : [], [trigger, skillOptions]);
+  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible }) : [], [trigger, skillOptions, model, reasoningEffort, responseSpeed, approvalMode, petVisible]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const setApprovalMode = (value: ApprovalMode): void => {
     setApprovalModeState(value);
@@ -300,21 +296,33 @@ export function Composer({
     setActiveSuggestion(0);
   };
 
-  const runCommand = (name: string): void => {
-    if (name === "review") onReview();
-    else if (name === "status") onStatus();
-    else if (name === "goal" || name === "plan") setGoalMode(true);
-    else if (name === "mcp") onMcp();
-    else if (name === "feedback") onFeedback();
-    else if (name === "init") onSubmit({ prompt: "프로젝트 루트의 AGENTS.md를 현재 프로젝트에 맞게 생성하거나 업데이트해줘.", approvalMode, goalMode: false, attachments: [], skills: [] });
+  const submitCommandPrompt = (prompt: string): void => {
+    onSubmit({ prompt, approvalMode, goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
+  };
+
+  const runCommand = (name: SlashCommandId): void => {
+    if (name === "goal" || name === "plan") { setGoalMode(true); return; }
+    if (name === "init") {
+      submitCommandPrompt("프로젝트 루트의 AGENTS.md를 현재 프로젝트에 맞게 생성하거나 업데이트해줘.");
+      return;
+    }
+    if (name === "memory") {
+      submitCommandPrompt("현재 대화와 작업 상태에서 장기 기억으로 남겨야 할 결정, 선호, 진행 상황을 정리하고 필요한 프로젝트 메모리 파일을 업데이트해줘.");
+      return;
+    }
+    onSlashCommand(name);
   };
 
   const chooseSuggestion = (item: ComposerSuggestion): void => {
     if (!trigger) return;
-    const name = item.id.split(":")[1];
+    const name = item.id.slice(item.id.indexOf(":") + 1);
     if (item.kind === "command") {
-      if (editor.current) removeEditorTrigger(editor.current, trigger.tokenLength);
-      runCommand(name);
+      if (editor.current) {
+        removeEditorTrigger(editor.current, trigger.tokenLength);
+        setDraft(editorText(editor.current));
+        setSkills(editorSkills(editor.current));
+      }
+      runCommand(name as SlashCommandId);
     } else if (editor.current && insertInlineSkill(editor.current, name, trigger.tokenLength, skillOptions.find((skill) => skill.name === name)?.name)) {
       setSkills(editorSkills(editor.current));
       setDraft(editorText(editor.current));
