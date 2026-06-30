@@ -940,9 +940,10 @@ async function startCodexProxy(): Promise<void> {
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   configureMenu();
   createBackgroundTray();
-  // The app-server reads model providers when it connects. Register Devil's
-  // local proxy before the renderer can start its first external-provider turn.
-  await startCodexProxy();
+  // Provider/MCP registration can touch config, sockets, and named pipes. Keep
+  // it off the critical startup path so a slow helper never blocks the window
+  // or the primary Codex app-server connection.
+  void startCodexProxy().catch((error) => console.error("[devil-codex startup]", error instanceof Error ? error.message : error));
   void (async () => {
     const pending = await providerReconciler.reconcilePending();
     if (pending.attempted && pending.failed) console.warn("[devil-codex reconcile] pending recovery incomplete", pending);
@@ -952,8 +953,6 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const lingering = await providerReconciler.recoverLingeringDevilThreads();
     if (lingering.attempted && lingering.failed) console.warn("[devil-codex reconcile] lingering recovery incomplete", lingering);
   })().catch((error) => console.warn("[devil-codex reconcile]", error instanceof Error ? error.message : error));
-  createWindow();
-  initAutoUpdate(() => windowRef);
 
   ipcMain.handle("app:info", () => ({ version: app.getVersion(), platform: process.platform }));
   // Open the relevant macOS privacy pane (or browser-extension help) so the user
@@ -1416,6 +1415,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await threadServer(input.threadId).interruptTurn(input);
   });
 
+  createWindow();
+  initAutoUpdate(() => windowRef);
   app.on("activate", () => showMainWindow());
 });
 

@@ -469,7 +469,9 @@ function App(): React.JSX.Element {
       } else {
         await connect();
       }
-    })();
+    })().catch((error) => {
+      setRuntime((current) => ({ ...current, state: "error", detail: `Codex app-server 연결 실패: ${String(error)}` }));
+    });
     return dispose;
   }, []);
 
@@ -1062,14 +1064,18 @@ function App(): React.JSX.Element {
 
   async function connect(): Promise<void> {
     setRuntime((current) => ({ ...current, state: "connecting", detail: "Codex app-server 시작 중" }));
-    const status = await window.devilCodex.connect();
-    setRuntime(status);
-    const cwd = status.state === "connected" ? await generalChatCwd(status.cwd) : status.cwd;
-    setWorkspace(cwd);
-    setProjectDraft(false);
-    setThread(null);
-    setItems([]);
-    if (status.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
+    try {
+      const status = await window.devilCodex.connect();
+      setRuntime(status);
+      const cwd = status.state === "connected" ? await generalChatCwd(status.cwd) : status.cwd;
+      setWorkspace(cwd);
+      setProjectDraft(false);
+      setThread(null);
+      setItems([]);
+      if (status.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
+    } catch (error) {
+      setRuntime((current) => ({ ...current, state: "error", detail: `Codex app-server 연결 실패: ${String(error)}` }));
+    }
   }
 
   async function generalChatCwd(fallback = workspace): Promise<string> {

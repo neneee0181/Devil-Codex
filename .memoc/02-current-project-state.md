@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-06-30T14:18:00+09:00
+updated: 2026-06-30T15:40:00+09:00
 status: active
 tags:
   - memoc
@@ -15,6 +15,7 @@ Last synced: 2026-06-30
 
 ## Current Status
 
+- Startup unblock hotfix follow-up (2026-06-30): installed v0.0.16 had the correct app.asar and bundled Codex 0.142.4, and direct installed `codex.exe app-server --stdio` initialized in ~267ms. Fresh app launch still produced no renderer/app-server child because `app.whenReady` awaited `startCodexProxy()` before `createWindow()`. `src/main/main.cts` now starts provider/MCP registration in the background, registers IPC handlers before loading the window, then calls `createWindow()`/`initAutoUpdate()`. `src/renderer/main.tsx` catches runtime/connect IPC failures and surfaces an error instead of leaving `Codex app-server 시작 중` stuck. Version bumped to `0.0.17`; `npm run build` passes and local `npm start` spawned renderer plus `vendor/codex/codex.exe app-server --stdio`.
 - App-server startup hotfix (2026-06-30): v0.0.15 could stay on `Codex app-server 시작 중` because bundled Codex 0.142.3 did not answer the stdio initialize request in local handshake tests. `0.142.4` answered in ~260ms, so `.github/workflows/release.yml` now bundles `rust-v0.142.4`, `vendor/codex/codex.exe` is updated locally, and `src/main/app-server.cts` starts with explicit `--stdio`, disables remote control for embedded Devil sessions, sends the current initialize capability shape, and times out/cleans up stuck initialize requests after 30s. Version bumped to `0.0.16`. `npm run build` passes; direct wrapper connect reached `connected` in ~252ms.
 - Usage surfaces polish (2026-06-29): `src/renderer/main.tsx` now reuses provider usage/report-log data in the account menu and environment popover. Account `남은 사용량` expands inline with compact quota windows, while the environment popover shows current-thread token totals, context max when available, and per-model request-log rows. `src/renderer/styles.css` adds compact inline usage and thread-token presentation. `npm run build` passes.
 - Background/run continuity fix (2026-06-29): `src/renderer/main.tsx` now writes active thread items into `threadHistoryCache` before navigation snapshots and restores from the latest cache, preventing Settings/back from replacing streamed work with stale items. `src/main/main.cts` now creates a tray icon, treats window close as hide-to-background, disables renderer background throttling, restores hidden windows from tray/second instance/activate, and only disposes Codex servers on explicit `quit`. `src/shared/contracts.ts` adds the `quit` window action; Windows `Exit` now uses it. `npm run build` passes.
