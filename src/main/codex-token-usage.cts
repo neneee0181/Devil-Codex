@@ -43,12 +43,12 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
   });
 }
 
-function tokenSnapshotFromPayload(payload: RawItem): TokenSnapshot | undefined {
+function tokenSnapshotFromPayload(payload: RawItem, fallbackMaxTokens?: number): TokenSnapshot | undefined {
   if (String(payload.type ?? "") !== "token_count") return undefined;
   const info = (payload.info ?? {}) as RawItem;
   const lastUsage = tokenUsageFromRaw(info.lastTokenUsage ?? info.last_token_usage);
   const cumulativeUsage = tokenUsageFromRaw(info.totalTokenUsage ?? info.total_token_usage);
-  const maxTokens = finiteNumber(payload.modelContextWindow ?? payload.model_context_window);
+  const maxTokens = finiteNumber(payload.modelContextWindow ?? payload.model_context_window) ?? fallbackMaxTokens;
   const usedTokens = lastUsage ? lastUsage.totalTokens ?? lastUsage.inputTokens + lastUsage.outputTokens : undefined;
   const contextUsage = usedTokens && maxTokens ? { usedTokens, maxTokens } : undefined;
   if (!lastUsage && !cumulativeUsage && !contextUsage) return undefined;
@@ -101,6 +101,7 @@ export async function readCodexTokenSnapshot(threadId: string): Promise<TokenSna
   if (!rolloutPath || !existsSync(rolloutPath)) return undefined;
   const source = await readFile(rolloutPath, "utf8").catch(() => "");
   let latest: TokenSnapshot | undefined;
+  let latestMaxTokens: number | undefined;
   for (const line of source.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -108,7 +109,9 @@ export async function readCodexTokenSnapshot(threadId: string): Promise<TokenSna
       if (parsed.type !== "event_msg") continue;
       const payload = parsed.payload;
       if (!payload || typeof payload !== "object") continue;
-      latest = tokenSnapshotFromPayload(payload as RawItem) ?? latest;
+      const rawPayload = payload as RawItem;
+      latestMaxTokens = finiteNumber(rawPayload.modelContextWindow ?? rawPayload.model_context_window) ?? latestMaxTokens;
+      latest = tokenSnapshotFromPayload(rawPayload, latestMaxTokens) ?? latest;
     } catch {
       // Ignore partial or legacy rollout lines; token usage is best-effort.
     }

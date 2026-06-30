@@ -99,7 +99,7 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
     const candidates = [raw, ...nested];
     for (const candidate of candidates) {
       const used = finiteNumber(candidate.usedTokens ?? candidate.used_tokens ?? candidate.totalTokens ?? candidate.total_tokens ?? candidate.tokenCount ?? candidate.token_count ?? candidate.inputTokens ?? candidate.input_tokens);
-      const max = finiteNumber(candidate.maxTokens ?? candidate.max_tokens ?? candidate.contextWindow ?? candidate.context_window ?? candidate.windowTokens ?? candidate.window_tokens ?? candidate.limitTokens ?? candidate.limit_tokens);
+      const max = finiteNumber(candidate.maxTokens ?? candidate.max_tokens ?? candidate.modelContextWindow ?? candidate.model_context_window ?? candidate.contextWindow ?? candidate.context_window ?? candidate.windowTokens ?? candidate.window_tokens ?? candidate.limitTokens ?? candidate.limit_tokens);
       if (used && max) return { usedTokens: used, maxTokens: max };
     }
   }

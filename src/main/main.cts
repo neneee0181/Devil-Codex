@@ -184,6 +184,14 @@ async function maybeStartContextCompaction(instance: CodexAppServer, input: { th
   const usage = snapshot?.contextUsage ?? validContextUsage(input.contextUsage);
   if (!usage || !shouldStartContextCompaction(usage)) return false;
   contextWindowFailures.set(input.threadId, contextWindowMessage(usage));
+  sendToRenderer("app-server:event", {
+    method: "thread/compaction_started",
+    params: {
+      threadId: input.threadId,
+      contextUsage: usage,
+      limit: autoCompactContextLimit(usage.maxTokens),
+    },
+  });
   await instance.compactThread({ threadId: input.threadId });
   return true;
 }

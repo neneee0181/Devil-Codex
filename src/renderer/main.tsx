@@ -157,7 +157,7 @@ function cwdKey(value: string | undefined): string {
 
 function modelContextWindow(model: string): number {
   const lower = model.toLowerCase();
-  if (lower.includes("gpt-5") || lower.includes("5.5") || lower.includes("5.4")) return 258_000;
+  if (lower.includes("gpt-5") || lower.includes("5.5") || lower.includes("5.4")) return 258_400;
   if (lower.includes("claude")) return 200_000;
   if (lower.includes("gemini")) return 1_000_000;
   return 128_000;
@@ -170,12 +170,34 @@ function estimateTextTokens(text: string): number {
   return Math.ceil(ascii / 4 + nonAscii / 1.6);
 }
 
+function hasCompactionEntry(item: ThreadHistoryItem): boolean {
+  return item.activities?.some((activity) => activity.kind === "compaction") ?? false;
+}
+
+function estimatedContextItemsAfterCompaction(items: ThreadHistoryItem[], compactionIndex: number): ThreadHistoryItem[] {
+  if (compactionIndex < 0) return items;
+  const afterCompaction = items.slice(compactionIndex + 1);
+  for (let index = compactionIndex - 1; index >= 0; index -= 1) {
+    if (items[index].kind === "user") return [items[index], ...afterCompaction];
+  }
+  return afterCompaction;
+}
+
 function estimateContextUsage(items: ThreadHistoryItem[], model: string): ContextUsage | undefined {
+  let lastCompactionIndex = -1;
   for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (hasCompactionEntry(items[index])) {
+      lastCompactionIndex = index;
+      break;
+    }
+  }
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (index <= lastCompactionIndex) break;
     const usage = items[index].contextUsage;
     if (usage?.usedTokens && usage.maxTokens) return usage;
   }
-  const used = items.reduce((sum, item) => {
+  const contextItems = estimatedContextItemsAfterCompaction(items, lastCompactionIndex);
+  const used = contextItems.reduce((sum, item) => {
     const activityText = (item.activities ?? []).map((activity) => `${activity.title}\n${activity.detail ?? ""}\n${activity.output ?? ""}`).join("\n");
     const attachmentText = (item.attachments ?? []).map((attachment) => `${attachment.name}\n${attachment.content ?? ""}`).join("\n");
     return sum + estimateTextTokens(`${item.title ?? ""}\n${item.text}\n${activityText}\n${attachmentText}`);
@@ -256,6 +278,7 @@ type PendingTurnState = {
 };
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
+type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
 type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; reasoningOutputTokens: number; requests: number; source: "cumulative" | "turnUsage" | "requestLog" };
 type ThreadTokenUsageSummary = { totalTokens: number; contextTokens?: number; maxTokens?: number; contextOverflow: boolean; requestTokens: number; models: ThreadTokenModelUsage[] };
 
@@ -490,6 +513,7 @@ function App(): React.JSX.Element {
   // same chat is still running, it lands here and auto-sends the moment the
   // current turn finishes — instead of being dropped.
   const queuedTurns = useRef(new Map<string, QueuedTurn[]>());
+  const compactionRetries = useRef(new Map<string, CompactionRetryState>());
   const compactedTurns = useRef(new Set<string>());
   const activeTurn = useRef<{ threadId: string; turnId: string } | null>(null);
   const activeTurnsByThread = useRef(new Map<string, string>());
@@ -898,6 +922,75 @@ function App(): React.JSX.Element {
     }
   }
 
+  function ensureCompactionMarker(threadId: string, turnId?: string): void {
+    if (!threadId) return;
+    const entry = { id: `compaction-${turnId || threadId}`, kind: "compaction" as const, title: "컨텍스트가 자동으로 압축됨", status: "completed" as const };
+    const markerItem: ThreadHistoryItem = { id: `activity-compaction-${turnId || threadId}`, kind: "activity", text: "", ...(turnId ? { turnId } : {}), activities: [entry] };
+    const upsert = (current: ThreadHistoryItem[]): ThreadHistoryItem[] => {
+      if (current.some((item) => item.activities?.some((activity) => activity.kind === "compaction" && activity.id === entry.id))) return current;
+      if (turnId) {
+        const index = current.findIndex((item) => item.kind === "activity" && item.turnId === turnId);
+        if (index >= 0) {
+          return current.map((item, itemIndex) => itemIndex === index ? { ...item, activities: [...(item.activities ?? []), entry] } : item);
+        }
+      }
+      return [...current, markerItem];
+    };
+    if (threadRef.current?.id === threadId) {
+      setItems((current) => {
+        const next = upsert(current);
+        itemsRef.current = next;
+        threadHistoryCache.current.set(threadId, next);
+        return next;
+      });
+    } else {
+      threadHistoryCache.current.set(threadId, upsert(threadHistoryCache.current.get(threadId) ?? []));
+    }
+  }
+
+  function pendingForThread(threadId: string): PendingTurnState | null {
+    return pendingTurns.current.get(threadId) ?? (pendingTurn.current?.threadId === threadId ? pendingTurn.current : null);
+  }
+
+  function rememberCompactionRetry(threadId: string): boolean {
+    if (!threadId || compactionRetries.current.has(threadId)) return compactionRetries.current.has(threadId);
+    const pending = pendingForThread(threadId);
+    if (!pending || pending.retriedAfterCompaction) return false;
+    compactionRetries.current.set(threadId, { pending: { ...pending }, retrying: false });
+    markThreadRunning(threadId);
+    if (threadRef.current?.id === threadId) setBusy(true);
+    return true;
+  }
+
+  function failCompactionRetry(threadId: string, error: unknown): void {
+    const errorItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "system", title: "압축 후 요청 재개 실패", text: String(error) };
+    appendItemToThread(threadId, errorItem);
+    if (pendingTurn.current?.threadId === threadId) pendingTurn.current = null;
+    pendingTurns.current.delete(threadId);
+    compactionRetries.current.delete(threadId);
+    if (activeTurn.current?.threadId === threadId) activeTurn.current = null;
+    activeTurnsByThread.current.delete(threadId);
+    clearThreadRunning(threadId);
+    if (threadRef.current?.id === threadId) setBusy(false);
+  }
+
+  function retryPendingAfterCompaction(threadId: string, turnId?: string): void {
+    if (!rememberCompactionRetry(threadId)) return;
+    const state = compactionRetries.current.get(threadId);
+    if (!state || state.retrying) return;
+    state.retrying = true;
+    if (turnId) compactedTurns.current.add(turnId);
+    const retry: PendingTurnState = { ...state.pending, contextUsage: undefined, retriedAfterCompaction: true };
+    state.pending = retry;
+    pendingTurn.current = retry;
+    pendingTurns.current.set(threadId, retry);
+    markThreadRunning(threadId);
+    if (threadRef.current?.id === threadId) setBusy(true);
+    window.setTimeout(() => {
+      void window.devilCodex.sendTurn(retry).catch((error) => failCompactionRetry(threadId, error));
+    }, 80);
+  }
+
   function modelDisplayName(input: SentModelState): string {
     const provider = providers.settings?.providers.find((item) => item.id === input.provider);
     const modelInfo = provider?.models.find((item) => item.id === input.model);
@@ -1044,12 +1137,18 @@ function App(): React.JSX.Element {
     }
     const eventParams = (event.params ?? {}) as Record<string, unknown>;
     detectPermissionHint(eventParams);
+    if (event.method === "thread/compaction_started") {
+      rememberCompactionRetry(String(eventParams.threadId ?? ""));
+      return;
+    }
     if (event.method === "turn/started") {
       const turnId = String(eventParams.turnId ?? (eventParams.turn as { id?: unknown } | undefined)?.id ?? "");
       const threadId = String(eventParams.threadId ?? "");
       if (turnId && threadId) {
         activeTurn.current = { threadId, turnId };
         activeTurnsByThread.current.set(threadId, turnId);
+        const retryState = compactionRetries.current.get(threadId);
+        if (retryState?.retrying && retryState.pending.retriedAfterCompaction) retryState.retryTurnId = turnId;
         markThreadRunning(threadId, turnId);
       }
     }
@@ -1090,37 +1189,38 @@ function App(): React.JSX.Element {
     if (event.method === "thread/compacted") {
       const params = (event.params ?? {}) as Record<string, unknown>;
       const turnId = String(params.turnId ?? "");
-      const threadId = String(params.threadId ?? "");
-      const pending = pendingTurns.current.get(threadId) ?? pendingTurn.current;
-      if (pending && pending.threadId === threadId && !pending.retriedAfterCompaction) {
-        pending.retriedAfterCompaction = true;
-        compactedTurns.current.add(turnId);
-        if (threadRef.current?.id === threadId) setBusy(true);
-        window.setTimeout(() => {
-          const retry = pendingTurns.current.get(threadId) ?? pendingTurn.current;
-          if (!retry || retry.threadId !== threadId) return;
-          void window.devilCodex.sendTurn(retry).catch((error) => {
-            const errorItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "system", title: "압축 후 요청 재개 실패", text: String(error) };
-            if (threadRef.current?.id === threadId) setItems((current) => [...current, errorItem]);
-            else threadHistoryCache.current.set(threadId, [...(threadHistoryCache.current.get(threadId) ?? []), errorItem]);
-            pendingTurn.current = null;
-            pendingTurns.current.delete(threadId);
-            clearThreadRunning(threadId);
-            if (threadRef.current?.id === threadId) setBusy(false);
-          });
-        }, 0);
-      }
+      const threadId = String(params.threadId ?? activeTurn.current?.threadId ?? pendingTurn.current?.threadId ?? "");
+      ensureCompactionMarker(threadId, turnId || undefined);
+      retryPendingAfterCompaction(threadId, turnId);
     }
     if (event.method === "turn/completed") {
       const params = (event.params ?? {}) as Record<string, unknown>;
       const turnId = String(params.turnId ?? (params.turn as { id?: unknown } | undefined)?.id ?? "");
       const turnStatus = String((params.turn as { status?: unknown } | undefined)?.status ?? "completed");
       const threadId = String(params.threadId ?? activeTurn.current?.threadId ?? pendingTurn.current?.threadId ?? "");
-      if (compactedTurns.current.delete(turnId)) return;
+      const waitingForCompactionRetry = threadId ? compactionRetries.current.get(threadId) : undefined;
+      if (waitingForCompactionRetry && !waitingForCompactionRetry.pending.retriedAfterCompaction) {
+        ensureCompactionMarker(threadId, turnId || undefined);
+        if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
+        if (threadId && activeTurnsByThread.current.get(threadId) === turnId) activeTurnsByThread.current.delete(threadId);
+        retryPendingAfterCompaction(threadId);
+        return;
+      }
+      if (waitingForCompactionRetry?.retrying && waitingForCompactionRetry.retryTurnId !== turnId) {
+        if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
+        if (threadId && activeTurnsByThread.current.get(threadId) === turnId) activeTurnsByThread.current.delete(threadId);
+        return;
+      }
+      if (compactedTurns.current.delete(turnId)) {
+        if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
+        if (threadId && activeTurnsByThread.current.get(threadId) === turnId) activeTurnsByThread.current.delete(threadId);
+        return;
+      }
       if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
       if (threadId) activeTurnsByThread.current.delete(threadId);
       if (threadId) pendingTurns.current.delete(threadId);
       if (pendingTurn.current?.threadId === threadId) pendingTurn.current = null;
+      if (threadId) compactionRetries.current.delete(threadId);
       clearThreadRunning(threadId);
       setBusy(false);
       if (threadId) startQueuedTurn(threadId);
@@ -1164,6 +1264,7 @@ function App(): React.JSX.Element {
     const turnId = threadId ? activeTurnsByThread.current.get(threadId) : activeTurn.current?.turnId;
     if (!threadId) return;
     clearQueuedTurns(threadId);
+    compactionRetries.current.delete(threadId);
     void window.devilCodex.interruptTurn({ threadId, turnId }).catch((error) => {
       const message = String(error);
       if (/no active turn to interrupt/i.test(message)) {
