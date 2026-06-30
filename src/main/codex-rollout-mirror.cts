@@ -1,4 +1,4 @@
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,17 +19,36 @@ function rolloutPathForThread(threadId: string): string | undefined {
   }
 }
 
+function splitConcatenatedRolloutItems(source: string): string {
+  return source.replace(/}\{"timestamp"/g, "}\n{\"timestamp\"");
+}
+
+export async function repairMirroredRolloutJsonl(threadId: string): Promise<void> {
+  const rolloutPath = rolloutPathForThread(threadId);
+  if (!rolloutPath || !existsSync(rolloutPath)) return;
+  const existing = await readFile(rolloutPath, "utf8").catch(() => "");
+  const repaired = splitConcatenatedRolloutItems(existing);
+  if (repaired !== existing) await writeFile(rolloutPath, repaired, "utf8");
+}
+
 export async function appendMirroredRolloutEvents(threadId: string, mirrorId: string, payloads: Array<Record<string, unknown>>): Promise<void> {
   if (!payloads.length) return;
   const rolloutPath = rolloutPathForThread(threadId);
   if (!rolloutPath || !existsSync(rolloutPath)) return;
-  const existing = await readFile(rolloutPath, "utf8").catch(() => "");
-  if (existing.includes(`"devil_mirror_id":"${mirrorId}"`)) return;
   const timestamp = new Date().toISOString();
   const lines = payloads.map((payload) => JSON.stringify({
     timestamp,
     type: "event_msg",
     payload: { ...payload, devil_mirror_id: mirrorId },
   }));
-  await appendFile(rolloutPath, `\n${lines.join("\n")}`, "utf8");
+  const existingRaw = await readFile(rolloutPath, "utf8").catch(() => undefined);
+  if (existingRaw === undefined) {
+    await appendFile(rolloutPath, `\n${lines.join("\n")}\n`, "utf8");
+    return;
+  }
+  const existing = splitConcatenatedRolloutItems(existingRaw);
+  if (existing !== existingRaw) await writeFile(rolloutPath, existing, "utf8").catch(() => undefined);
+  if (existing.includes(`"devil_mirror_id":"${mirrorId}"`)) return;
+  const prefix = existing && !existing.endsWith("\n") ? "\n" : "";
+  await appendFile(rolloutPath, `${prefix}${lines.join("\n")}\n`, "utf8");
 }

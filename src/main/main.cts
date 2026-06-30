@@ -30,7 +30,7 @@ import { AskControlServer } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { providerUsageReport } from "./provider-usage.cjs";
-import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
+import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
@@ -72,6 +72,7 @@ function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadH
 }
 
 async function attachCodexTokenUsage(threadId: string, items: ThreadHistoryItem[]): Promise<ThreadHistoryItem[]> {
+  await repairMirroredRolloutJsonl(threadId).catch(() => undefined);
   const withFinalAnswers = await attachRolloutFinalAnswers(threadId, items);
   return attachCodexTokenSnapshot(withFinalAnswers, await readCodexTokenSnapshot(threadId));
 }
@@ -854,6 +855,7 @@ function restartAppServer(): void {
 // Resume an existing thread on its server when that server is fresh (after a
 // restart/prune), so a turn can be sent. No-op once the thread is loaded.
 async function ensureThreadLoaded(input: { threadId: string; model: string; cwd?: string; modelProvider?: string }): Promise<void> {
+  await repairMirroredRolloutJsonl(input.threadId).catch(() => undefined);
   if (loadedThreads.has(input.threadId)) return;
   await threadServer(input.threadId).resumeThread({
     id: input.threadId,
@@ -1260,6 +1262,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   ipcMain.handle("thread:fork", (_event, input) => server().forkThread(input));
   ipcMain.handle("thread:read", async (_event, input) => {
+    await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native
     // thread that took even one stray external turn is flagged external forever
     // (providerTurns.length > 0) — and then this branch would hide its full
@@ -1291,6 +1294,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else await historyCache.save(input.id, items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
+    await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await server().readThread(input));
       return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));

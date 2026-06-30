@@ -40,7 +40,7 @@ jobs:
         if: matrix.platform == 'mac'
         run: |
           mkdir -p vendor/codex
-          curl -sL -o codex.zst "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-aarch64-apple-darwin.zst"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o codex.zst "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-aarch64-apple-darwin.zst"
           zstd -d codex.zst -o vendor/codex/codex
           chmod +x vendor/codex/codex
 
@@ -49,9 +49,25 @@ jobs:
         shell: bash
         run: |
           mkdir -p vendor/codex
-          curl -sL -o vendor/codex/codex.exe "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-x86_64-pc-windows-msvc.exe"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o vendor/codex/codex.exe "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-x86_64-pc-windows-msvc.exe"
 
-      - run: npm ci
+      - name: Configure npm network retries
+        run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          npm config set fetch-timeout 300000
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            status=$?
+            if [ "$attempt" = "3" ]; then exit "$status"; fi
+            npm cache verify || true
+            sleep $((attempt * 15))
+          done
 
       # Publish to a GitHub Release (generating latest*.yml update feeds) when
       # building from a v* tag; plain workflow_dispatch only produces artifacts.
