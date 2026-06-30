@@ -31,7 +31,7 @@ import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, p
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
-import { attachCodexTokenSnapshot, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
+import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
 
@@ -72,7 +72,8 @@ function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadH
 }
 
 async function attachCodexTokenUsage(threadId: string, items: ThreadHistoryItem[]): Promise<ThreadHistoryItem[]> {
-  return attachCodexTokenSnapshot(items, await readCodexTokenSnapshot(threadId));
+  const withFinalAnswers = await attachRolloutFinalAnswers(threadId, items);
+  return attachCodexTokenSnapshot(withFinalAnswers, await readCodexTokenSnapshot(threadId));
 }
 
 function escapeRegExp(value: string): string {

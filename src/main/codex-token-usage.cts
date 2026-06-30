@@ -14,6 +14,7 @@ type TokenSnapshot = {
   cumulativeUsage?: ProviderTokenUsage;
   contextUsage?: ContextUsage;
 };
+type RolloutFinalAnswer = { id: string; turnId: string; text: string };
 
 function finiteNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
@@ -54,6 +55,36 @@ function tokenSnapshotFromPayload(payload: RawItem): TokenSnapshot | undefined {
   return { ...(lastUsage ? { lastUsage } : {}), ...(cumulativeUsage ? { cumulativeUsage } : {}), ...(contextUsage ? { contextUsage } : {}) };
 }
 
+function messageText(payload: RawItem): string {
+  if (typeof payload.message === "string") return payload.message.trim();
+  if (typeof payload.text === "string") return payload.text.trim();
+  const content = payload.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is RawItem => Boolean(part) && typeof part === "object")
+    .map((part) => String(part.text ?? part.output_text ?? ""))
+    .join("")
+    .trim();
+}
+
+function finalAnswerFromPayload(rowType: string, payload: RawItem, fallbackIndex: number): RolloutFinalAnswer | undefined {
+  const type = String(payload.type ?? "");
+  const phase = String(payload.phase ?? "");
+  const role = String(payload.role ?? "");
+  const isFinalMessage = rowType === "response_item" && type === "message" && phase === "final_answer" && (!role || role === "assistant");
+  const isLegacyFinal = rowType === "event_msg" && type === "agent_message" && phase === "final_answer";
+  if (!isFinalMessage && !isLegacyFinal) return undefined;
+  const passthrough = (payload.internal_chat_message_metadata_passthrough ?? {}) as RawItem;
+  const turnId = String(passthrough.turn_id ?? passthrough.turnId ?? payload.turn_id ?? payload.turnId ?? "");
+  const text = messageText(payload);
+  if (!turnId || !text) return undefined;
+  return {
+    id: String(payload.id ?? `rollout-final-${turnId}-${fallbackIndex}`),
+    turnId,
+    text,
+  };
+}
+
 function rolloutPathForThread(threadId: string): string | undefined {
   if (!existsSync(STATE_DB_PATH)) return undefined;
   const db = new DatabaseSync(STATE_DB_PATH, { readOnly: true });
@@ -83,6 +114,46 @@ export async function readCodexTokenSnapshot(threadId: string): Promise<TokenSna
     }
   }
   return latest;
+}
+
+export async function readRolloutFinalAnswers(threadId: string): Promise<RolloutFinalAnswer[]> {
+  const rolloutPath = rolloutPathForThread(threadId);
+  if (!rolloutPath || !existsSync(rolloutPath)) return [];
+  const source = await readFile(rolloutPath, "utf8").catch(() => "");
+  const answers: RolloutFinalAnswer[] = [];
+  let index = 0;
+  for (const line of source.split("\n")) {
+    if (!line.trim()) continue;
+    index += 1;
+    try {
+      const parsed = JSON.parse(line) as RawItem;
+      const payload = parsed.payload;
+      if (!payload || typeof payload !== "object") continue;
+      const answer = finalAnswerFromPayload(String(parsed.type ?? ""), payload as RawItem, index);
+      if (answer) answers.push(answer);
+    } catch {
+      // Ignore partial rollout lines; final-answer recovery is best-effort.
+    }
+  }
+  return answers;
+}
+
+export async function attachRolloutFinalAnswers(threadId: string, items: ThreadHistoryItem[]): Promise<ThreadHistoryItem[]> {
+  const answers = await readRolloutFinalAnswers(threadId);
+  if (!answers.length) return items;
+  let next = [...items];
+  for (const answer of answers) {
+    const alreadyRendered = next.some((item) => item.kind === "agent" && item.turnId === answer.turnId && item.text.trim());
+    if (alreadyRendered) continue;
+    const agent: ThreadHistoryItem = { id: answer.id, kind: "agent", text: answer.text, turnId: answer.turnId };
+    let insertAt = -1;
+    for (let index = 0; index < next.length; index += 1) {
+      if (next[index].turnId === answer.turnId) insertAt = index;
+    }
+    if (insertAt >= 0) next = [...next.slice(0, insertAt + 1), agent, ...next.slice(insertAt + 1)];
+    else next = [...next, agent];
+  }
+  return next;
 }
 
 export function attachCodexTokenSnapshot(items: ThreadHistoryItem[], snapshot: TokenSnapshot | undefined): ThreadHistoryItem[] {
