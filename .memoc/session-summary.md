@@ -3,20 +3,20 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-27T22:05:00
-updated: 2026-06-30T15:40:00+09:00
+updated: 2026-06-30T15:53:00+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-06-30T15:40:00+09:00
+Last: 2026-06-30T15:53:00+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
-- v0.0.17 fixes the remaining startup hang: `startCodexProxy()`/MCP registration no longer blocks `createWindow()`, IPC handlers are registered before the window loads, and renderer runtime connect failures now surface as errors instead of leaving `Codex app-server 시작 중` stuck.
+- v0.0.18 fixes a remaining IPC race: `showMainWindow()` can no longer create a window before IPC handlers are ready, and tray creation now happens after handler registration. This prevents `No handler registered for 'runtime:status'` after install/relaunch.
 
 ## Verify
 - `npm run build` passes.
-- Local `npm start` spawned renderer plus `vendor/codex/codex.exe app-server --stdio`; startup no longer blocked before the window path.
+- Built `dist-electron/main.cjs` has `runtime:status` before startup `createWindow()`, and local `npm start` spawned renderer plus `vendor/codex/codex.exe app-server --stdio`.

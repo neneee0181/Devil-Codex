@@ -91,6 +91,8 @@ if (!hasSingleInstanceLock) {
 let windowRef: BrowserWindow | undefined;
 let trayRef: Tray | undefined;
 let isQuitting = false;
+let ipcHandlersReady = false;
+let showMainWindowWhenReady = false;
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
 const browserControlSecret = randomBytes(24).toString("hex");
@@ -490,6 +492,10 @@ function appIconPath(): string {
 }
 
 function showMainWindow(): void {
+  if (!ipcHandlersReady) {
+    showMainWindowWhenReady = true;
+    return;
+  }
   if (!windowRef || windowRef.isDestroyed()) createWindow();
   if (!windowRef) return;
   if (windowRef.isMinimized()) windowRef.restore();
@@ -939,7 +945,6 @@ async function startCodexProxy(): Promise<void> {
 
 if (hasSingleInstanceLock) app.whenReady().then(async () => {
   configureMenu();
-  createBackgroundTray();
   // Provider/MCP registration can touch config, sockets, and named pipes. Keep
   // it off the critical startup path so a slow helper never blocks the window
   // or the primary Codex app-server connection.
@@ -1415,7 +1420,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await threadServer(input.threadId).interruptTurn(input);
   });
 
-  createWindow();
+  ipcHandlersReady = true;
+  createBackgroundTray();
+  if (showMainWindowWhenReady) showMainWindow();
+  else createWindow();
   initAutoUpdate(() => windowRef);
   app.on("activate", () => showMainWindow());
 });
