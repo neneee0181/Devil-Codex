@@ -1632,7 +1632,7 @@ function App(): React.JSX.Element {
       pendingTurn.current = pending;
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
-      await window.devilCodex.sendTurn({ threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions });
+      await window.devilCodex.sendTurn(pending);
       if (replacingFromEdit) {
         const cleanTitle = threadTitleFromPrompt(promptText);
         updateThreadTitle(activeThread.id, cleanTitle);

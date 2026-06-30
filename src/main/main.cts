@@ -160,19 +160,29 @@ function validContextUsage(value: unknown): ContextUsage | undefined {
   return Number.isFinite(usedTokens) && Number.isFinite(maxTokens) && usedTokens > 0 && maxTokens > 0 ? { usedTokens, maxTokens } : undefined;
 }
 
-function fullestContextUsage(...values: Array<ContextUsage | undefined>): ContextUsage | undefined {
-  return values.filter(Boolean).sort((a, b) => (b!.usedTokens / b!.maxTokens) - (a!.usedTokens / a!.maxTokens))[0];
+// Codex reports the effective context window (95% of the raw model window),
+// while its default auto-compaction limit is 90% of the raw model window.
+const AUTO_COMPACT_CONTEXT_PERCENT = 90;
+const EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
+
+function autoCompactContextLimit(maxTokens: number): number {
+  return Math.floor((maxTokens * AUTO_COMPACT_CONTEXT_PERCENT) / EFFECTIVE_CONTEXT_WINDOW_PERCENT);
+}
+
+function shouldStartContextCompaction(usage: ContextUsage): boolean {
+  return usage.usedTokens >= autoCompactContextLimit(usage.maxTokens);
 }
 
 function contextWindowMessage(usage: ContextUsage): string {
-  return `Codex 컨텍스트 창이 가득 찼습니다 (${Math.round(usage.usedTokens)}/${Math.round(usage.maxTokens)} tokens). 압축을 먼저 실행한 뒤 같은 요청을 다시 보냅니다.`;
+  const limit = autoCompactContextLimit(usage.maxTokens);
+  return `Codex 컨텍스트 자동 압축 임계값에 도달했습니다 (${Math.round(usage.usedTokens)}/${Math.round(usage.maxTokens)} tokens, limit ${limit}). 압축을 먼저 실행한 뒤 같은 요청을 다시 보냅니다.`;
 }
 
 async function maybeStartContextCompaction(instance: CodexAppServer, input: { threadId: string; provider?: ProviderId; contextUsage?: ContextUsage; retriedAfterCompaction?: boolean }): Promise<boolean> {
   if ((input.provider ?? "codex") !== "codex" || input.retriedAfterCompaction) return false;
   const snapshot = await readCodexTokenSnapshot(input.threadId).catch(() => undefined);
-  const usage = fullestContextUsage(validContextUsage(input.contextUsage), snapshot?.contextUsage);
-  if (!usage || usage.usedTokens < usage.maxTokens) return false;
+  const usage = snapshot?.contextUsage ?? validContextUsage(input.contextUsage);
+  if (!usage || !shouldStartContextCompaction(usage)) return false;
   contextWindowFailures.set(input.threadId, contextWindowMessage(usage));
   await instance.compactThread({ threadId: input.threadId });
   return true;
@@ -433,7 +443,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   const usage = tokenCountInfo(event);
   const threadId = explicitThreadId || (usage && activeThreadServerTurns.size === 1 ? Array.from(activeThreadServerTurns)[0] ?? "" : "");
   if (!threadId) return;
-  if (usage && usage.context >= usage.max) {
+  if (usage && shouldStartContextCompaction({ usedTokens: usage.context, maxTokens: usage.max })) {
     contextWindowFailures.set(threadId, contextWindowMessage({ usedTokens: usage.context, maxTokens: usage.max }));
   }
   const params = (event.params ?? {}) as Record<string, unknown>;
