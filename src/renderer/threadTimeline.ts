@@ -68,6 +68,29 @@ function tokenUsageSnapshotFromRaw(...values: Array<unknown>): { tokenUsage?: Pr
   return undefined;
 }
 
+function assistantText(item: RawItem): string {
+  if (typeof item.text === "string") return item.text;
+  if (typeof item.message === "string") return item.message;
+  const content = item.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is RawItem => Boolean(part) && typeof part === "object")
+    .map((part) => String(part.text ?? part.output_text ?? ""))
+    .join("");
+}
+
+function isAssistantMessageItem(item: RawItem, type: string): boolean {
+  if (type === "agentMessage" || type === "agent_message") return true;
+  if (type !== "message") return false;
+  const role = String(item.role ?? "");
+  return !role || role === "assistant";
+}
+
+function isFinalAssistantMessage(item: RawItem): boolean {
+  const phase = String(item.phase ?? "");
+  return phase !== "commentary";
+}
+
 function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefined {
   for (const value of values) {
     if (!value || typeof value !== "object") continue;
@@ -158,7 +181,7 @@ function entryFromItem(item: RawItem): ThreadActivityEntry | null {
   if (type === "providerDiagnostics") return { id, kind: "diagnostic", title: String(item.title ?? "Provider 진단"), detail: String(item.detail ?? ""), status: String(item.status ?? "completed") as ThreadActivityEntry["status"] };
   if (type === "error") return { id, kind: "message", title: "Provider 응답 실패", detail: String(item.message ?? item.text ?? item.error ?? "Provider가 이유를 알 수 없는 실패를 반환했습니다."), status: "failed" };
   if (type === "plan") return { id, kind: "message", title: "계획", detail: String(item.text ?? ""), status: "completed" };
-  if (type === "agentMessage" && item.phase === "commentary") return { id, kind: "message", title: "작업 메모", detail: String(item.text ?? ""), status: "inProgress" };
+  if (isAssistantMessageItem(item, type) && !isFinalAssistantMessage(item)) return { id, kind: "message", title: "작업 메모", detail: assistantText(item), status: "inProgress" };
   return null;
 }
 
@@ -301,9 +324,9 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
   if ((event.method === "item/started" || event.method === "item/completed") && item && turnId) {
     const type = String(item.type ?? "");
     if (!explicitTurnId && (type === "providerDiagnostics" || type === "fileChange" || type === "webSearch" || type === "contextCompaction")) return items;
-    if (type === "agentMessage" && item.phase !== "commentary") {
+    if (isAssistantMessageItem(item, type) && isFinalAssistantMessage(item)) {
       const id = String(item.id ?? crypto.randomUUID());
-      const text = String(item.text ?? "");
+      const text = assistantText(item);
       const exists = items.some((current) => current.id === id);
       // A new agent message means any earlier one was intermediate → fold it
       // into the work timeline; keep this latest message standalone (the final

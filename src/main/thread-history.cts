@@ -121,6 +121,32 @@ function userContent(item: RawItem): { text: string; attachments: ThreadAttachme
   return { text: `${prefix}${text}`.trim(), attachments };
 }
 
+function assistantText(item: RawItem): string {
+  if (typeof item.text === "string") return item.text.trim();
+  if (typeof item.message === "string") return item.message.trim();
+  const content = item.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is RawItem => Boolean(part) && typeof part === "object")
+    .map((part) => String(part.text ?? part.output_text ?? ""))
+    .join("")
+    .trim();
+}
+
+function isAssistantMessageItem(item: RawItem, type: string): boolean {
+  if (type === "agentMessage" || type === "agent_message") return true;
+  if (type !== "message") return false;
+  const role = String(item.role ?? "");
+  return !role || role === "assistant";
+}
+
+function isFinalAssistantMessage(item: RawItem, index: number, lastAssistant: number): boolean {
+  const phase = String(item.phase ?? "");
+  if (phase === "commentary") return false;
+  if (phase === "final_answer") return true;
+  return index === lastAssistant;
+}
+
 export function activityFromItem(item: RawItem, fallbackId: string = crypto.randomUUID()): ThreadActivityEntry | null {
   const id = String(item.id ?? fallbackId);
   const type = String(item.type ?? "");
@@ -199,7 +225,7 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
     const turnId = String(turn.id ?? `turn-${turnIndex}`);
     const items = turn.items ?? [];
     let lastAgent = -1;
-    items.forEach((item, index) => { if (item.type === "agentMessage") lastAgent = index; });
+    items.forEach((item, index) => { if (isAssistantMessageItem(item, String(item.type ?? "")) && assistantText(item)) lastAgent = index; });
     const activities: ThreadActivityEntry[] = [];
     const finalMessages: ThreadHistoryItem[] = [];
 
@@ -211,12 +237,11 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
         if (text || attachments.length) history.push({ id, kind: "user", text, turnId, ...(attachments.length ? { attachments } : {}) });
         return;
       }
-      if (type === "agentMessage") {
-        const text = String(item.text ?? "").trim();
+      if (isAssistantMessageItem(item, type)) {
+        const text = assistantText(item);
         if (!text) return;
-        const commentary = item.phase === "commentary" || (item.phase == null && index !== lastAgent);
-        if (commentary) activities.push({ id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
-        else finalMessages.push({ id, kind: "agent", text, turnId });
+        if (isFinalAssistantMessage(item, index, lastAgent)) finalMessages.push({ id, kind: "agent", text, turnId });
+        else activities.push({ id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
         return;
       }
       const activity = activityFromItem(item, id);
