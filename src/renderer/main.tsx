@@ -922,6 +922,12 @@ function App(): React.JSX.Element {
     }
   }
 
+  function persistThreadHistory(threadId: string, items: ThreadHistoryItem[]): void {
+    if (!threadId) return;
+    threadHistoryCache.current.set(threadId, items);
+    void window.devilCodex.cacheThreadHistory({ id: threadId, items }).catch(() => undefined);
+  }
+
   function ensureCompactionMarker(threadId: string, turnId?: string): void {
     if (!threadId) return;
     const entry = { id: `compaction-${turnId || threadId}`, kind: "compaction" as const, title: "컨텍스트가 자동으로 압축됨", status: "completed" as const };
@@ -940,11 +946,11 @@ function App(): React.JSX.Element {
       setItems((current) => {
         const next = upsert(current);
         itemsRef.current = next;
-        threadHistoryCache.current.set(threadId, next);
+        persistThreadHistory(threadId, next);
         return next;
       });
     } else {
-      threadHistoryCache.current.set(threadId, upsert(threadHistoryCache.current.get(threadId) ?? []));
+      persistThreadHistory(threadId, upsert(threadHistoryCache.current.get(threadId) ?? []));
     }
   }
 

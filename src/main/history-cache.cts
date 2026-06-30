@@ -30,25 +30,46 @@ export function activityCount(items: ThreadHistoryItem[]): number {
   return n;
 }
 
+function hasCompactionActivity(item: ThreadHistoryItem): boolean {
+  return item.activities?.some((activity) => activity.kind === "compaction") ?? false;
+}
+
+function mergeCompactionActivities(native: ThreadHistoryItem, cached: ThreadHistoryItem): ThreadHistoryItem {
+  const activities = [...(native.activities ?? [])];
+  for (const entry of cached.activities ?? []) {
+    if (entry.kind !== "compaction") continue;
+    const exists = activities.some((current) => current.kind === "compaction" && current.id === entry.id);
+    if (!exists) activities.push(entry);
+  }
+  return { ...native, activities };
+}
+
 export function mergeCachedActivities(native: ThreadHistoryItem[], cached: ThreadHistoryItem[] | null): ThreadHistoryItem[] {
   if (!cached?.length) return native;
   const cachedByTurnId = new Map<string, ThreadHistoryItem>();
+  const standaloneCompactions: ThreadHistoryItem[] = [];
   for (const item of cached) {
     if (item.kind === "activity" && item.turnId) cachedByTurnId.set(item.turnId, item);
+    else if (item.kind === "activity" && hasCompactionActivity(item)) standaloneCompactions.push(item);
   }
-  if (!cachedByTurnId.size) return native;
+  if (!cachedByTurnId.size && !standaloneCompactions.length) return native;
 
   const nativeTurnIds = new Set<string>();
   const merged = native.map((item) => {
     if (item.kind !== "activity" || !item.turnId) return item;
     nativeTurnIds.add(item.turnId);
     const richer = cachedByTurnId.get(item.turnId);
-    if (!richer || activityCount([richer]) <= activityCount([item])) return item;
+    if (!richer) return item;
+    if (activityCount([richer]) <= activityCount([item])) return hasCompactionActivity(richer) ? mergeCompactionActivities(item, richer) : item;
     return { ...richer, ...item, activities: richer.activities };
   });
 
   for (const item of cachedByTurnId.values()) {
     if (item.turnId && !nativeTurnIds.has(item.turnId)) merged.push(item);
+  }
+  for (const item of standaloneCompactions) {
+    const exists = merged.some((current) => current.id === item.id || current.activities?.some((activity) => item.activities?.some((entry) => entry.kind === "compaction" && activity.kind === "compaction" && activity.id === entry.id)));
+    if (!exists) merged.push(item);
   }
   return merged;
 }
