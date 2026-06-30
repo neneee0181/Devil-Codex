@@ -256,7 +256,7 @@ type PendingTurnState = {
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
 type ThreadTokenModelUsage = { key: string; label: string; totalTokens: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; reasoningOutputTokens: number; requests: number; source: "cumulative" | "turnUsage" | "requestLog" };
-type ThreadTokenUsageSummary = { totalTokens: number; contextTokens?: number; maxTokens?: number; requestTokens: number; models: ThreadTokenModelUsage[] };
+type ThreadTokenUsageSummary = { totalTokens: number; contextTokens?: number; maxTokens?: number; contextOverflow: boolean; requestTokens: number; models: ThreadTokenModelUsage[] };
 
 function compactTokenCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -338,6 +338,7 @@ function summarizeThreadTokenUsage(input: { threadId?: string; items: ThreadHist
     totalTokens: models.reduce((sum, row) => sum + row.totalTokens, 0),
     contextTokens: input.contextUsage?.usedTokens,
     maxTokens: input.contextUsage?.maxTokens,
+    contextOverflow: Boolean(input.contextUsage?.usedTokens && input.contextUsage?.maxTokens && input.contextUsage.usedTokens > input.contextUsage.maxTokens),
     requestTokens,
     models,
   };
@@ -2827,16 +2828,20 @@ function EnvironmentCard({ cwd, changes, sources, tokenUsage, subagents, sideCha
       <div className="environment-divider" />
       <div className="environment-caption">토큰</div>
       <div className="environment-token-card">
-        <div className="environment-token-head">
-          <span><Target />현재 스레드</span>
-          <strong>{tokenUsage.totalTokens > 0 ? compactTokenCount(tokenUsage.totalTokens) : "기록 없음"}</strong>
+        <div className={tokenUsage.contextOverflow ? "environment-token-head overflow" : "environment-token-head"}>
+          <span><Target />{tokenUsage.contextTokens && tokenUsage.maxTokens ? "현재 컨텍스트" : "요청 합계"}</span>
+          <strong>{tokenUsage.contextTokens && tokenUsage.maxTokens ? `${compactTokenCount(tokenUsage.contextTokens)} / ${compactTokenCount(tokenUsage.maxTokens)}` : tokenUsage.totalTokens > 0 ? compactTokenCount(tokenUsage.totalTokens) : "기록 없음"}</strong>
         </div>
         {tokenUsage.contextTokens && tokenUsage.maxTokens && <>
-          <div className="environment-token-context">
-            <span>현재 컨텍스트</span>
-            <b>{compactTokenCount(tokenUsage.contextTokens)} / {compactTokenCount(tokenUsage.maxTokens)}</b>
+          <div className={tokenUsage.contextOverflow ? "environment-token-context overflow" : "environment-token-context"}>
+            <span>{tokenUsage.contextOverflow ? "한도 초과" : "컨텍스트 상태"}</span>
+            <b>{tokenUsage.contextOverflow ? "다음 요청에서 압축 필요" : `${Math.round((tokenUsage.contextTokens / tokenUsage.maxTokens) * 100)}% 사용`}</b>
           </div>
-          <progress value={Math.min(tokenUsage.contextTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />
+          <progress className={tokenUsage.contextOverflow ? "overflow" : ""} value={Math.min(tokenUsage.contextTokens, tokenUsage.maxTokens)} max={tokenUsage.maxTokens} />
+          {tokenUsage.totalTokens > 0 && <div className="environment-token-context">
+            <span>요청 합계</span>
+            <b>{compactTokenCount(tokenUsage.totalTokens)}</b>
+          </div>}
         </>}
         {tokenUsage.models.length > 0 && <div className="environment-token-models">
           {tokenUsage.models.slice(0, 3).map((row) => <div key={row.key}>
