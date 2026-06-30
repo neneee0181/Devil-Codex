@@ -427,6 +427,11 @@ export class CodexAppServer extends EventEmitter {
     }
   }
 
+  async compactThread(input: { threadId: string }): Promise<void> {
+    await this.ensureConnected();
+    await this.request("thread/compact/start", { threadId: input.threadId });
+  }
+
   async interruptTurn(input: { threadId: string; turnId?: string }): Promise<void> {
     await this.ensureConnected();
     await this.request("turn/interrupt", { threadId: input.threadId, ...(input.turnId ? { turnId: input.turnId } : {}) });

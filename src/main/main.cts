@@ -33,7 +33,7 @@ import { providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { ApprovalDecision, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
+import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean }> {
   const [cli, oauth] = await Promise.all([codexCliStatus(), oauthStatus()]);
@@ -125,6 +125,7 @@ const loadedThreads = new Set<string>();
 // surfaces only a generic "no detail" message. Keep a rolling buffer and attach
 // the likely error line to the failed turn's Provider 진단 card.
 const appServerStderr: string[] = [];
+const contextWindowFailures = new Map<string, string>();
 function recordAppServerStderr(line: string): void {
   for (const part of String(line ?? "").split(/\r?\n/)) {
     const trimmed = part.trim();
@@ -137,6 +138,43 @@ function recentAppServerError(): string | undefined {
   const errish = appServerStderr.filter((line) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(line));
   const picked = (errish.length ? errish : appServerStderr).slice(-4);
   return picked.join(" | ").slice(0, 600) || undefined;
+}
+function tokenCountInfo(event: { method: string; params?: unknown }): { context: number; total: number; max: number } | undefined {
+  const params = (event.params ?? {}) as Record<string, unknown>;
+  const payload = (params.payload ?? params) as Record<string, unknown>;
+  const info = (payload.info ?? payload) as Record<string, unknown>;
+  const totalUsage = (info.total_token_usage ?? info.totalTokenUsage ?? {}) as Record<string, unknown>;
+  const lastUsage = (info.last_token_usage ?? info.lastTokenUsage ?? {}) as Record<string, unknown>;
+  const total = Number(totalUsage.total_tokens ?? totalUsage.totalTokens ?? 0);
+  const context = Number(lastUsage.total_tokens ?? lastUsage.totalTokens ?? lastUsage.input_tokens ?? lastUsage.inputTokens ?? 0);
+  const max = Number(info.model_context_window ?? info.modelContextWindow ?? payload.model_context_window ?? payload.modelContextWindow ?? 0);
+  return Number.isFinite(context) && Number.isFinite(total) && Number.isFinite(max) && max > 0 ? { context, total, max } : undefined;
+}
+
+function validContextUsage(value: unknown): ContextUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const usedTokens = Number(raw.usedTokens);
+  const maxTokens = Number(raw.maxTokens);
+  return Number.isFinite(usedTokens) && Number.isFinite(maxTokens) && usedTokens > 0 && maxTokens > 0 ? { usedTokens, maxTokens } : undefined;
+}
+
+function fullestContextUsage(...values: Array<ContextUsage | undefined>): ContextUsage | undefined {
+  return values.filter(Boolean).sort((a, b) => (b!.usedTokens / b!.maxTokens) - (a!.usedTokens / a!.maxTokens))[0];
+}
+
+function contextWindowMessage(usage: ContextUsage): string {
+  return `Codex 컨텍스트 창이 가득 찼습니다 (${Math.round(usage.usedTokens)}/${Math.round(usage.maxTokens)} tokens). 압축을 먼저 실행한 뒤 같은 요청을 다시 보냅니다.`;
+}
+
+async function maybeStartContextCompaction(instance: CodexAppServer, input: { threadId: string; provider?: ProviderId; contextUsage?: ContextUsage; retriedAfterCompaction?: boolean }): Promise<boolean> {
+  if ((input.provider ?? "codex") !== "codex" || input.retriedAfterCompaction) return false;
+  const snapshot = await readCodexTokenSnapshot(input.threadId).catch(() => undefined);
+  const usage = fullestContextUsage(validContextUsage(input.contextUsage), snapshot?.contextUsage);
+  if (!usage || usage.usedTokens < usage.maxTokens) return false;
+  contextWindowFailures.set(input.threadId, contextWindowMessage(usage));
+  await instance.compactThread({ threadId: input.threadId });
+  return true;
 }
 let terminalManager: TerminalManager | undefined;
 const execFileAsync = promisify(execFile);
@@ -390,8 +428,13 @@ function eventThreadId(event: { params?: unknown }): string {
 }
 
 function handleAppServerEvent(event: { method: string; params?: unknown }): void {
-  const threadId = eventThreadId(event);
+  const explicitThreadId = eventThreadId(event);
+  const usage = tokenCountInfo(event);
+  const threadId = explicitThreadId || (usage && activeThreadServerTurns.size === 1 ? Array.from(activeThreadServerTurns)[0] ?? "" : "");
   if (!threadId) return;
+  if (usage && usage.context >= usage.max) {
+    contextWindowFailures.set(threadId, contextWindowMessage({ usedTokens: usage.context, maxTokens: usage.max }));
+  }
   const params = (event.params ?? {}) as Record<string, unknown>;
   const item = (params.item ?? {}) as Record<string, unknown>;
   const turn = (params.turn ?? {}) as Record<string, unknown>;
@@ -427,12 +470,13 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
       provider: pendingDiagnostics.provider,
       model: pendingDiagnostics.model,
       status: turnStatus === "failed" ? "failed" : "completed",
-      ...(turnStatus === "failed" ? { error: recentAppServerError() } : {}),
+      ...(turnStatus === "failed" ? { error: contextWindowFailures.get(threadId) ?? recentAppServerError() } : {}),
       sidecars: pendingDiagnostics.sidecars,
       sidecarActual,
       sandboxMode: pendingDiagnostics.sandboxMode,
       approvalPolicy: pendingDiagnostics.approvalPolicy,
     });
+    contextWindowFailures.delete(threadId);
   }
   void providerReconciler.hasPending(threadId).then((pending) => pending ? providerReconciler.completeExternalTurn(threadId) : null).then((result) => {
     if (!result) return undefined;
@@ -1420,12 +1464,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text });
       return;
     }
-    pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
-    codexProxy.setSidecarSettings(input.threadId, input.sidecars);
     try {
       await rememberTurnFileSnapshot(input.threadId, input.cwd);
       await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd });
-      await threadServer(input.threadId).sendTurn(turnInput);
+      const instance = threadServer(input.threadId);
+      if (await maybeStartContextCompaction(instance, input)) return;
+      pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
+      codexProxy.setSidecarSettings(input.threadId, input.sidecars);
+      await instance.sendTurn(turnInput);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const pendingDiagnostics = pendingProviderDiagnostics.get(input.threadId);

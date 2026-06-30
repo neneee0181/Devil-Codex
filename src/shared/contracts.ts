@@ -321,7 +321,7 @@ export interface DevilCodexApi {
   onProviderAuth: (listener: (status: ProviderAuthStatus) => void) => () => void;
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
   respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
-  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<void>;
+  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<void>;
   interruptTurn: (input: { threadId: string; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;
