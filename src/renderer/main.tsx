@@ -358,12 +358,6 @@ function App(): React.JSX.Element {
   const setModel = (next: { provider: ProviderId; model: string }): void => { void providers.select(next); };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
-  useEffect(() => {
-    if (!codexSettings.settings) return;
-    const next = codexSettings.settings.serviceTier === "priority" ? "fast" : "standard";
-    setResponseSpeedState(next);
-    localStorage.setItem("devil-codex:response-speed", next);
-  }, [codexSettings.settings?.serviceTier]);
   const setReasoningEffort = (value: ReasoningEffort): void => {
     setReasoningEffortState(value);
     localStorage.setItem("devil-codex:reasoning-effort", value);
@@ -371,11 +365,10 @@ function App(): React.JSX.Element {
   const setResponseSpeed = (value: ResponseSpeed): void => {
     setResponseSpeedState(value);
     localStorage.setItem("devil-codex:response-speed", value);
-    if (codexSettings.settings) codexSettings.save({ ...codexSettings.settings, serviceTier: value === "fast" ? "priority" : "default" });
   };
   const [busy, setBusy] = useState(false);
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>({});
-  const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string }>>>({});
+  const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string; attachments?: ThreadAttachment[] }>>>({});
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal"]);
   const [bottomActive, setBottomActive] = useState<string | null>("terminal");
@@ -682,6 +675,18 @@ function App(): React.JSX.Element {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
   }, [dedupedItems, threadFindQuery]);
+  const queuedTimelineItems = useMemo<ThreadHistoryItem[]>(() => {
+    if (!thread?.id || threadFindQuery.trim()) return [];
+    return (queuedView[thread.id] ?? []).map((item) => ({
+      id: `queued-${item.id}`,
+      kind: "user",
+      title: "대기 중",
+      text: item.text,
+      status: "inProgress",
+      attachments: item.attachments,
+    }));
+  }, [thread?.id, queuedView, threadFindQuery]);
+  const timelineItems = useMemo(() => [...visibleItems, ...queuedTimelineItems], [visibleItems, queuedTimelineItems]);
   const visibleSearchResults = useMemo(() => searchResults.filter((summary) => !hiddenThreadIds.includes(summary.id) && !sideThreadSet.has(summary.id)), [searchResults, hiddenThreadIds, sideThreadSet]);
   // Subagents spawned in this thread, for the environment "하위 에이전트" list.
   const subagents = useMemo(() => {
@@ -860,7 +865,7 @@ function App(): React.JSX.Element {
     const queue = queuedTurns.current.get(threadId) ?? [];
     setQueuedView((current) => {
       if (queue.length === 0) { if (!(threadId in current)) return current; const next = { ...current }; delete next[threadId]; return next; }
-      return { ...current, [threadId]: queue.map((entry) => ({ id: entry.id, text: entry.userItem.text ?? "" })) };
+      return { ...current, [threadId]: queue.map((entry) => ({ id: entry.id, text: entry.userItem.text ?? "", attachments: entry.userItem.attachments })) };
     });
   }
 
@@ -1148,11 +1153,19 @@ function App(): React.JSX.Element {
     setSearch(entry.search);
     setThreadFindOpen(false);
     setThreadFindQuery("");
-    // Restore this thread's right-panel tabs (incl. open subagent side-chats).
-    const panel = panelByThread.current[entry.thread?.id ?? "__none__"] ?? { tabs: [], active: null };
-    setUtilityTabs(panel.tabs);
-    setUtilityActive(panel.active);
-    setUtilityPanelOpen(panel.tabs.length > 0);
+    // Restore per-thread right-panel tabs only in app views. Settings is a
+    // full-window route, so it must not resurrect the current thread's panel.
+    if (entry.view === "settings") {
+      setUtilityTabs([]);
+      setUtilityActive(null);
+      setUtilityPanelOpen(false);
+      setUtilityPanelExpanded(false);
+    } else {
+      const panel = panelByThread.current[entry.thread?.id ?? "__none__"] ?? { tabs: [], active: null };
+      setUtilityTabs(panel.tabs);
+      setUtilityActive(panel.active);
+      setUtilityPanelOpen(panel.tabs.length > 0);
+    }
     if (entry.workspace) void refreshChanges(entry.workspace);
   }
 
@@ -2168,7 +2181,7 @@ function App(): React.JSX.Element {
             <div className="thread-view" ref={threadViewRef} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
               {runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
-              {items.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 Codex 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{visibleItems.map((item) => {
+              {timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 Codex 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
                 const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));
                 return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} onEditUserMessage={editUserMessageFrom} />;

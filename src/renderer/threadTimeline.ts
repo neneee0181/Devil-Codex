@@ -44,7 +44,7 @@ function tokenUsageField(raw: RawItem, ...keys: string[]): ProviderTokenUsage | 
   return undefined;
 }
 
-function tokenUsageSnapshotFromRaw(...values: Array<unknown>): { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage } | undefined {
+function tokenUsageSnapshotFromRaw(...values: Array<unknown>): { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage; contextUsage?: ContextUsage } | undefined {
   for (const value of values) {
     if (!value || typeof value !== "object") continue;
     const raw = value as RawItem;
@@ -54,10 +54,14 @@ function tokenUsageSnapshotFromRaw(...values: Array<unknown>): { tokenUsage?: Pr
       ?? tokenUsageField(info, "lastTokenUsage", "last_token_usage");
     const cumulativeTokenUsage = tokenUsageField(raw, "totalTokenUsage", "total_token_usage", "cumulativeTokenUsage", "cumulative_token_usage")
       ?? tokenUsageField(info, "totalTokenUsage", "total_token_usage");
-    if (tokenUsage || cumulativeTokenUsage) {
+    const maxTokens = finiteNumber(raw.modelContextWindow ?? raw.model_context_window ?? payload.modelContextWindow ?? payload.model_context_window ?? info.modelContextWindow ?? info.model_context_window);
+    const usedTokens = tokenUsage ? tokenUsage.totalTokens ?? tokenUsage.inputTokens + tokenUsage.outputTokens : undefined;
+    const contextUsage = usedTokens && maxTokens ? { usedTokens, maxTokens } : undefined;
+    if (tokenUsage || cumulativeTokenUsage || contextUsage) {
       return {
         ...(tokenUsage ? { tokenUsage } : {}),
         ...(cumulativeTokenUsage ? { cumulativeTokenUsage } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
       };
     }
   }
@@ -172,9 +176,10 @@ function upsertEntry(items: ThreadHistoryItem[], turnId: string, entry: ThreadAc
   });
 }
 
-function applyTokenUsageSnapshot(items: ThreadHistoryItem[], turnId: string, snapshot: { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage }): ThreadHistoryItem[] {
+function applyTokenUsageSnapshot(items: ThreadHistoryItem[], turnId: string, snapshot: { tokenUsage?: ProviderTokenUsage; cumulativeTokenUsage?: ProviderTokenUsage; contextUsage?: ContextUsage }): ThreadHistoryItem[] {
   return updateActivity(items, turnId, (activity) => ({
     ...activity,
+    ...(snapshot.contextUsage ? { contextUsage: snapshot.contextUsage } : {}),
     ...(snapshot.tokenUsage ? { tokenUsage: snapshot.tokenUsage } : {}),
     ...(snapshot.cumulativeTokenUsage ? { cumulativeTokenUsage: snapshot.cumulativeTokenUsage } : {}),
   }));
@@ -266,7 +271,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       ...activity,
       status,
       durationMs: Number(turn.durationMs ?? (Date.now() - (activity.startedAt ?? Date.now()))),
-      contextUsage: contextUsage ?? activity.contextUsage,
+      contextUsage: contextUsage ?? tokenUsage?.contextUsage ?? activity.contextUsage,
       ...(tokenUsage?.tokenUsage ? { tokenUsage: tokenUsage.tokenUsage } : {}),
       ...(tokenUsage?.cumulativeTokenUsage ? { cumulativeTokenUsage: tokenUsage.cumulativeTokenUsage } : {}),
     }));

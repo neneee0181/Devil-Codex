@@ -323,8 +323,10 @@ button:active:not(:disabled) { transform: scale(.96); }
 .timeline-item.user:hover .timeline-actions.user-actions, .timeline-actions.user-actions:focus-within { opacity: 1; }
 .timeline-changes { overflow: hidden; margin-top: 10px; border: 1px solid #3a3a3a; border-radius: 12px; background: #202020; }.timeline-changes header { display: flex; gap: 10px; align-items: center; min-height: 58px; padding: 12px 15px; border-bottom: 1px solid #363636; }.timeline-changes header > span { display: flex; flex: 1; gap: 9px; align-items: center; font-size: 14px; font-weight: 600; }.timeline-changes header strong, .timeline-changes p span { white-space: nowrap; font-size: 13px; }.timeline-changes i { color: #5ccc8d; font-style: normal; }.timeline-changes b { color: #ef7770; font-weight: 500; }.timeline-changes header button { border: 1px solid #474747; border-radius: 8px; background: #2d2d2d; color: #e3e3e3; padding: 6px 10px; }.timeline-changes p { display: flex; gap: 12px; justify-content: space-between; margin: 0; padding: 10px 15px; border-bottom: 1px solid #303030; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }.timeline-changes small { display: block; padding: 9px 15px; color: #9e9e9e; }
 .timeline-item.user { max-width: 82%; margin-left: auto; }
+.timeline-item.user.pending { opacity: .82; }
 .timeline-item.user .item-label { display: none; }
 .timeline-user-bubble { border-radius: 18px; background: #2d2d2d; padding: 11px 14px; }.timeline-user-bubble:empty { display: none; }.timeline-user-bubble > :first-child { margin-top: 0; }.timeline-user-bubble > :last-child { margin-bottom: 0; }
+.timeline-pending-label { display: block; margin-top: 7px; color: #a8a8a8; font-size: 11px; text-align: right; }
 .timeline-edit-box { display: grid; gap: 10px; min-width: min(520px, 70vw); }
 .timeline-edit-box textarea { width: 100%; min-height: 96px; resize: vertical; box-sizing: border-box; outline: 0; border: 1px solid #4b4b4b; border-radius: 12px; background: #202020; color: #f0f0f0; padding: 10px 12px; font: 14px/1.55 inherit; }
 .timeline-edit-box textarea:focus { border-color: #747474; }

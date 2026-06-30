@@ -1,6 +1,6 @@
 {
   "name": "devil-codex",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "private": true,
   "description": "High-fidelity multi-provider Codex desktop client",
   "main": "dist-electron/main.cjs",
@@ -118,6 +118,14 @@
     "win": {
       "icon": "build/icon.ico",
       "extraResources": [
+        {
+          "from": "build/icon.ico",
+          "to": "build/icon.ico"
+        },
+        {
+          "from": "build/icon.png",
+          "to": "build/icon.png"
+        },
         {
           "from": "vendor/codex/codex.exe",
           "to": "codex/codex.exe"

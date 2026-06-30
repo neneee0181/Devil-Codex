@@ -99,6 +99,7 @@ let trayRef: Tray | undefined;
 let isQuitting = false;
 let ipcHandlersReady = false;
 let showMainWindowWhenReady = false;
+const FALLBACK_TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA1ElEQVQ4jcWTsQ2DMBBFXWUF/gCJFGELS5FSQsU4GYANQooMgESfCRAjQOnMQOLQM8BFtgJFoLBJkeJL9ln37mzfZ2EYbgBcAGgA5KgngNzkMrPwSPxWzsbKp92WrnzvC3ixcXOTgu7HAw3DMJPWmuq6piRJZhDmAhjVdR0JIdwBSilqmob6vp9iWZa5A9I0tWdRFE2Qoij8AQCobVsbK8vyDwAp5borKKVs5dWPOCx8I+fcH6C1pqqqKI7jxUEyxlg1ykEQPH4105l97GwgthNfO78BmdECbWW4kcMAAAAASUVORK5CYII=";
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
 const browserControlSecret = randomBytes(24).toString("hex");
@@ -506,9 +507,12 @@ function appIconPath(): string {
 }
 
 function trayIconImage(): Electron.NativeImage {
-  const image = nativeImage.createFromPath(appIconPath());
-  if (process.platform === "win32" && !image.isEmpty()) return image.resize({ width: 16, height: 16 });
-  return image;
+  const resize = (image: Electron.NativeImage): Electron.NativeImage => process.platform === "win32" ? image.resize({ width: 16, height: 16 }) : image;
+  for (const candidate of [appIconPath(), process.execPath]) {
+    const image = nativeImage.createFromPath(candidate);
+    if (!image.isEmpty()) return resize(image);
+  }
+  return resize(nativeImage.createFromDataURL(FALLBACK_TRAY_ICON_DATA_URL));
 }
 
 function quitApp(): void {

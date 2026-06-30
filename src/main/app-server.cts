@@ -399,14 +399,14 @@ export class CodexAppServer extends EventEmitter {
       { type: "text", text: input.text, text_elements: [] },
       ...(input.attachments ?? []).map((url) => ({ type: "image", url })),
     ];
+    const speedParams = input.responseSpeed === "fast" ? { service_tier: "priority", serviceTier: "priority" } : {};
     const baseParams = {
       threadId: input.threadId,
       cwd: input.cwd,
       model: input.model,
       input: items,
       reasoning: { effort: input.reasoningEffort ?? "medium" },
-      service_tier: input.responseSpeed === "fast" ? "priority" : "default",
-      serviceTier: input.responseSpeed === "fast" ? "priority" : "default",
+      ...speedParams,
     };
     const requestedApprovalPolicy = input.approvalPolicy ?? "on-request";
     const requestedSandbox = input.sandboxMode ?? "workspace-write";

@@ -5,8 +5,9 @@ import { codexHome } from "./codex-home.cjs";
 import { preserveDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
 const defaultConfigPath = join(codexHome(), "config.toml");
-const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", serviceTier: "default", devilMcpEnabled: false, englishOutput: false };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", serviceTier: "service_tier", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
+const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", devilMcpEnabled: false, englishOutput: false };
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
+const legacyKeys = ["service_tier"] as const;
 
 function readValue(source: string, key: string): string | undefined {
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, "m"));
@@ -26,7 +27,7 @@ function formatValue(value: string | boolean): string {
 // leaked under a trailing [table], which would make TOML parse it as a member
 // of that table — fatal for boolean values under a string-only env table).
 function stripKeyLine(source: string, key: string): string {
-  return source.replace(new RegExp(`^[ \\t]*${key}[ \\t]*=.*(?:\\r?\\n)?`, "m"), "");
+  return source.replace(new RegExp(`^[ \\t]*${key}[ \\t]*=.*(?:\\r?\\n)?`, "gm"), "");
 }
 
 export class CodexSettingsStore {
@@ -34,12 +35,11 @@ export class CodexSettingsStore {
 
   async load(): Promise<CodexSettings> {
     try {
-      const source = await readFile(this.configPath, "utf8");
+      const source = await this.removeLegacyKeys(await readFile(this.configPath, "utf8"));
       return {
         model: readValue(source, keys.model) ?? defaults.model,
         approvalPolicy: readValue(source, keys.approvalPolicy) ?? defaults.approvalPolicy,
         sandboxMode: readValue(source, keys.sandboxMode) ?? defaults.sandboxMode,
-        serviceTier: readValue(source, keys.serviceTier) === "priority" ? "priority" : "default",
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
@@ -56,7 +56,7 @@ export class CodexSettingsStore {
     // Remove the managed keys from anywhere, then re-emit them as a block at the
     // very top. TOML root keys must precede the first [table]; appending at the
     // end would slot them under a managed MCP table and break config parsing.
-    for (const key of Object.values(keys)) source = stripKeyLine(source, key);
+    for (const key of [...Object.values(keys), ...legacyKeys]) source = stripKeyLine(source, key);
     const block = (Object.entries(keys) as Array<[keyof CodexSettings, string]>)
       .map(([field, key]) => `${key} = ${formatValue(next[field])}`)
       .join("\n");
@@ -64,6 +64,16 @@ export class CodexSettingsStore {
     source = preserveDesktopAppearanceTheme(source, previous);
     await mkdir(dirname(this.configPath), { recursive: true });
     await writeFile(this.configPath, source, { encoding: "utf8", mode: 0o600 });
+    return next;
+  }
+
+  private async removeLegacyKeys(source: string): Promise<string> {
+    let next = source;
+    for (const key of legacyKeys) next = stripKeyLine(next, key);
+    if (next === source) return source;
+    next = preserveDesktopAppearanceTheme(next, source);
+    await mkdir(dirname(this.configPath), { recursive: true });
+    await writeFile(this.configPath, next, { encoding: "utf8", mode: 0o600 });
     return next;
   }
 }

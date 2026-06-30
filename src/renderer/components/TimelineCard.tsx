@@ -97,7 +97,7 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     onEditUserMessage?.(item, next);
   };
 
-  return <motion.article layout="position" className={`timeline-item ${item.kind}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
+  return <motion.article layout="position" className={`timeline-item ${item.kind}${item.status === "inProgress" ? " pending" : ""}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
     <div className="item-label-row">
       <span className="item-label">{label}</span>
       {item.kind === "agent" && translatable && <button type="button" className={`translate-toggle ${showTranslation ? "on" : ""}`} disabled={translating} title={showTranslation ? "원문 보기" : "한글로 번역"} onClick={() => void toggleTranslate(userMessage.text)}><Languages size={13} />{translating ? "번역 중…" : showTranslation ? "원문" : "한글"}</button>}
@@ -112,6 +112,7 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
             <div><button type="button" onClick={() => setEditing(false)}><X size={14} />취소</button><button type="button" className="primary" disabled={!draft.trim()} onClick={submitEdit}><Send size={14} />보내기</button></div>
           </div>
         : <MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} />}
+      {item.kind === "user" && item.status === "inProgress" && <small className="timeline-pending-label">대기 중</small>}
     </div>
     {item.kind === "user" && !editing && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" onClick={startEdit} aria-label="메시지 편집"><Pencil size={16} /></button></div>}
     {item.kind === "agent" && <div className="timeline-actions"><button type="button" onClick={() => void copy()} aria-label="응답 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" aria-label="좋아요"><ThumbsUp size={16} /></button><button type="button" aria-label="싫어요"><ThumbsDown size={16} /></button></div>}

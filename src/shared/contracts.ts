@@ -117,7 +117,7 @@ export interface WorkspaceFile { path: string; kind: "text" | "image" | "binary"
 
 export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; }
 export interface TerminalData { id: string; data: string; }
-export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; serviceTier: "default" | "priority"; devilMcpEnabled: boolean; englishOutput: boolean; }
+export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; devilMcpEnabled: boolean; englishOutput: boolean; }
 export type ProviderId =
   | "codex" | "claude-code" | "copilot"
   | "openai" | "anthropic" | "google" | "deepseek"

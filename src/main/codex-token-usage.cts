@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { codexHome } from "./codex-home.cjs";
-import type { ProviderTokenUsage, ThreadHistoryItem } from "./contracts.cjs";
+import type { ContextUsage, ProviderTokenUsage, ThreadHistoryItem } from "./contracts.cjs";
 
 const STATE_DB_PATH = join(codexHome(), "state_5.sqlite");
 
@@ -12,6 +12,7 @@ type ThreadRow = { rollout_path: string };
 type TokenSnapshot = {
   lastUsage?: ProviderTokenUsage;
   cumulativeUsage?: ProviderTokenUsage;
+  contextUsage?: ContextUsage;
 };
 
 function finiteNumber(value: unknown): number | undefined {
@@ -46,8 +47,11 @@ function tokenSnapshotFromPayload(payload: RawItem): TokenSnapshot | undefined {
   const info = (payload.info ?? {}) as RawItem;
   const lastUsage = tokenUsageFromRaw(info.lastTokenUsage ?? info.last_token_usage);
   const cumulativeUsage = tokenUsageFromRaw(info.totalTokenUsage ?? info.total_token_usage);
-  if (!lastUsage && !cumulativeUsage) return undefined;
-  return { ...(lastUsage ? { lastUsage } : {}), ...(cumulativeUsage ? { cumulativeUsage } : {}) };
+  const maxTokens = finiteNumber(payload.modelContextWindow ?? payload.model_context_window);
+  const usedTokens = lastUsage ? lastUsage.totalTokens ?? lastUsage.inputTokens + lastUsage.outputTokens : undefined;
+  const contextUsage = usedTokens && maxTokens ? { usedTokens, maxTokens } : undefined;
+  if (!lastUsage && !cumulativeUsage && !contextUsage) return undefined;
+  return { ...(lastUsage ? { lastUsage } : {}), ...(cumulativeUsage ? { cumulativeUsage } : {}), ...(contextUsage ? { contextUsage } : {}) };
 }
 
 function rolloutPathForThread(threadId: string): string | undefined {
@@ -82,13 +86,14 @@ export async function readCodexTokenSnapshot(threadId: string): Promise<TokenSna
 }
 
 export function attachCodexTokenSnapshot(items: ThreadHistoryItem[], snapshot: TokenSnapshot | undefined): ThreadHistoryItem[] {
-  if (!snapshot?.lastUsage && !snapshot?.cumulativeUsage) return items;
+  if (!snapshot?.lastUsage && !snapshot?.cumulativeUsage && !snapshot?.contextUsage) return items;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind !== "activity") continue;
     return items.map((current, currentIndex) => currentIndex === index
       ? {
           ...current,
+          ...(snapshot.contextUsage ? { contextUsage: snapshot.contextUsage } : {}),
           ...(snapshot.lastUsage ? { tokenUsage: snapshot.lastUsage } : {}),
           ...(snapshot.cumulativeUsage ? { cumulativeTokenUsage: snapshot.cumulativeUsage } : {}),
         }

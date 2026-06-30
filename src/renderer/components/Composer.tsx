@@ -149,16 +149,21 @@ export function Composer({
   const addAttachmentFiles = (files: FileList | File[]): void => {
     const selected = Array.from(files);
     if (!selected.length) return;
-    const next = selected.map((file) => {
-      const path = window.devilCodex.getFilePath(file) || file.name;
-      return { path, name: file.name || path.split("/").at(-1) || path, kind: isImageFile(file, path) ? "image" as const : "file" as const, mime: file.type || undefined, size: file.size };
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const entries = selected.map((file, index) => {
+      const realPath = window.devilCodex.getFilePath(file);
+      const displayName = file.name || (realPath ? realPath.split(/[\\/]/).at(-1) : "") || "clipboard-image.png";
+      const path = realPath || `clipboard:${stamp}-${index}-${displayName}`;
+      const item = { path, name: displayName, kind: isImageFile(file, realPath || displayName) ? "image" as const : "file" as const, mime: file.type || undefined, size: file.size };
+      return { file, item, realPath };
     });
-    setAttachments((current) => [...current, ...next.filter((item) => !current.some((existing) => existing.path === item.path))]);
-    void Promise.all(next.map(async (item) => {
-      const file = selected.find((candidate) => (window.devilCodex.getFilePath(candidate) || candidate.name) === item.path);
-      if (!file) return;
+    setAttachments((current) => [...current, ...entries.map(({ item, realPath }) => item).filter((item, index) => {
+      const realPath = entries[index].realPath;
+      return !realPath || !current.some((existing) => existing.path === realPath);
+    })]);
+    void Promise.all(entries.map(async ({ file, item, realPath }) => {
       if (item.kind === "image") {
-        const localPreview = await window.devilCodex.previewLocalImage({ path: item.path }).catch(() => null);
+        const localPreview = realPath ? await window.devilCodex.previewLocalImage({ path: realPath }).catch(() => null) : null;
         const dataUrl = localPreview ?? (await readFileAsDataUrl(file));
         if (!dataUrl) return;
         setAttachments((current) => current.map((existing) => existing.path === item.path ? { ...existing, url: dataUrl } : existing));
