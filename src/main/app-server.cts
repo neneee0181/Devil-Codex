@@ -39,6 +39,7 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
 const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
 
@@ -124,9 +125,12 @@ export class CodexAppServer extends EventEmitter {
     this.emitStatus();
 
     try {
-      this.child = spawn(codexBin(), ["app-server"], {
+      this.child = spawn(codexBin(), ["app-server", "--stdio"], {
         cwd: this.cwd,
-        env: process.env,
+        env: {
+          ...process.env,
+          CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
+        },
         stdio: ["pipe", "pipe", "pipe"],
       });
       this.child.stdout.setEncoding("utf8");
@@ -154,13 +158,17 @@ export class CodexAppServer extends EventEmitter {
         },
         capabilities: {
           experimentalApi: true,
+          requestAttestation: false,
+          mcpServerOpenaiFormElicitation: true,
+          optOutNotificationMethods: null,
         },
-      });
+      }, APP_SERVER_INITIALIZE_TIMEOUT_MS);
       this.notify("initialized", {});
       this.status = { ...available, state: "connected", detail: "Codex app-server connected" };
       this.emitStatus();
       return this.status;
     } catch (error) {
+      this.dispose();
       this.fail(error instanceof Error ? error.message : "Unable to connect to Codex app-server");
       return this.status;
     }
@@ -459,12 +467,34 @@ export class CodexAppServer extends EventEmitter {
     if (status.state !== "connected") throw new Error(status.detail);
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private request(method: string, params: unknown, timeoutMs = 0): Promise<unknown> {
     if (!this.child?.stdin.writable) return Promise.reject(new Error("Codex app-server is not running"));
     const id = this.nextId++;
     const message = JSON.stringify({ method, id, params });
+    const request = new Promise<unknown>((resolve, reject) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      if (timeoutMs > 0) {
+        timeout = setTimeout(() => {
+          this.pending.delete(id);
+          reject(new Error(`Codex app-server did not respond to ${method} within ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+      const clear = () => {
+        if (timeout) clearTimeout(timeout);
+      };
+      this.pending.set(id, {
+        resolve: (value) => {
+          clear();
+          resolve(value);
+        },
+        reject: (error) => {
+          clear();
+          reject(error);
+        },
+      });
+    });
     this.child.stdin.write(`${message}\n`);
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return request;
   }
 
   private notify(method: string, params: unknown): void {
