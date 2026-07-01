@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
-import { preserveDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
+import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
 // Registers a local proxy as a NON-default Codex model provider so external
 // models (Claude/Copilot) can run through the Codex app-server (tools + sync)
@@ -75,7 +75,7 @@ async function read(): Promise<string> {
 // anywhere). Root keys must already precede the first table; Codex writes them
 // first, so appending our table last is safe.
 export async function registerDevilProvider(port: number, secret = ""): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   await backupOnce(source);
   const cleaned = stripProviderBlock(source).trimEnd();
   const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block(port, secret)}`, source);
@@ -84,7 +84,7 @@ export async function registerDevilProvider(port: number, secret = ""): Promise<
 }
 
 export async function unregisterDevilProvider(): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(BEGIN)) return;
   await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripProviderBlock(source), source), { encoding: "utf8", mode: 0o600 });
 }
@@ -109,7 +109,7 @@ function stripManagedMcpTables(source: string, begin: string, end: string, names
 function toml(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
 
 export async function registerDevilBrowserMcp(input: { execPath: string; script: string; sock: string; secret: string; computerScript?: string; computerSock?: string; computerSecret?: string }): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   const cleaned = stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]).trimEnd();
   const lines = [
     MCP_BEGIN,
@@ -148,7 +148,7 @@ export async function registerDevilBrowserMcp(input: { execPath: string; script:
 }
 
 export async function unregisterDevilBrowserMcp(): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(MCP_BEGIN)) return;
   await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), source), { encoding: "utf8", mode: 0o600 });
 }
@@ -161,7 +161,7 @@ const ASK_BEGIN = "# >>> devil-codex ask mcp (managed) >>>";
 const ASK_END = "# <<< devil-codex ask mcp (managed) <<<";
 
 export async function registerDevilAskMcp(input: { execPath: string; script: string; sock: string; secret: string }): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   const cleaned = stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]).trimEnd();
   const block = [
     ASK_BEGIN,
@@ -184,7 +184,7 @@ export async function registerDevilAskMcp(input: { execPath: string; script: str
 }
 
 export async function unregisterDevilAskMcp(): Promise<void> {
-  const source = await read();
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(ASK_BEGIN)) return;
   await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), { encoding: "utf8", mode: 0o600 });
 }

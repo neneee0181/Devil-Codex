@@ -1,3 +1,6 @@
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 export type CodexDesktopTheme = "dark" | "light";
 
 function desktopSectionBounds(source: string): { headerEnd: number; sectionEnd: number; body: string } | undefined {
@@ -31,4 +34,27 @@ export function preserveDesktopAppearanceTheme(next: string, previous: string): 
   }
 
   return before + `${value}\n` + section.body + after;
+}
+
+export async function recoverDesktopAppearanceTheme(source: string, codexHome: string): Promise<string> {
+  if (readDesktopAppearanceTheme(source)) return source;
+
+  const candidates: string[] = [];
+  try {
+    const entries = await readdir(codexHome);
+    candidates.push(...entries.filter((name) => /^config\.toml\.backup-/.test(name)).map((name) => join(codexHome, name)));
+  } catch { /* ignore missing backup directory */ }
+  try {
+    const dir = join(codexHome, "devil-codex-backups");
+    const entries = await readdir(dir);
+    candidates.push(...entries.filter((name) => /^config-.*\.toml$/.test(name)).map((name) => join(dir, name)));
+  } catch { /* ignore missing Devil backup directory */ }
+
+  for (const path of candidates.sort().reverse()) {
+    try {
+      const theme = readDesktopAppearanceTheme(await readFile(path, "utf8"));
+      if (theme) return preserveDesktopAppearanceTheme(source, `[desktop]\nappearanceTheme = ${JSON.stringify(theme)}\n`);
+    } catch { /* try the next backup */ }
+  }
+  return source;
 }

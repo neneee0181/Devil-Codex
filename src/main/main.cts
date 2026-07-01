@@ -6,7 +6,7 @@ import { access, mkdir as fsMkdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
-import { CodexAppServer } from "./app-server.cjs";
+import { CodexAppServer, syncStockThreadPermissions } from "./app-server.cjs";
 import { getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
 import { applyWorkspaceHunk, commitWorkspace, createPullRequest, listGitBranches, pushWorkspace, stageWorkspaceFiles, switchGitBranch, unstageWorkspaceFiles } from "./git-workflow.cjs";
 import { undoFileChanges } from "./file-rollback.cjs";
@@ -34,7 +34,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -262,7 +262,7 @@ interface SidecarDiagnosticsSnapshot {
   failures: string[];
 }
 
-const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; accountId?: string; accountLabel?: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }>();
+const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; accountId?: string; accountLabel?: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string; cwd?: string }>();
 const turnFileSnapshots = new Map<string, { cwd: string; files: Map<string, string> }>();
 const nativeFileChangeTurns = new Set<string>();
 
@@ -512,6 +512,15 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   void emitSyntheticFileChanges({ threadId, ...(turnId ? { turnId } : {}), status: turnStatus === "failed" ? "failed" : "completed" });
   const pendingDiagnostics = pendingProviderDiagnostics.get(threadId);
   if (pendingDiagnostics) {
+    if (pendingDiagnostics.cwd) {
+      const approvalPolicy: ThreadApprovalPolicy = pendingDiagnostics.approvalPolicy === "never" ? "never" : "on-request";
+      const sandboxMode: ThreadSandboxMode = pendingDiagnostics.sandboxMode === "danger-full-access" || pendingDiagnostics.sandboxMode === "read-only"
+        ? pendingDiagnostics.sandboxMode
+        : "workspace-write";
+      void syncStockThreadPermissions(threadId, pendingDiagnostics.cwd, approvalPolicy, sandboxMode).catch((error) => {
+        console.warn("[devil-codex] final thread permission sync failed", error instanceof Error ? error.message : error);
+      });
+    }
     pendingProviderDiagnostics.delete(threadId);
     const sidecarActual = codexProxy.consumeSidecarStats(threadId);
     emitSidecarActivities({ threadId, ...(turnId ? { turnId } : {}), sidecarActual });
@@ -1525,7 +1534,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             ...(title ? { title } : {}),
           });
         }
-        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, accountId: input.accountId, accountLabel, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
+        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, accountId: input.accountId, accountLabel, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy, cwd: input.cwd });
         codexProxy.setSidecarSettings(input.threadId, input.sidecars);
         await rememberTurnFileSnapshot(input.threadId, input.cwd);
         await threadServer(input.threadId).sendTurn({ ...turnInput, model: routedModel });
@@ -1582,7 +1591,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd });
       const instance = await threadServerFor(input.threadId);
       if (await maybeStartContextCompaction(instance, input)) return;
-      pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
+      pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy, cwd: input.cwd });
       codexProxy.setSidecarSettings(input.threadId, input.sidecars);
       await instance.sendTurn(turnInput);
     } catch (error) {

@@ -1,13 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { CodexSettings } from "./contracts.cjs";
+import type { CodexSettings, ReasoningEffort, ResponseSpeed } from "./contracts.cjs";
 import { codexHome } from "./codex-home.cjs";
-import { preserveDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
+import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
 const defaultConfigPath = join(codexHome(), "config.toml");
-const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", devilMcpEnabled: false, englishOutput: false };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
-const legacyKeys = ["service_tier"] as const;
+const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", reasoningEffort: "medium", responseSpeed: "standard", devilMcpEnabled: false, englishOutput: false };
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
 
 function readValue(source: string, key: string): string | undefined {
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, "m"));
@@ -23,6 +22,18 @@ function formatValue(value: string | boolean): string {
   return typeof value === "boolean" ? String(value) : JSON.stringify(value);
 }
 
+function normalizeReasoningEffort(value: string | undefined): ReasoningEffort {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : defaults.reasoningEffort;
+}
+
+function normalizeResponseSpeed(value: string | undefined): ResponseSpeed {
+  return value === "priority" || value === "fast" ? "fast" : defaults.responseSpeed;
+}
+
+function serviceTierForSpeed(value: ResponseSpeed): string {
+  return value === "fast" ? "priority" : "default";
+}
+
 // Strip a root key line wherever it currently sits in the file (it may have
 // leaked under a trailing [table], which would make TOML parse it as a member
 // of that table — fatal for boolean values under a string-only env table).
@@ -35,11 +46,13 @@ export class CodexSettingsStore {
 
   async load(): Promise<CodexSettings> {
     try {
-      const source = await this.removeLegacyKeys(await readFile(this.configPath, "utf8"));
+      const source = await readFile(this.configPath, "utf8");
       return {
         model: readValue(source, keys.model) ?? defaults.model,
         approvalPolicy: readValue(source, keys.approvalPolicy) ?? defaults.approvalPolicy,
         sandboxMode: readValue(source, keys.sandboxMode) ?? defaults.sandboxMode,
+        reasoningEffort: normalizeReasoningEffort(readValue(source, keys.reasoningEffort)),
+        responseSpeed: normalizeResponseSpeed(readValue(source, keys.responseSpeed)),
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
@@ -52,13 +65,14 @@ export class CodexSettingsStore {
   async save(next: CodexSettings): Promise<CodexSettings> {
     let source = "";
     try { source = await readFile(this.configPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    source = await recoverDesktopAppearanceTheme(source, codexHome());
     const previous = source;
     // Remove the managed keys from anywhere, then re-emit them as a block at the
     // very top. TOML root keys must precede the first [table]; appending at the
     // end would slot them under a managed MCP table and break config parsing.
-    for (const key of [...Object.values(keys), ...legacyKeys]) source = stripKeyLine(source, key);
+    for (const key of Object.values(keys)) source = stripKeyLine(source, key);
     const block = (Object.entries(keys) as Array<[keyof CodexSettings, string]>)
-      .map(([field, key]) => `${key} = ${formatValue(next[field])}`)
+      .map(([field, key]) => `${key} = ${formatValue(field === "responseSpeed" ? serviceTierForSpeed(next[field]) : next[field])}`)
       .join("\n");
     source = `${block}\n${source.replace(/^[\r\n]+/, "")}`;
     source = preserveDesktopAppearanceTheme(source, previous);
@@ -67,13 +81,4 @@ export class CodexSettingsStore {
     return next;
   }
 
-  private async removeLegacyKeys(source: string): Promise<string> {
-    let next = source;
-    for (const key of legacyKeys) next = stripKeyLine(next, key);
-    if (next === source) return source;
-    next = preserveDesktopAppearanceTheme(next, source);
-    await mkdir(dirname(this.configPath), { recursive: true });
-    await writeFile(this.configPath, next, { encoding: "utf8", mode: 0o600 });
-    return next;
-  }
 }

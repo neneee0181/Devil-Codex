@@ -123,7 +123,7 @@ export interface WorkspaceFile { path: string; kind: "text" | "image" | "binary"
 
 export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; }
 export interface TerminalData { id: string; data: string; }
-export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; devilMcpEnabled: boolean; englishOutput: boolean; }
+export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; englishOutput: boolean; }
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
   | "openai" | "anthropic" | "google" | "deepseek"

@@ -1,8 +1,9 @@
 import { ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { ApprovalDecision, AppServerEvent, CodexSkillInfo, McpServerInfo, ProviderModel, ReasoningEffort, ResponseSpeed, RuntimeStatus, ThreadApprovalPolicy, ThreadHistoryItem, ThreadRef, ThreadSandboxMode, ThreadSummary } from "./contracts.cjs";
 import { codexHome } from "./codex-home.cjs";
 import { mapThreadHistory } from "./thread-history.cjs";
@@ -40,6 +41,7 @@ type PendingRequest = {
 };
 
 const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
+const STOCK_ROLLOUT_PERMISSION_SYNC_MAX_BYTES = 50 * 1024 * 1024;
 const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
 const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
 
@@ -418,6 +420,7 @@ export class CodexAppServer extends EventEmitter {
     await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     try {
       await this.request("turn/start", permissionParams);
+      await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isPermissionParameterError(error)) throw error;
@@ -425,6 +428,7 @@ export class CodexAppServer extends EventEmitter {
         throw new Error(`Codex app-server rejected requested permissions (${requestedApprovalPolicy}, ${requestedSandbox}): ${message}`);
       }
       await this.request("turn/start", baseParams);
+      await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     }
   }
 
@@ -561,17 +565,90 @@ function stockSandboxPolicy(mode: ThreadSandboxMode, cwd: string): Record<string
   return { type: "workspaceWrite", writableRoots: [cwd], networkAccess: false };
 }
 
+function stockRestrictedEntries(cwd: string): Array<Record<string, unknown>> {
+  return [
+    { path: { type: "special", value: { kind: "root" } }, access: "read" },
+    { path: { type: "path", path: cwd }, access: "write" },
+    { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+    { path: { type: "special", value: { kind: "tmpdir" } }, access: "write" },
+    { path: { type: "path", path: join(cwd, ".git") }, access: "read" },
+    { path: { type: "path", path: join(cwd, ".agents") }, access: "read" },
+    { path: { type: "path", path: join(cwd, ".codex") }, access: "read" },
+  ];
+}
+
+function stockDbSandboxPolicy(mode: ThreadSandboxMode, cwd: string): Record<string, unknown> {
+  if (mode === "danger-full-access") return { type: "disabled" };
+  if (mode === "read-only") return {
+    type: "managed",
+    file_system: { type: "restricted", entries: [{ path: { type: "special", value: { kind: "root" } }, access: "read" }] },
+    network: "restricted",
+  };
+  return {
+    type: "managed",
+    file_system: {
+      type: "restricted",
+      entries: stockRestrictedEntries(cwd),
+    },
+    network: "restricted",
+  };
+}
+
+function stockTurnContextSandboxPolicy(mode: ThreadSandboxMode): Record<string, unknown> {
+  if (mode === "danger-full-access") return { type: "danger-full-access" };
+  if (mode === "read-only") return { type: "read-only", network_access: false };
+  return { type: "workspace-write", network_access: false, exclude_tmpdir_env_var: false, exclude_slash_tmp: false };
+}
+
+function stockFileSystemSandboxPolicy(mode: ThreadSandboxMode, cwd: string): Record<string, unknown> {
+  if (mode === "danger-full-access") return { kind: "unrestricted" };
+  if (mode === "read-only") return { kind: "read-only" };
+  return { kind: "restricted", entries: stockRestrictedEntries(cwd) };
+}
+
 function stockPermissionProfile(mode: ThreadSandboxMode): { id: string; extends: null } | null {
   if (mode === "danger-full-access") return { id: ":danger-full-access", extends: null };
   if (mode === "read-only") return { id: ":read-only", extends: null };
-  return null;
+  return { id: ":workspace", extends: null };
 }
 
 function stockStatePath(home?: string): string {
   return join(home ?? codexHome(), ".codex-global-state.json");
 }
 
-async function syncStockThreadPermissions(threadId: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode, home?: string): Promise<void> {
+function stockStateDbPath(home?: string): string {
+  return join(home ?? codexHome(), "state_5.sqlite");
+}
+
+async function syncRolloutThreadPermissions(rolloutPath: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Promise<void> {
+  if (!rolloutPath || !existsSync(rolloutPath)) return;
+  const size = statSync(rolloutPath).size;
+  if (size > STOCK_ROLLOUT_PERMISSION_SYNC_MAX_BYTES) {
+    console.warn(`[devil-codex] skipped stock rollout permission sync for large file (${size} bytes): ${rolloutPath}`);
+    return;
+  }
+  const source = await readFile(rolloutPath, "utf8");
+  let changed = false;
+  const next = source.split("\n").map((line) => {
+    try {
+      const event = JSON.parse(line) as { type?: string; payload?: Record<string, unknown> };
+      if (event.type !== "turn_context" || !event.payload) return line;
+      event.payload.approval_policy = approvalPolicy;
+      event.payload.sandbox_policy = stockTurnContextSandboxPolicy(sandboxMode);
+      event.payload.permission_profile = stockDbSandboxPolicy(sandboxMode, cwd);
+      event.payload.file_system_sandbox_policy = stockFileSystemSandboxPolicy(sandboxMode, cwd);
+      event.payload.cwd = cwd;
+      event.payload.workspace_roots = [cwd];
+      changed = true;
+      return JSON.stringify(event);
+    } catch {
+      return line;
+    }
+  }).join("\n");
+  if (changed && next !== source) await writeFile(rolloutPath, next, { encoding: "utf8" });
+}
+
+export async function syncStockThreadPermissions(threadId: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode, home?: string): Promise<void> {
   const path = stockStatePath(home);
   let state: Record<string, unknown> = {};
   try { state = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>; } catch { state = {}; }
@@ -598,4 +675,23 @@ async function syncStockThreadPermissions(threadId: string, cwd: string, approva
   state["electron-persisted-atom-state"] = atom;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+
+  const dbPath = stockStateDbPath(home);
+  if (!existsSync(dbPath)) return;
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(dbPath);
+    const rollout = db.prepare("SELECT rollout_path FROM threads WHERE id = ?").get(threadId) as { rollout_path?: string } | undefined;
+    db.prepare("UPDATE threads SET approval_mode = ?, sandbox_policy = ? WHERE id = ?")
+      .run(approvalPolicy, JSON.stringify(stockDbSandboxPolicy(sandboxMode, cwd)), threadId);
+    if (rollout?.rollout_path) {
+      try {
+        await syncRolloutThreadPermissions(rollout.rollout_path, cwd, approvalPolicy, sandboxMode);
+      } catch (error) {
+        console.warn("[devil-codex] stock rollout permission sync failed", error instanceof Error ? error.message : error);
+      }
+    }
+  } finally {
+    db?.close();
+  }
 }

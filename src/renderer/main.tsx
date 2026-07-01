@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -469,16 +469,28 @@ function App(): React.JSX.Element {
   const model = providers.settings?.model ?? "gpt-5.4";
   const accountId = providers.settings?.accountId;
   const activeProvider = providers.settings?.providers.find((provider) => provider.id === providers.settings?.provider) ?? null;
-  const setModel = (next: { provider: ProviderId; accountId?: string; model: string }): void => { void providers.select(next); };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
+  const syncStockCodexDefaults = (patch: Partial<Pick<CodexSettings, "model" | "reasoningEffort" | "responseSpeed">>): void => {
+    const current = codexSettings.settings;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    if (next.model === current.model && next.reasoningEffort === current.reasoningEffort && next.responseSpeed === current.responseSpeed) return;
+    codexSettings.save(next);
+  };
+  const setModel = (next: { provider: ProviderId; accountId?: string; model: string }): void => {
+    void providers.select(next);
+    if (next.provider === "codex") syncStockCodexDefaults({ model: next.model });
+  };
   const setReasoningEffort = (value: ReasoningEffort): void => {
     setReasoningEffortState(value);
     localStorage.setItem("devil-codex:reasoning-effort", value);
+    syncStockCodexDefaults({ reasoningEffort: value });
   };
   const setResponseSpeed = (value: ResponseSpeed): void => {
     setResponseSpeedState(value);
     localStorage.setItem("devil-codex:response-speed", value);
+    syncStockCodexDefaults({ responseSpeed: value });
   };
   const [busy, setBusy] = useState(false);
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>({});
@@ -609,6 +621,14 @@ function App(): React.JSX.Element {
   useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
   useEffect(() => { runningTurnsRef.current = runningTurns; }, [runningTurns]);
+  useEffect(() => {
+    if (!codexSettings.settings || !providers.settings) return;
+    syncStockCodexDefaults({
+      ...(providers.settings.provider === "codex" ? { model } : {}),
+      reasoningEffort,
+      responseSpeed,
+    });
+  }, [codexSettings.settings, providers.settings, model, reasoningEffort, responseSpeed]);
   useEffect(() => () => {
     saveCurrentThreadScrollPosition();
     if (scrollPersistFrame.current != null) cancelAnimationFrame(scrollPersistFrame.current);
@@ -2396,7 +2416,7 @@ function App(): React.JSX.Element {
   }
 
   return (
-    <main ref={appShellRef} className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${view === "settings" ? " settings-mode" : ""}${appInfo && appInfo.platform !== "darwin" ? " is-windows" : ""}`} style={{ "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`, "--utility-width": `${utilityWidth}px` } as CSSProperties}>
+    <main ref={appShellRef} className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${view === "settings" ? " settings-mode" : ""}${appInfo?.platform === "darwin" ? " is-mac" : appInfo ? " is-windows" : ""}`} style={{ "--sidebar-width": `${sidebarCollapsed ? 0 : sidebarWidth}px`, "--utility-width": `${utilityWidth}px` } as CSSProperties}>
       {appInfo && appInfo.platform !== "darwin" && (
         <WindowsTitlebar
           sidebarCollapsed={sidebarCollapsed}
@@ -2522,7 +2542,18 @@ function App(): React.JSX.Element {
         style={{ "--terminal-height": `${terminalHeight}px` } as CSSProperties}
       >
         <header className="topbar">
-          <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
+          <div className="topbar-left">
+            {appInfo?.platform === "darwin" && sidebarCollapsed && (
+              <MacCollapsedNav
+                canGoBack={navigationBack.current.length > 0}
+                canGoForward={navigationForward.current.length > 0}
+                onSidebar={() => { closePopovers(); setSidebarCollapsed(false); }}
+                onBack={goBack}
+                onForward={goForward}
+              />
+            )}
+            <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
+          </div>
           <div className="topbar-actions">
             {update.status === "available" && <button className="update-badge" onClick={() => void window.devilCodex.installUpdate()} title={`Devil Codex ${update.version} 업데이트`}><Download size={15} />업데이트 {update.version}</button>}
             {update.status === "downloading" && <button className="update-badge" disabled><Download size={15} />업데이트 중… {update.percent}%</button>}
@@ -2600,6 +2631,28 @@ function App(): React.JSX.Element {
 }
 
 type ProjectGroupData = { cwd: string; name: string; threads: ThreadSummary[] };
+
+function MacCollapsedNav({
+  canGoBack,
+  canGoForward,
+  onSidebar,
+  onBack,
+  onForward,
+}: {
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onSidebar: () => void;
+  onBack: () => void;
+  onForward: () => void;
+}): React.JSX.Element {
+  return (
+    <div className="mac-collapsed-nav" aria-label="macOS 접힌 사이드바 탐색">
+      <button type="button" onClick={onSidebar} aria-label="사이드바 열기" title="사이드바 열기"><PanelLeftOpen size={16} /></button>
+      <button type="button" onClick={onBack} disabled={!canGoBack} aria-label="뒤로" title="뒤로"><ArrowLeft size={16} /></button>
+      <button type="button" onClick={onForward} disabled={!canGoForward} aria-label="앞으로" title="앞으로"><ArrowRight size={16} /></button>
+    </div>
+  );
+}
 
 function WindowsTitlebar({
   sidebarCollapsed,

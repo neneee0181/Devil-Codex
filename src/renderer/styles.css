@@ -31,6 +31,9 @@ button:active:not(:disabled) { transform: scale(.96); }
 .sidebar-spacer { flex: 1; }
 .window-nav button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #9b9b9b; -webkit-app-region: no-drag; }
 .window-nav button:hover:not(:disabled) { background: #303030; color: #e0e0e0; }
+.mac-collapsed-nav { flex: 0 0 auto; display: flex; gap: 2px; align-items: center; -webkit-app-region: no-drag; }
+.mac-collapsed-nav button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #9b9b9b; padding: 0; -webkit-app-region: no-drag; }
+.mac-collapsed-nav button:hover:not(:disabled) { background: #303030; color: #e0e0e0; }
 .windows-titlebar { position: fixed; top: 0; right: 0; left: 0; z-index: 1000; display: flex; height: 34px; align-items: center; justify-content: space-between; border-bottom: 1px solid #2c2c2c; background: #1d1d1d; color: #bdbdbd; -webkit-app-region: drag; }
 .windows-titlebar-left { display: flex; height: 100%; min-width: 0; align-items: center; gap: 4px; padding-left: 5px; }
 .windows-titlebar-icon { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #9f9f9f; padding: 0; -webkit-app-region: no-drag; }
@@ -146,9 +149,10 @@ button:active:not(:disabled) { transform: scale(.96); }
 .main-stage { --chat-layout-ease: cubic-bezier(.22, 1, .36, 1); --chat-layout-duration: .26s; position: relative; display: flex; flex-direction: column; min-width: 0; height: 100vh; background: #181818; }
 .topbar { z-index: 20; flex: 0 0 52px; display: flex; justify-content: space-between; align-items: center; min-width: 0; padding: 0 18px; border-bottom: 1px solid #262626; background: #181818e8; backdrop-filter: blur(18px); -webkit-app-region: drag; }
 .topbar button, .topbar select, .topbar .open-with-wrap { -webkit-app-region: no-drag; }
+.topbar-left { display: flex; flex: 1 1 auto; gap: 8px; align-items: center; min-width: 0; }
 .stage-row { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .content-col { position: relative; flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; overflow: hidden; container-type: inline-size; will-change: flex-basis; }
-.thread-title { position: relative; display: flex; gap: 8px; align-items: center; min-width: 0; }
+.thread-title { position: relative; display: flex; flex: 1 1 auto; gap: 8px; align-items: center; min-width: 0; }
 .app-shell.sidebar-collapsed .topbar { padding-left: 84px; }
 .thread-title strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .thread-title button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #9e9e9e; }
