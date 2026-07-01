@@ -17,6 +17,9 @@ export type OAuthProvider = "copilot" | "claude-code";
 const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98";
 const GH_API = "https://api.github.com";
 const COPILOT_API = "https://api.githubcopilot.com";
+const COPILOT_EDITOR_VERSION = "vscode/1.124.0";
+const COPILOT_PLUGIN_VERSION = "copilot-chat/0.43.0";
+const COPILOT_USER_AGENT = "GitHubCopilotChat/0.43.0";
 
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_AUTH_URL = "https://claude.ai/oauth/authorize";
@@ -29,11 +32,30 @@ const ANTHROPIC_API = "https://api.anthropic.com/v1";
 const CLAUDE_CODE_OAUTH_BETA = "claude-code-20250219,oauth-2025-04-20";
 
 type CopilotToken = { githubToken: string };
+type CopilotSession = { token: string; expiresAt: number; apiUrl: string };
 type ClaudeToken = { apiKey?: string; accessToken: string; refreshToken: string; expiresAt?: number };
 const COPILOT_FALLBACK_MODELS = [
+  { id: "gpt-5.5", label: "GPT-5.5" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
+  { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  { id: "gpt-5.4-nano", label: "GPT-5.4 Nano" },
+  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
   { id: "gpt-5-mini", label: "GPT-5 Mini" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
+  { id: "claude-opus-4.8", label: "Claude Opus 4.8" },
+  { id: "claude-opus-4.7", label: "Claude Opus 4.7" },
+  { id: "claude-opus-4.6", label: "Claude Opus 4.6" },
+  { id: "claude-opus-4.5", label: "Claude Opus 4.5" },
+  { id: "claude-haiku-4.5", label: "Claude Haiku 4.5" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "mai-code-1-flash", label: "MAI-Code-1-Flash" },
+  { id: "raptor-mini", label: "Raptor Mini" },
 ];
-const COPILOT_BLOCKED_MODEL_IDS = new Set(["gpt-5.4"]);
 
 // After an explicit Claude logout, suppress the auto-detect that would otherwise
 // re-import Claude Code's own credentials and silently log the user back in.
@@ -73,12 +95,46 @@ async function deleteToken(provider: OAuthProvider, accountId?: string): Promise
 // ---------- GitHub Copilot device flow ----------
 export interface DeviceCodeInfo { userCode: string; verificationUri: string; expiresIn: number; }
 
-const copilotTokenCache = new Map<string, { token: string; expiresAt: number }>();
+const copilotTokenCache = new Map<string, CopilotSession>();
+
+function copilotClientHeaders(): Record<string, string> {
+  return {
+    "User-Agent": COPILOT_USER_AGENT,
+    "Editor-Version": COPILOT_EDITOR_VERSION,
+    "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
+    "Copilot-Integration-Id": "vscode-chat",
+    "Openai-Intent": "conversation-panel",
+    "X-Initiator": "user",
+  };
+}
+
+function normalizeCopilotApiUrl(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return COPILOT_API;
+  const candidate = value.trim().replace(/\/+$/, "");
+  const withScheme = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+  try { return new URL(withScheme).origin; }
+  catch { return COPILOT_API; }
+}
+
+function copilotModelLabel(id: string, fallback?: string): string {
+  if (fallback?.trim()) return fallback.trim();
+  return id.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/\bGpt\b/g, "GPT").replace(/\bMai\b/g, "MAI");
+}
+
+function mergeCopilotModels(...lists: Array<Array<{ id: string; label: string }>>): Array<{ id: string; label: string }> {
+  const seen = new Set<string>();
+  return lists.flatMap((list) => list.flatMap((model) => {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [{ id, label: model.label || copilotModelLabel(id) }];
+  }));
+}
 
 async function startCopilotDevice(): Promise<{ deviceCode: string; interval: number } & DeviceCodeInfo> {
   const res = await fetch("https://github.com/login/device/code", {
     method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json", "User-Agent": "GithubCopilot/1.155.0" },
+    headers: { accept: "application/json", "content-type": "application/json", "User-Agent": COPILOT_USER_AGENT },
     body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: "read:user" }),
     signal: AbortSignal.timeout(15_000),
   });
@@ -94,7 +150,7 @@ async function pollCopilotDevice(deviceCode: string, intervalSec: number, expire
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
     const res = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json", "User-Agent": "GithubCopilot/1.155.0" },
+      headers: { accept: "application/json", "content-type": "application/json", "User-Agent": COPILOT_USER_AGENT },
       body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -113,7 +169,7 @@ async function pollCopilotDevice(deviceCode: string, intervalSec: number, expire
 async function copilotIdentity(githubToken: string): Promise<Pick<ProviderAccount, "label" | "email" | "userId">> {
   try {
     const res = await fetch(`${GH_API}/user`, {
-      headers: { Authorization: `token ${githubToken}`, "User-Agent": "GithubCopilot/1.155.0", accept: "application/vnd.github+json" },
+      headers: { Authorization: `token ${githubToken}`, "User-Agent": COPILOT_USER_AGENT, accept: "application/vnd.github+json" },
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return { label: "GitHub Copilot 계정" };
@@ -127,25 +183,28 @@ async function copilotIdentity(githubToken: string): Promise<Pick<ProviderAccoun
   }
 }
 
-async function getCopilotToken(githubToken: string): Promise<string> {
+async function getCopilotSession(githubToken: string): Promise<CopilotSession> {
   const cached = copilotTokenCache.get(githubToken);
-  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
+  if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
   // Editor headers must be sent at token exchange too — the returned Copilot
   // token's model access (gpt-5.x, claude) is scoped to the editor identity.
   // Without them the token is limited and /chat/completions rejects newer models.
   const res = await fetch(`${GH_API}/copilot_internal/v2/token`, {
     headers: {
       Authorization: `token ${githubToken}`,
-      "User-Agent": "GithubCopilot/1.155.0",
-      "Editor-Version": "vscode/1.90.2",
-      "Editor-Plugin-Version": "copilot-chat/0.17.2",
+      ...copilotClientHeaders(),
     },
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Copilot token exchange failed (${res.status}): ${await res.text()}`);
-  const data = await res.json() as { token: string; expires_at: number };
-  copilotTokenCache.set(githubToken, { token: data.token, expiresAt: data.expires_at * 1000 });
-  return data.token;
+  const data = await res.json() as { token: string; expires_at: number; endpoints?: { api?: string } };
+  const session = { token: data.token, expiresAt: data.expires_at * 1000, apiUrl: normalizeCopilotApiUrl(data.endpoints?.api) };
+  copilotTokenCache.set(githubToken, session);
+  return session;
+}
+
+async function getCopilotToken(githubToken: string): Promise<string> {
+  return (await getCopilotSession(githubToken)).token;
 }
 
 // ---------- Claude Code OAuth (PKCE) ----------
@@ -258,7 +317,7 @@ async function readClaudeToken(accountId?: string): Promise<ClaudeToken | null> 
 }
 
 function copilotHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Editor-Version": "vscode/1.90.2", "Editor-Plugin-Version": "copilot-chat/0.17.2", "Copilot-Integration-Id": "vscode-chat", "Openai-Intent": "conversation-panel", "User-Agent": "GithubCopilot/1.155.0" };
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...copilotClientHeaders() };
 }
 
 // ---------- Raw credentials for the local Codex Responses proxy ----------
@@ -276,6 +335,13 @@ export async function claudeAccessTokenForUsage(accountId?: string): Promise<str
 }
 
 export const copilotChatHeaders = copilotHeaders;
+export async function copilotAuth(accountId?: string): Promise<{ bearer: string; apiUrl: string } | null> {
+  const stored = await readToken<CopilotToken>("copilot", accountId);
+  if (!stored?.githubToken) return null;
+  const session = await getCopilotSession(stored.githubToken);
+  return { bearer: session.token, apiUrl: session.apiUrl };
+}
+
 export async function copilotBearer(accountId?: string): Promise<string | null> {
   const stored = await readToken<CopilotToken>("copilot", accountId);
   if (!stored?.githubToken) return null;
@@ -308,8 +374,8 @@ export async function claudeChat(model: string, text: string, signal: AbortSigna
 export async function copilotChat(model: string, text: string, signal: AbortSignal, accountId?: string): Promise<Response> {
   const stored = await readToken<CopilotToken>("copilot", accountId);
   if (!stored?.githubToken) throw new Error("GitHub Copilot 로그인이 필요합니다.");
-  const token = await getCopilotToken(stored.githubToken);
-  return fetch(`${COPILOT_API}/chat/completions`, { method: "POST", signal, headers: copilotHeaders(token), body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: text }] }) });
+  const session = await getCopilotSession(stored.githubToken);
+  return fetch(`${session.apiUrl}/chat/completions`, { method: "POST", signal, headers: copilotHeaders(session.token), body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: text }] }) });
 }
 
 // ---------- Public API ----------
@@ -364,18 +430,17 @@ export async function oauthModels(provider: OAuthProvider, accountId?: string): 
     const stored = await readToken<CopilotToken>("copilot", accountId);
     if (!stored?.githubToken) return [];
     try {
-      const token = await getCopilotToken(stored.githubToken);
-      const res = await fetch(`${COPILOT_API}/models`, { headers: copilotHeaders(token), signal: AbortSignal.timeout(10_000) });
+      const session = await getCopilotSession(stored.githubToken);
+      const res = await fetch(`${session.apiUrl}/models`, { headers: copilotHeaders(session.token), signal: AbortSignal.timeout(10_000) });
       if (!res.ok) return COPILOT_FALLBACK_MODELS;
-      const data = await res.json() as { data?: Array<{ id: string; model_picker_enabled?: boolean; supported_endpoints?: string[] }> };
-      const seen = new Set<string>();
-      const models = (data.data ?? []).filter((m) => {
-        if (m.model_picker_enabled === false) return false;
-        if (!m.id || COPILOT_BLOCKED_MODEL_IDS.has(m.id)) return false;
-        if (Array.isArray(m.supported_endpoints) && m.supported_endpoints.length > 0) return m.supported_endpoints.includes("/chat/completions");
-        return true;
-      }).flatMap((m) => { if (!m.id || seen.has(m.id)) return []; seen.add(m.id); return [{ id: m.id, label: m.id }]; });
-      return models.length ? models : COPILOT_FALLBACK_MODELS;
+      const data = await res.json() as { data?: Array<{ id?: unknown; display_name?: unknown; name?: unknown }>; models?: Array<{ id?: unknown; display_name?: unknown; name?: unknown }> };
+      const rows = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+      const models = rows.flatMap((m) => {
+        if (typeof m.id !== "string" || !m.id.trim()) return [];
+        const label = typeof m.display_name === "string" ? m.display_name : typeof m.name === "string" ? m.name : undefined;
+        return [{ id: m.id, label: copilotModelLabel(m.id, label) }];
+      });
+      return mergeCopilotModels(models, COPILOT_FALLBACK_MODELS);
     } catch { return []; }
   }
   const stored = await readClaudeToken(accountId);

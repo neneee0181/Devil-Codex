@@ -17,7 +17,7 @@ import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxU
 import { sanitizeName } from "./tool-sanitize.cjs";
 import { buildWebSearchTool, replayEvents, runWithWebSearchLoop, shouldExposeWebSearchTool, type SidecarStats } from "./web-search-sidecar.cjs";
 import { applyVisionSidecar } from "./vision-sidecar.cjs";
-import { claudeAuth, copilotBearer, oauthModels } from "../provider-oauth.cjs";
+import { claudeAuth, copilotAuth, oauthModels } from "../provider-oauth.cjs";
 import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
 import { apiProviderConfig, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
@@ -279,9 +279,9 @@ async function providerEventStream(
     return streamAnthropic(upstream);
   }
   if (provider === "copilot") {
-    const bearer = await copilotBearer(accountId);
-    if (!bearer) throw new Error("GitHub Copilot 로그인이 필요합니다.");
-    const reqInit = buildCopilotRequest(parsed, bearer);
+    const auth = await copilotAuth(accountId);
+    if (!auth) throw new Error("GitHub Copilot 로그인이 필요합니다.");
+    const reqInit = buildCopilotRequest(parsed, auth);
     upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
     return streamCopilot(upstream);
   }

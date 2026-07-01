@@ -2,6 +2,7 @@
 import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
+import { copilotChatHeaders } from "../provider-oauth.cjs";
 
 const COPILOT_API = "https://api.githubcopilot.com";
 
@@ -59,7 +60,9 @@ function toChatMessages(parsed: OcxParsedRequest): unknown[] {
   return out;
 }
 
-export function buildCopilotRequest(parsed: OcxParsedRequest, bearer: string): { url: string; headers: Record<string, string>; body: string } {
+export function buildCopilotRequest(parsed: OcxParsedRequest, auth: string | { bearer: string; apiUrl?: string }): { url: string; headers: Record<string, string>; body: string } {
+  const bearer = typeof auth === "string" ? auth : auth.bearer;
+  const apiUrl = typeof auth === "string" ? COPILOT_API : auth.apiUrl ?? COPILOT_API;
   const body: Record<string, unknown> = { model: parsed.model, messages: toChatMessages(parsed), stream: true };
   const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
   if (selectedTools.length) {
@@ -82,16 +85,7 @@ export function buildCopilotRequest(parsed: OcxParsedRequest, bearer: string): {
   if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
   if (parsed.options.presencePenalty !== undefined) body.presence_penalty = parsed.options.presencePenalty;
   if (parsed.options.frequencyPenalty !== undefined) body.frequency_penalty = parsed.options.frequencyPenalty;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${bearer}`, "Content-Type": "application/json",
-    // Copilot gates newer models (gpt-5.x, claude) behind an integration id; the
-    // chat endpoint returns "model not supported" without it even when /models
-    // lists the model. vscode-chat is the editor-chat integration.
-    "Copilot-Integration-Id": "vscode-chat",
-    "Editor-Version": "vscode/1.90.2", "Editor-Plugin-Version": "copilot-chat/0.17.2",
-    "Openai-Intent": "conversation-panel", "X-Initiator": "user", "User-Agent": "GithubCopilot/1.155.0",
-  };
-  return { url: `${COPILOT_API}/chat/completions`, headers, body: JSON.stringify(body) };
+  return { url: `${apiUrl}/chat/completions`, headers: copilotChatHeaders(bearer), body: JSON.stringify(body) };
 }
 
 function requiredToolName(parsed: OcxParsedRequest): string | undefined {
