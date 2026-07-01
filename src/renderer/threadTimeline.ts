@@ -267,6 +267,10 @@ function hasFailureEntry(item: ThreadHistoryItem): boolean {
   return item.kind === "activity" && Boolean(item.activities?.some((entry) => entry.status === "failed"));
 }
 
+function hasFinalAgentMessage(items: ThreadHistoryItem[], turnId: string): boolean {
+  return items.some((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim().length > 0);
+}
+
 export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerEvent): ThreadHistoryItem[] {
   const params = (event.params ?? {}) as Record<string, unknown>;
   const explicitTurnId = String(params.turnId ?? (params.turn as RawItem | undefined)?.id ?? "");
@@ -287,7 +291,9 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
   if (event.method === "turn/completed" && turnId) {
     completedTurns.add(turnId);
     const turn = (params.turn ?? {}) as RawItem;
-    const status = String(turn.status ?? "completed") as ThreadHistoryItem["status"];
+    const rawStatus = String(turn.status ?? "completed") as ThreadHistoryItem["status"];
+    const hasFinalAnswer = hasFinalAgentMessage(items, turnId);
+    const status = rawStatus === "failed" && hasFinalAnswer ? "completed" : rawStatus;
     const contextUsage = contextUsageFromRaw(turn, params);
     const tokenUsage = tokenUsageSnapshotFromRaw(turn, params);
     const completed = updateActivity(items, turnId, (activity) => ({
@@ -299,7 +305,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       ...(tokenUsage?.cumulativeTokenUsage ? { cumulativeTokenUsage: tokenUsage.cumulativeTokenUsage } : {}),
     }));
     const activity = completed.find((current) => current.kind === "activity" && current.turnId === turnId);
-    if (status === "failed" && activity && !hasFailureEntry(activity)) {
+    if (rawStatus === "failed" && !hasFinalAnswer && activity && !hasFailureEntry(activity)) {
       return upsertEntry(completed, turnId, {
         id: `response-error-${turnId}`,
         kind: "message",
@@ -311,6 +317,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     return completed;
   }
   if (event.method === "response.failed" && turnId) {
+    if (hasFinalAgentMessage(items, turnId)) return items;
     const response = params.response as RawItem | undefined;
     const message = responseErrorMessage(response);
     return upsertEntry(items, turnId, {
@@ -335,7 +342,12 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       return exists ? base.map((current) => current.id === id ? { ...current, text } : current) : [...base, { id, kind: "agent", text, turnId }];
     }
     const mapped = entryFromItem(item);
-    const entry = mapped && event.method === "item/completed" ? { ...mapped, status: mapped.status === "failed" || mapped.status === "declined" ? mapped.status : "completed" as const } : mapped;
+    const entry = mapped && event.method === "item/completed" ? {
+      ...mapped,
+      status: type === "providerDiagnostics" && mapped.status === "failed" && hasFinalAgentMessage(items, turnId)
+        ? "completed" as const
+        : mapped.status === "failed" || mapped.status === "declined" ? mapped.status : "completed" as const,
+    } : mapped;
     if (!entry) return items;
     // Only genuine work following narration proves the narration was
     // intermediate → fold pending messages in (chronological). Late synthetic

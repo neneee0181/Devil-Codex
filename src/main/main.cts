@@ -133,19 +133,24 @@ const loadedThreads = new Set<string>();
 // "diagnostic"), not as structured turn events — so a failed turn otherwise
 // surfaces only a generic "no detail" message. Keep a rolling buffer and attach
 // the likely error line to the failed turn's Provider 진단 card.
-const appServerStderr: string[] = [];
+const APP_SERVER_ERROR_CONTEXT_MS = 30_000;
+const appServerStderr: Array<{ line: string; at: number }> = [];
 const contextWindowFailures = new Map<string, string>();
 function recordAppServerStderr(line: string): void {
+  const at = Date.now();
   for (const part of String(line ?? "").split(/\r?\n/)) {
     const trimmed = part.trim();
-    if (trimmed) appServerStderr.push(trimmed);
+    if (trimmed) appServerStderr.push({ line: trimmed, at });
   }
   if (appServerStderr.length > 120) appServerStderr.splice(0, appServerStderr.length - 120);
 }
 function recentAppServerError(): string | undefined {
   if (!appServerStderr.length) return undefined;
-  const errish = appServerStderr.filter((line) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(line));
-  const picked = (errish.length ? errish : appServerStderr).slice(-4);
+  const cutoff = Date.now() - APP_SERVER_ERROR_CONTEXT_MS;
+  const recent = appServerStderr.filter((entry) => entry.at >= cutoff);
+  const rows = recent.length ? recent : appServerStderr.slice(-8);
+  const errish = rows.filter((entry) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(entry.line));
+  const picked = (errish.length ? errish : rows).slice(-4).map((entry) => entry.line);
   return picked.join(" | ").slice(0, 600) || undefined;
 }
 function tokenCountInfo(event: { method: string; params?: unknown }): { context: number; total: number; max: number } | undefined {
