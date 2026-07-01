@@ -16,6 +16,7 @@ function visibleLoginAccounts(provider: ProviderInfo, auth: ProviderAuthStatus):
 
 function loginStatusLabel(provider: ProviderInfo, auth: ProviderAuthStatus): string {
   if (!authedFor(provider, auth)) return "로그인 안 됨";
+  if (provider.id === "codex") return "로그인됨";
   const accounts = visibleLoginAccounts(provider, auth);
   return accounts.length > 1 ? `${accounts.length}개 계정 로그인됨` : "로그인됨";
 }
@@ -132,7 +133,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
           <button type="button" className="provider-btn danger" disabled={busy === `${provider.id}:${account.id}`} onClick={() => void logout(provider, account.id)}><LogOut size={14} />로그아웃</button>
         </div>)}</div>}
         <div className="provider-key-actions">
-          <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : loginAccounts.length ? "계정 추가" : "로그인"}</button>
+          <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : provider.id === "codex" && loginAccounts.length ? "다시 로그인" : loginAccounts.length ? "계정 추가" : "로그인"}</button>
         </div>
         {notice && <p className="provider-notice inline">{notice}</p>}
       </div>}

@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProviderAccount, ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
 import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
-import { importCurrentCodexAuth } from "./provider-codex-accounts.cjs";
+import { codexAuthSubject, readCurrentCodexAuth } from "./provider-codex-accounts.cjs";
 import { createAccountId, defaultAccountId, deleteStoredAccount, envAccountId, getStoredAccount, listStoredAccounts, localAccountId, migrateLegacySecret, readEncryptedText, upsertStoredAccount, virtualAccount, writeEncryptedText } from "./provider-accounts.cjs";
 
 export type ProviderAdapterKind = "openai-chat" | "anthropic" | "google";
@@ -203,12 +203,11 @@ export class ProviderSettingsStore {
 
   async load(): Promise<ProviderSettings> {
     await this.migrateLegacySecrets();
-    await importCurrentCodexAuth().catch(() => undefined);
     const stored = await this.readSettings();
     const provider = catalog.some((item) => item.id === stored.provider) ? stored.provider : defaults.provider;
     const providers = await Promise.all(catalog.map((item) => this.providerInfo(item, stored, provider)));
     const active = providers.find((item) => item.id === provider)!;
-    const accountId = this.resolveAccountId(active, stored.accountId);
+    const accountId = provider === "codex" ? undefined : this.resolveAccountId(active, stored.accountId);
     const activeAccount = accountId ? active.accounts.find((account) => account.id === accountId) : undefined;
     const candidateModels = activeAccount?.models?.length ? activeAccount.models : active.models;
     // Login providers list their models dynamically (OAuth/app-server), so the
@@ -220,7 +219,10 @@ export class ProviderSettingsStore {
   async select(input: { provider: ProviderId; model: string; accountId?: string }): Promise<ProviderSettings> {
     const provider = (await this.load()).providers.find((item) => item.id === input.provider);
     if (!provider) throw new Error("지원하지 않는 Provider입니다.");
-    const accountId = input.accountId ?? this.resolveAccountId(provider, undefined);
+    const requestedAccountId = input.provider === "codex" ? undefined : input.accountId;
+    const accountId = requestedAccountId && provider.accounts.some((item) => item.id === requestedAccountId)
+      ? requestedAccountId
+      : input.provider === "codex" ? undefined : this.resolveAccountId(provider, undefined);
     const account = accountId ? provider.accounts.find((item) => item.id === accountId) : undefined;
     const models = account?.models?.length ? account.models : provider.models;
     // Login providers fetch their model list live, so don't validate against the
@@ -305,13 +307,21 @@ export class ProviderSettingsStore {
     const provider = item.id;
     const baseModels = withCapabilities(provider, stored.models?.[provider]?.length ? stored.models[provider]! : item.models);
     const baseLoaded = provider === "codex" || Boolean(stored.models?.[provider]?.length);
-    const storedAccounts = await listStoredAccounts(provider);
-    const accounts = storedAccounts.map((account) => this.withAccountModels(account, stored, baseModels, baseLoaded));
     if (provider === "codex") {
-      if (accounts.length) return accounts;
-      const codex = virtualAccount({ provider, id: defaultAccountId(), label: "Codex CLI", credentialSource: "desktop", credentialKind: "desktop" });
+      const subject = codexAuthSubject(await readCurrentCodexAuth().catch(() => null) ?? {});
+      const codex = virtualAccount({
+        provider,
+        id: defaultAccountId(),
+        label: subject?.email || subject?.label || "Codex CLI",
+        email: subject?.email,
+        userId: subject?.userId,
+        credentialSource: "desktop",
+        credentialKind: "desktop",
+      });
       return [this.withAccountModels(codex, stored, baseModels, true)];
     }
+    const storedAccounts = await listStoredAccounts(provider);
+    const accounts = storedAccounts.map((account) => this.withAccountModels(account, stored, baseModels, baseLoaded));
     if (item.kind === "apikey") {
       const env = ENV_KEY_NAMES[provider]?.some((name) => Boolean(process.env[name]?.trim()));
       if (env) accounts.push(this.withAccountModels(virtualAccount({ provider, id: envAccountId(), label: ".env.local", credentialSource: "environment", credentialKind: "environment" }), stored, baseModels, true));

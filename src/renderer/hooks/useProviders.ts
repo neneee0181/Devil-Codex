@@ -119,8 +119,9 @@ export function useProviders(): {
     settings: merged,
     state,
     select: async (input) => {
-      setSettings((current) => current ? { ...current, provider: input.provider, accountId: input.accountId, model: input.model } : current);
-      await run(() => window.devilCodex.selectProvider(input));
+      const next: { provider: ProviderId; accountId?: string; model: string } = input.provider === "codex" ? { provider: input.provider, model: input.model } : input;
+      setSettings((current) => current ? { ...current, provider: next.provider, accountId: next.accountId, model: next.model } : current);
+      await run(() => window.devilCodex.selectProvider(next));
     },
     saveKey: async (input) => {
       const previousCount = accountCount(settings, input.provider);

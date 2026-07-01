@@ -1803,8 +1803,8 @@ function App(): React.JSX.Element {
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = options.provider ?? providers.settings?.provider ?? "codex";
-    const existingCodexAccountId = provider === "codex" && !options.forceNewThread ? thread?.accountId : undefined;
-    const sendAccountId = options.accountId ?? existingCodexAccountId ?? (provider === providers.settings?.provider ? accountId : undefined);
+    const selectedAccountId = options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
+    const sendAccountId = provider === "codex" ? undefined : selectedAccountId;
     const sendModel = options.model ?? model;
     if (!text || !workspace || (provider === "codex" && runtime.state !== "connected")) return;
     const permissions = input.approvalMode === "full"
@@ -1881,8 +1881,7 @@ function App(): React.JSX.Element {
   function startAutomationChat(prompt: string): void {
     const codexProvider = providers.settings?.providers.find((item) => item.id === "codex");
     const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.4";
-    const codexAccountId = providers.settings?.provider === "codex" ? providers.settings.accountId : codexProvider?.accounts[0]?.id;
-    void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", accountId: codexAccountId, model: codexModel });
+    void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
   }
 
   function renameProject(): void {
@@ -2364,10 +2363,7 @@ function App(): React.JSX.Element {
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
     try {
       const seed = providers.settings?.provider === "codex" ? model : "gpt-5.4";
-      const codexAccountId = providers.settings?.provider === "codex"
-        ? providers.settings.accountId
-        : providers.settings?.providers.find((item) => item.id === "codex")?.accounts[0]?.id;
-      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex", accountId: codexAccountId });
+      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex" });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
       openSideTab(created.id, label, dock);
