@@ -700,9 +700,13 @@ button:active:not(:disabled) { transform: scale(.96); }
 .model-provider-options { display: grid; overflow: hidden; }
 .model-account-group { display: grid; gap: 2px; padding: 4px 0 6px; }
 .model-account-group + .model-account-group { border-top: 1px solid #333; margin-top: 4px; padding-top: 7px; }
-.model-account-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 5px 9px 4px 28px; color: #bdbdbd; }
+.model-account-head { display: grid; width: 100%; grid-template-columns: 16px minmax(0, 1fr) 16px; gap: 6px; align-items: center; border: 0; border-radius: 8px; background: transparent; color: #bdbdbd; padding: 6px 9px 6px 23px; text-align: left; }
+.model-account-head:hover, .model-account-head.active { background: #2d2d2d; }
+.model-account-head > svg:first-child { color: #858585; }
+.model-account-head > svg:last-child { color: #9fd0ff; }
+.model-account-head span { display: grid; min-width: 0; gap: 2px; }
 .model-account-head strong { overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.model-account-head small { flex: 0 0 auto; color: #7f7f7f; font-size: 10.5px; }
+.model-account-head small { overflow: hidden; color: #7f7f7f; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .model-show-more { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid #363636; border-radius: 9px; background: #282828; color: #d7d7d7; padding: 7px 10px; text-align: left; font-size: 12.5px; transition: background-color .12s, border-color .12s; }
 .model-show-more:hover { border-color: #4a4a4a; background: #303030; }
 .model-show-more small { overflow: hidden; color: #8f8f8f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

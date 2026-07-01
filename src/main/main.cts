@@ -1185,7 +1185,6 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       return await providerModels.refresh(input.provider, saved.accountId ?? input.accountId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("401") || message.includes("403")) throw error;
       console.warn("[devil-codex providers] model refresh after key save failed:", message);
       return saved;
     }

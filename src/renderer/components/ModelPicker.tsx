@@ -73,6 +73,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
   const [auth, setAuth] = useState<ProviderAuthStatus>(emptyAuth);
   const [busy, setBusy] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<ProviderId>>(() => new Set([providerId]));
+  const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(() => new Set([`${providerId}:${accountId ?? "default"}`]));
   const [visibleModelCounts, setVisibleModelCounts] = useState<Record<string, number>>({});
   const close = (): void => { setOpen(false); setSubmenu(null); };
   useOutsideDismiss(root, close, open, speedSubmenuRef);
@@ -84,7 +85,8 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
     if (open) return;
     setVisibleModelCounts({});
     setExpandedProviders(new Set([providerId]));
-  }, [open, providerId]);
+    setExpandedAccounts(new Set([`${providerId}:${accountId ?? "default"}`]));
+  }, [open, providerId, accountId]);
   useEffect(() => window.devilCodex.onProviderAuth((status) => { setAuth(status); setNotice(""); setBusy(null); }), []);
 
   const updateSpeedSubmenuPosition = (): void => {
@@ -128,7 +130,14 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
       next.add(providerId);
       return next;
     });
-  }, [open, providerId]);
+    setExpandedAccounts((current) => {
+      const key = `${providerId}:${accountId ?? "default"}`;
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+  }, [open, providerId, accountId]);
 
   const toggleProvider = (id: ProviderId): void => {
     setExpandedProviders((current) => {
@@ -139,6 +148,15 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
     });
   };
   const accountKey = (provider: ProviderInfo, account?: ProviderAccount): string => `${provider.id}:${account?.id ?? "default"}`;
+  const toggleAccount = (provider: ProviderInfo, account?: ProviderAccount): void => {
+    const key = accountKey(provider, account);
+    setExpandedAccounts((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   const visibleModelCount = (provider: ProviderInfo, account?: ProviderAccount): number => {
     const models = accountModels(provider, account);
     const selectedIndex = provider.id === providerId && (!account?.id || account.id === accountId) ? models.findIndex((item) => item.id === model) : -1;
@@ -233,28 +251,39 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
                         const visibleModels = models.slice(0, count);
                         const remaining = models.length - count;
                         const selectedHere = provider.id === providerId && (!account?.id || account.id === accountId);
+                        const accountExpanded = expandedAccounts.has(accountKey(provider, account));
+                        const accountTitle = account ? accountLabel(account) : provider.label;
+                        const accountDetail = account
+                          ? account.credentialSource === "environment" ? "환경 변수" : account.credentialKind === "local" ? "로컬" : `${models.length}개 모델`
+                          : `${models.length}개 모델`;
                         return (
                           <div className="model-account-group" key={account?.id ?? `${provider.id}:default`}>
-                            {account && <div className="model-account-head"><strong>{accountLabel(account)}</strong><small>{account.credentialSource === "environment" ? "환경 변수" : account.credentialKind === "local" ? "로컬" : account.id}</small></div>}
-                            {visibleModels.map((item) => (
-                              <button type="button" className="model-option" key={`${account?.id ?? "default"}:${item.id}`} title={capabilityTitle(provider, item.id)} onClick={() => { onModelChange({ provider: provider.id, accountId: account?.id, model: item.id }); close(); }}>
-                                <span className="model-option-label">
-                                  <strong>{item.label}</strong>
-                                  {item.capability && <small>
-                                    <i className={`cap ${item.capability.diagnostics}`}>{item.capability.diagnostics}</i>
-                                    <i>tool {capabilityLabel(item.capability.tools)}</i>
-                                    <i>img {capabilityLabel(item.capability.images)}</i>
-                                  </small>}
-                                </span>
-                                {selectedHere && item.id === model && <Check size={15} />}
-                              </button>
-                            ))}
-                            {remaining > 0 && (
-                              <button type="button" className="model-show-more" onClick={() => showMoreModels(provider, account)}>
-                                <span>더보기</span>
-                                <small>{Math.min(modelPageSize, remaining)}개 더 보기 · {count}/{models.length}</small>
-                              </button>
-                            )}
+                            <button type="button" className={`model-account-head ${selectedHere ? "active" : ""}`} aria-expanded={accountExpanded} onClick={() => toggleAccount(provider, account)}>
+                              {accountExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                              <span><strong>{accountTitle}</strong><small>{selectedHere && selectedModel ? selectedModel.label : accountDetail}</small></span>
+                              {selectedHere && <Check size={14} />}
+                            </button>
+                            {accountExpanded && <>
+                              {visibleModels.map((item) => (
+                                <button type="button" className="model-option" key={`${account?.id ?? "default"}:${item.id}`} title={capabilityTitle(provider, item.id)} onClick={() => { onModelChange({ provider: provider.id, accountId: account?.id, model: item.id }); close(); }}>
+                                  <span className="model-option-label">
+                                    <strong>{item.label}</strong>
+                                    {item.capability && <small>
+                                      <i className={`cap ${item.capability.diagnostics}`}>{item.capability.diagnostics}</i>
+                                      <i>tool {capabilityLabel(item.capability.tools)}</i>
+                                      <i>img {capabilityLabel(item.capability.images)}</i>
+                                    </small>}
+                                  </span>
+                                  {selectedHere && item.id === model && <Check size={15} />}
+                                </button>
+                              ))}
+                              {remaining > 0 && (
+                                <button type="button" className="model-show-more" onClick={() => showMoreModels(provider, account)}>
+                                  <span>더보기</span>
+                                  <small>{Math.min(modelPageSize, remaining)}개 더 보기 · {count}/{models.length}</small>
+                                </button>
+                              )}
+                            </>}
                           </div>
                         );
                       })}

@@ -25,6 +25,10 @@ export function useProviders(): {
     catch { setState("error"); }
   }, []);
 
+  const loadVisibleSettings = useCallback(async (): Promise<ProviderSettings> => hideUnverifiedLocalProviders(await window.devilCodex.loadProviderSettings()), [hideUnverifiedLocalProviders]);
+
+  const accountCount = (source: ProviderSettings | null, provider: ProviderId): number => source?.providers.find((item) => item.id === provider)?.accounts.length ?? 0;
+
   const oauthModelKey = (provider: ProviderId, accountId: string): string => `${provider}:${accountId}`;
   const syncOauthModels = useCallback((source?: ProviderSettings | null): void => {
     (["copilot", "claude-code", "antigravity"] as const).forEach((provider) => {
@@ -107,7 +111,23 @@ export function useProviders(): {
       setSettings((current) => current ? { ...current, provider: input.provider, accountId: input.accountId, model: input.model } : current);
       await run(() => window.devilCodex.selectProvider(input));
     },
-    saveKey: (input) => run(() => window.devilCodex.saveProviderKey(input)),
+    saveKey: async (input) => {
+      const previousCount = accountCount(settings, input.provider);
+      setState("loading");
+      try {
+        await window.devilCodex.saveProviderKey(input);
+        setSettings(await loadVisibleSettings());
+        setState("saved");
+      } catch {
+        const loaded = await loadVisibleSettings().catch(() => null);
+        if (loaded && accountCount(loaded, input.provider) > previousCount) {
+          setSettings(loaded);
+          setState("saved");
+          return;
+        }
+        setState("error");
+      }
+    },
     clearKey: (provider, accountId) => run(() => window.devilCodex.clearProviderKey({ provider, accountId })),
     refreshModels: (provider, accountId) => run(() => window.devilCodex.refreshProviderModels({ provider, accountId })),
   };
