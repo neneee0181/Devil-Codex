@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { Blocks, Check, ChevronDown, Copy, FilePlus2, Info, Languages, Pencil, RotateCcw, Send, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Blocks, Check, ChevronDown, Copy, FilePlus2, Info, Languages, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { ThreadAttachment, ThreadHistoryItem, WorkspaceChanges } from "../../shared/contracts";
 import { MarkdownContent } from "./MarkdownContent";
 import { splitMessageImages } from "./messageAttachments";
@@ -43,10 +43,8 @@ function imagePathAttachments(paths: string[]): ThreadAttachment[] {
   return paths.map((path) => ({ kind: "image", path, name: path.split("/").at(-1) ?? "image" }));
 }
 
-export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, onRollback, onReview, onOpenFile, onEditUserMessage }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void; onEditUserMessage?: (item: ThreadHistoryItem, text: string) => void }): React.JSX.Element {
+export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(item.text);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
@@ -86,16 +84,6 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
   };
-  const startEdit = (): void => {
-    setDraft(userMessage.text);
-    setEditing(true);
-  };
-  const submitEdit = (): void => {
-    const next = draft.trim();
-    if (!next) return;
-    setEditing(false);
-    onEditUserMessage?.(item, next);
-  };
 
   return <motion.article layout="position" className={`timeline-item ${item.kind}${item.status === "inProgress" ? " pending" : ""}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
     <div className="item-label-row">
@@ -106,15 +94,10 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     {attachments.length > 0 && <AttachmentGallery attachments={attachments} align="end" />}
     <div className={item.kind === "user" ? "timeline-user-bubble" : undefined}>
       <SkillTokens skills={userMessage.skills} />
-      {item.kind === "user" && editing
-        ? <div className="timeline-edit-box">
-            <textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) submitEdit(); if (event.key === "Escape") setEditing(false); }} />
-            <div><button type="button" onClick={() => setEditing(false)}><X size={14} />취소</button><button type="button" className="primary" disabled={!draft.trim()} onClick={submitEdit}><Send size={14} />보내기</button></div>
-          </div>
-        : <MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} />}
+      <MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} />
       {item.kind === "user" && item.status === "inProgress" && <small className="timeline-pending-label">대기 중</small>}
     </div>
-    {item.kind === "user" && !editing && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" onClick={startEdit} aria-label="메시지 편집"><Pencil size={16} /></button></div>}
+    {item.kind === "user" && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button></div>}
     {item.kind === "agent" && <div className="timeline-actions"><button type="button" onClick={() => void copy()} aria-label="응답 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" aria-label="좋아요"><ThumbsUp size={16} /></button><button type="button" aria-label="싫어요"><ThumbsDown size={16} /></button></div>}
     {showChanges && <ChangesCard changes={changes} turnId={item.turnId} canRollback={canRollback} rollbackBusy={rollbackBusy} onRollback={onRollback} onReview={onReview} onOpenFile={onOpenFile} />}
   </motion.article>;
