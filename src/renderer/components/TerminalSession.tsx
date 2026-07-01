@@ -18,6 +18,7 @@ type CommandEntry = {
 const COMMAND_LIMIT = 80;
 const OUTPUT_LIMIT = 24000;
 const PREVIEW_LIMIT = 4200;
+const COMMAND_SETTLE_MS = 2200;
 
 function stripAnsi(text: string): string {
   return text
@@ -70,6 +71,30 @@ function outputHasError(output: string): boolean {
   return /\b(error|failed|failure|exception|traceback|unauthorized|denied|fatal)\b/i.test(output);
 }
 
+function skipInputEscape(data: string, start: number): number {
+  const marker = data[start + 1];
+  if (!marker) return start + 1;
+  if (marker === "[") {
+    let index = start + 2;
+    while (index < data.length) {
+      const code = data.charCodeAt(index);
+      if (code >= 0x40 && code <= 0x7e) return index + 1;
+      index += 1;
+    }
+    return data.length;
+  }
+  if (marker === "]") {
+    let index = start + 2;
+    while (index < data.length) {
+      if (data[index] === "\u0007") return index + 1;
+      if (data[index] === "\u001b" && data[index + 1] === "\\") return index + 2;
+      index += 1;
+    }
+    return data.length;
+  }
+  return start + 2;
+}
+
 export function TerminalSession({
   active,
   workspace,
@@ -96,11 +121,34 @@ export function TerminalSession({
   const inputBuffer = useRef("");
   const activeEntryId = useRef<string | null>(null);
   const commandSeq = useRef(0);
+  const settleTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [error, setError] = useState("");
   const [shell, setShell] = useState("연결 중...");
   const [historyOpen, setHistoryOpen] = useState(dock === "bottom");
   const [historyQuery, setHistoryQuery] = useState("");
   const [entries, setEntries] = useState<CommandEntry[]>([]);
+
+  const settleEntry = (id: string): void => {
+    const timer = settleTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    settleTimers.current.delete(id);
+    if (activeEntryId.current === id) activeEntryId.current = null;
+    setEntries((current) => current.map((entry) => entry.id === id ? { ...entry, status: "done" as const } : entry));
+  };
+
+  const scheduleSettle = (id: string): void => {
+    const timer = settleTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    settleTimers.current.set(id, setTimeout(() => settleEntry(id), COMMAND_SETTLE_MS));
+  };
+
+  const removeEntry = (id: string): void => {
+    const timer = settleTimers.current.get(id);
+    if (timer) clearTimeout(timer);
+    settleTimers.current.delete(id);
+    if (activeEntryId.current === id) activeEntryId.current = null;
+    setEntries((current) => current.filter((entry) => entry.id !== id));
+  };
 
   const startCommand = (command: string): void => {
     const clean = command.trim();
@@ -111,20 +159,31 @@ export function TerminalSession({
       { id, command: clean, output: "", startedAt: Date.now(), pinned: false, collapsed: false, status: "running" },
       ...current.map((entry) => entry.status === "running" ? { ...entry, status: "done" as const } : entry),
     ].slice(0, COMMAND_LIMIT));
+    scheduleSettle(id);
   };
 
   const trackInput = (data: string): void => {
-    for (const char of data) {
+    let index = 0;
+    while (index < data.length) {
+      const char = data[index];
       if (char === "\r" || char === "\n") {
         startCommand(inputBuffer.current);
         inputBuffer.current = "";
       } else if (char === "\u0003") {
         inputBuffer.current = "";
+      } else if (char === "\u0015") {
+        inputBuffer.current = "";
+      } else if (char === "\u0017") {
+        inputBuffer.current = inputBuffer.current.trimEnd().replace(/\S+\s*$/, "");
+      } else if (char === "\u001b") {
+        index = skipInputEscape(data, index);
+        continue;
       } else if (char === "\u007f" || char === "\b") {
         inputBuffer.current = inputBuffer.current.slice(0, -1);
-      } else if (char >= " " && char !== "\u001b") {
+      } else if (char >= " ") {
         inputBuffer.current += char;
       }
+      index += 1;
     }
   };
 
@@ -132,8 +191,9 @@ export function TerminalSession({
     const id = activeEntryId.current;
     if (!id) return;
     setEntries((current) => current.map((entry) => (
-      entry.id === id ? { ...entry, output: compactOutput(`${entry.output}${data}`) } : entry
+      entry.id === id ? { ...entry, output: compactOutput(`${entry.output}${data}`), status: "running" } : entry
     )));
+    scheduleSettle(id);
   };
 
   const writeCommand = (command: string): void => {
@@ -305,6 +365,8 @@ export function TerminalSession({
       hostEl.removeEventListener("paste", onPaste);
       hostEl.removeEventListener("copy", onCopy);
       if (sessionId.current) void window.devilCodex.closeTerminal({ id: sessionId.current });
+      settleTimers.current.forEach((timer) => clearTimeout(timer));
+      settleTimers.current.clear();
       sessionId.current = null;
       inputBuffer.current = "";
       activeEntryId.current = null;
@@ -373,11 +435,11 @@ export function TerminalSession({
                 </button>
                 <span>
                   <strong title={entry.command}>{entry.command}</strong>
-                  <small>{entry.status === "running" ? "실행 중" : "기록됨"} · {formatTime(entry.startedAt)}</small>
+                  <small>{entry.status === "running" ? "실행 중" : "완료 추정"} · {formatTime(entry.startedAt)}</small>
                 </span>
               </header>
               {!entry.collapsed && <>
-                <pre>{output || "출력 대기 중..."}</pre>
+                <pre>{output || (entry.status === "running" ? "출력 대기 중..." : "출력 없음")}</pre>
                 {paths.length > 0 && <div className="terminal-path-row">{paths.map((path) => <button type="button" key={path} title={path} onClick={() => onOpenPath?.(path)}>{shortPath(path)}</button>)}</div>}
               </>}
               <footer>
@@ -386,7 +448,7 @@ export function TerminalSession({
                 <button type="button" onClick={() => writeCommand(entry.command)} title="다시 실행"><RotateCcw size={13} />재실행</button>
                 <button type="button" onClick={() => onSendToComposer?.(formatForComposer(entry))} title="채팅 입력으로 보내기"><Bot size={13} />AI</button>
                 <button type="button" onClick={() => setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, pinned: !item.pinned } : item))} title={entry.pinned ? "고정 해제" : "고정"}>{entry.pinned ? <PinOff size={13} /> : <Pin size={13} />}</button>
-                <button type="button" onClick={() => setEntries((current) => current.filter((item) => item.id !== entry.id))} title="기록 삭제"><Trash2 size={13} /></button>
+                <button type="button" onClick={() => removeEntry(entry.id)} title="기록 삭제"><Trash2 size={13} /></button>
               </footer>
             </article>;
           })}
