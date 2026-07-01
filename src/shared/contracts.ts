@@ -318,6 +318,8 @@ export interface DevilCodexApi {
   openNativeCodex: () => Promise<{ ok: boolean; detail?: string }>;
   openExternalUrl: (input: { url: string }) => Promise<void>;
   getFilePath: (file: File) => string;
+  clipboardReadText: () => string;
+  clipboardWriteText: (input: { text: string }) => void;
   createTerminal: (input: { cwd: string; cols: number; rows: number }) => Promise<TerminalSession>;
   writeTerminal: (input: TerminalData) => Promise<void>;
   resizeTerminal: (input: { id: string; cols: number; rows: number }) => Promise<void>;

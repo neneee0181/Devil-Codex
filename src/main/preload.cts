@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AppCommand, DevilCodexApi } from "./contracts.cjs";
 
 const api: DevilCodexApi = {
@@ -84,6 +84,8 @@ const api: DevilCodexApi = {
   openNativeCodex: () => ipcRenderer.invoke("app:open-native-codex"),
   openExternalUrl: (input) => ipcRenderer.invoke("app:open-external-url", input),
   getFilePath: (file) => webUtils.getPathForFile(file),
+  clipboardReadText: () => clipboard.readText(),
+  clipboardWriteText: (input) => clipboard.writeText(input.text),
   createTerminal: (input) => ipcRenderer.invoke("terminal:create", input),
   writeTerminal: (input) => ipcRenderer.invoke("terminal:write", input),
   resizeTerminal: (input) => ipcRenderer.invoke("terminal:resize", input),
