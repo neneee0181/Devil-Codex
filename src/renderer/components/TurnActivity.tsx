@@ -253,7 +253,9 @@ function ActivityEntry({ entry, onOpenFile }: { entry: ThreadActivityEntry; onOp
   if (entry.kind === "mcp") return <McpEntry entry={entry} />;
   if (entry.kind === "diagnostic") return <DiagnosticEntry entry={entry} />;
   if (!entry.detail) return null;
-  return <div className={entry.kind === "reasoning" ? "activity-reasoning" : "activity-message"}><MarkdownContent text={entry.detail} onOpenFile={onOpenFile} /></div>;
+  const isDiagnosticMessage = /진단|provider diagnostic|provider 진단|not supported|지원하지 않습니다|현재 계정\/API 경로/i.test(`${entry.title}\n${entry.detail}`);
+  const className = entry.kind === "reasoning" ? "activity-reasoning" : isDiagnosticMessage ? "activity-diagnostic-text" : "activity-message";
+  return <div className={className}><MarkdownContent text={entry.detail} onOpenFile={onOpenFile} /></div>;
 }
 
 // Render activity entries in chronological order. Only *consecutive* read /

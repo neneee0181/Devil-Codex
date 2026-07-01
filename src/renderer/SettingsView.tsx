@@ -4,6 +4,7 @@ import { CreditCard, Globe2, Search, TerminalSquare } from "lucide-react";
 import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
+import { estimateProviderUsageCost } from "./providerPricing";
 import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry } from "../shared/contracts";
 
 type Config = {
@@ -86,7 +87,6 @@ type ModelUsageRow = {
   estimatedCost: number;
   pricedTokens: number;
 };
-type Pricing = { input: number; output: number; cachedInput?: number; label: string };
 
 function ProviderUsagePage({ report, requestLog, providerSettings, state, onRefresh }: { report: { entries: ProviderUsageEntry[] } | null; requestLog: ProviderRequestLogEntry[]; providerSettings: ProviderSettings | null; state: string; onRefresh: () => void }): React.JSX.Element {
   const [tab, setTab] = useState<UsageTab>("devil");
@@ -195,7 +195,7 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
     current.durationMs += entry.durationMs ?? 0;
     if (entry.usage) {
       addUsage(current, entry.usage);
-      const cost = estimateUsageCost(entry.provider, entry.model, entry.usage);
+      const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
       current.estimatedCost += cost.cost;
       current.pricedTokens += cost.pricedTokens;
     }
@@ -220,44 +220,6 @@ function addUsage(row: ModelUsageRow, usage: ProviderTokenUsage): void {
   row.outputTokens += usage.outputTokens;
   row.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;
   row.totalTokens += usage.inputTokens + usage.outputTokens;
-}
-
-function estimateUsageCost(provider: ProviderId | "unknown", model: string, usage: ProviderTokenUsage): { cost: number; pricedTokens: number } {
-  const pricing = pricingFor(provider, model);
-  if (!pricing) return { cost: 0, pricedTokens: 0 };
-  const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
-  const uncachedInput = Math.max(0, usage.inputTokens - cached);
-  const inputCost = uncachedInput * pricing.input / 1_000_000;
-  const cachedCost = cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
-  const outputCost = usage.outputTokens * pricing.output / 1_000_000;
-  return { cost: inputCost + cachedCost + outputCost, pricedTokens: usage.inputTokens + usage.outputTokens };
-}
-
-function pricingFor(provider: ProviderId | "unknown", model: string): Pricing | null {
-  const id = model.toLowerCase();
-  if (provider === "openrouter-free") return { input: 0, output: 0, label: "OpenRouter Free" };
-  if (provider === "openai" || provider === "codex") {
-    if (id.includes("gpt-5.5-pro") || id.includes("gpt-5.4-pro")) return { input: 15, output: 90, cachedInput: 1.5, label: "OpenAI pro" };
-    if (id.includes("gpt-5.5") || id.includes("gpt-5.4")) return { input: 1.25, output: 10, cachedInput: 0.125, label: "OpenAI GPT-5" };
-    if (id.includes("gpt-5")) return { input: 1.25, output: 10, cachedInput: 0.125, label: "OpenAI GPT-5" };
-    if (id.includes("gpt-4.1-mini")) return { input: 0.4, output: 1.6, cachedInput: 0.1, label: "OpenAI GPT-4.1 mini" };
-    if (id.includes("gpt-4.1")) return { input: 2, output: 8, cachedInput: 0.5, label: "OpenAI GPT-4.1" };
-  }
-  if (provider === "anthropic" || provider === "claude-code") {
-    if (id.includes("haiku")) return { input: 0.8, output: 4, cachedInput: 0.08, label: "Claude Haiku" };
-    if (id.includes("opus")) return { input: 15, output: 75, cachedInput: 1.5, label: "Claude Opus" };
-    if (id.includes("sonnet") || id.includes("claude")) return { input: 3, output: 15, cachedInput: 0.3, label: "Claude Sonnet" };
-  }
-  if (provider === "google" || provider === "antigravity") {
-    if (id.includes("flash-lite")) return { input: 0.1, output: 0.4, label: "Gemini Flash-Lite" };
-    if (id.includes("flash")) return { input: 0.3, output: 2.5, label: "Gemini Flash" };
-    if (id.includes("pro")) return { input: 1.25, output: 10, label: "Gemini Pro" };
-  }
-  if (provider === "deepseek") {
-    if (id.includes("reasoner")) return { input: 0.55, output: 2.19, cachedInput: 0.14, label: "DeepSeek Reasoner" };
-    return { input: 0.27, output: 1.1, cachedInput: 0.07, label: "DeepSeek Chat" };
-  }
-  return null;
 }
 
 function providerFallbackLabel(provider: ProviderId): string {

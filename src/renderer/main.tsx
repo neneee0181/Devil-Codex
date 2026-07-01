@@ -31,6 +31,7 @@ import { useProviders } from "./hooks/useProviders";
 import { useCodexSettings } from "./hooks/useCodexSettings";
 import { approvalPromptFromEvent } from "./approvalRequests";
 import { applyTimelineEvent } from "./threadTimeline";
+import { estimateProviderUsageCost } from "./providerPricing";
 import { isPrimaryModifier, shortcut } from "./shortcuts";
 import "./styles.css";
 
@@ -64,6 +65,7 @@ const THREAD_SCROLL_POSITIONS_KEY = "devil-codex:thread-scroll-positions";
 const PET_VISIBLE_KEY = "devil-codex:pet-visible";
 const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
 const ENVIRONMENT_SOURCE_LIMIT = 8;
+const ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT = 4;
 
 function readThreadScrollPositions(): Record<string, ThreadScrollPosition> {
   try {
@@ -336,7 +338,6 @@ type ThreadUsageSummary = {
   contextOverflow: boolean;
   models: ThreadUsageModel[];
 };
-type UsagePricing = { input: number; output: number; cachedInput?: number };
 
 function compactTokenCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -364,43 +365,6 @@ function providerDisplayName(provider: ProviderId | "unknown", providers: Provid
 
 function providerTokenTotal(usage: ProviderTokenUsage): number {
   return usage.totalTokens && usage.totalTokens > 0 ? usage.totalTokens : usage.inputTokens + usage.outputTokens;
-}
-
-function pricingForUsage(provider: ProviderId | "unknown", model: string): UsagePricing | null {
-  const id = model.toLowerCase();
-  if (provider === "openrouter-free") return { input: 0, output: 0 };
-  if (provider === "openai" || provider === "codex") {
-    if (id.includes("gpt-5.5-pro") || id.includes("gpt-5.4-pro")) return { input: 15, output: 90, cachedInput: 1.5 };
-    if (id.includes("gpt-5.5") || id.includes("gpt-5.4") || id.includes("gpt-5")) return { input: 1.25, output: 10, cachedInput: 0.125 };
-    if (id.includes("gpt-4.1-mini")) return { input: 0.4, output: 1.6, cachedInput: 0.1 };
-    if (id.includes("gpt-4.1")) return { input: 2, output: 8, cachedInput: 0.5 };
-  }
-  if (provider === "anthropic" || provider === "claude-code") {
-    if (id.includes("haiku")) return { input: 0.8, output: 4, cachedInput: 0.08 };
-    if (id.includes("opus")) return { input: 15, output: 75, cachedInput: 1.5 };
-    if (id.includes("sonnet") || id.includes("claude")) return { input: 3, output: 15, cachedInput: 0.3 };
-  }
-  if (provider === "google" || provider === "antigravity") {
-    if (id.includes("flash-lite")) return { input: 0.1, output: 0.4 };
-    if (id.includes("flash")) return { input: 0.3, output: 2.5 };
-    if (id.includes("pro")) return { input: 1.25, output: 10 };
-  }
-  if (provider === "deepseek") {
-    if (id.includes("reasoner")) return { input: 0.55, output: 2.19, cachedInput: 0.14 };
-    return { input: 0.27, output: 1.1, cachedInput: 0.07 };
-  }
-  return null;
-}
-
-function estimateProviderUsageCost(provider: ProviderId | "unknown", model: string, usage: ProviderTokenUsage): { cost: number; pricedTokens: number } {
-  const pricing = pricingForUsage(provider, model);
-  if (!pricing) return { cost: 0, pricedTokens: 0 };
-  const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
-  const uncachedInput = Math.max(0, usage.inputTokens - cached);
-  const inputCost = uncachedInput * pricing.input / 1_000_000;
-  const cachedCost = cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
-  const outputCost = usage.outputTokens * pricing.output / 1_000_000;
-  return { cost: inputCost + cachedCost + outputCost, pricedTokens: usage.inputTokens + usage.outputTokens };
 }
 
 function formatUsd(value: number): string {
@@ -3097,6 +3061,9 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
   const [newBranch, setNewBranch] = useState("");
   const [branchBusy, setBranchBusy] = useState(false);
   const gitAvailable = Boolean(cwd && changes.available && basenamePath(cwd) !== "new-chat");
+  const [usageExpanded, setUsageExpanded] = useState(false);
+  const hiddenUsageModels = Math.max(0, usage.models.length - ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
+  const visibleUsageModels = usageExpanded ? usage.models : usage.models.slice(0, ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
   useEffect(() => {
     if (!menu) return;
     const close = (event: PointerEvent): void => {
@@ -3180,10 +3147,14 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
             <span><small>실패</small><strong>{usage.failed}회</strong></span>
           </div>
           <div className="environment-usage-models">
-            {usage.models.slice(0, 4).map((row) => <div key={row.key}>
+            {visibleUsageModels.map((row) => <div key={row.key} title={row.label}>
               <span><strong>{row.label}</strong><small>{threadUsageRowDetail(row)}</small></span>
               <b>{threadUsageCostLabel(row.estimatedCost, row.pricedTokens, row.totalTokens)}</b>
             </div>)}
+            {hiddenUsageModels > 0 && <button type="button" className="environment-usage-more" onClick={() => setUsageExpanded((value) => !value)} aria-expanded={usageExpanded}>
+              <span>{usageExpanded ? "접기" : "더보기"}</span>
+              <small>{usageExpanded ? `상위 ${ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT}개만 보기` : `${hiddenUsageModels}개 모델 더 보기`}</small>
+            </button>}
           </div>
         </> : <p className="environment-usage-empty">{usageState === "error" ? "사용량 기록을 불러오지 못했습니다." : usageState === "loading" ? "이 스레드의 모델 사용량 기록을 불러오는 중입니다." : "이 스레드에서 기록된 모델 요청이 아직 없습니다."}</p>}
       </div>

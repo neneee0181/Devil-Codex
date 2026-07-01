@@ -279,9 +279,34 @@ export function TerminalSession({
       view.paste(text);
       view.focus();
     };
+    const readClipboardText = async (): Promise<string> => {
+      let bridgeText: string | null = null;
+      let bridgeError: unknown;
+      try {
+        bridgeText = window.devilCodex.clipboardReadText();
+        if (bridgeText) return bridgeText;
+      } catch (reason) {
+        bridgeError = reason;
+      }
+      if (navigator.clipboard?.readText) {
+        try {
+          const webText = await navigator.clipboard.readText();
+          if (webText) return webText;
+        } catch {
+          // Fall back to the preload result/error below.
+        }
+      }
+      if (bridgeText !== null) return bridgeText;
+      throw bridgeError ?? new Error("Clipboard text read failed");
+    };
     pasteClipboard.current = () => {
-      try { pasteText(window.devilCodex.clipboardReadText()); }
-      catch { setError("클립보드 텍스트를 읽을 수 없습니다."); }
+      void (async () => {
+        try { pasteText(await readClipboardText()); }
+        catch {
+          setError("클립보드 텍스트를 읽을 수 없습니다.");
+          view.focus();
+        }
+      })();
     };
     copySelection.current = () => {
       const selection = view.getSelection();
@@ -303,9 +328,7 @@ export function TerminalSession({
       const command = event.ctrlKey || event.metaKey;
       const pasteCombo = (command && key === "v") || (event.ctrlKey && event.shiftKey && key === "v") || (event.shiftKey && key === "insert");
       if (pasteCombo) {
-        event.preventDefault();
-        pasteClipboard.current();
-        return false;
+        return true;
       }
       const copyCombo = command && key === "c";
       if (copyCombo && view.getSelection()) {
@@ -320,6 +343,7 @@ export function TerminalSession({
       const text = event.clipboardData?.getData("text/plain") ?? "";
       if (!text) return;
       event.preventDefault();
+      event.stopPropagation();
       pasteText(text);
     };
     const onCopy = (event: ClipboardEvent): void => {
@@ -332,7 +356,7 @@ export function TerminalSession({
       view.clearSelection();
       view.focus();
     };
-    hostEl.addEventListener("paste", onPaste);
+    hostEl.addEventListener("paste", onPaste, { capture: true });
     hostEl.addEventListener("copy", onCopy);
 
     void (async () => {
@@ -362,7 +386,7 @@ export function TerminalSession({
       stream();
       onData.dispose();
       resizeTimers.forEach(clearTimeout);
-      hostEl.removeEventListener("paste", onPaste);
+      hostEl.removeEventListener("paste", onPaste, { capture: true });
       hostEl.removeEventListener("copy", onCopy);
       if (sessionId.current) void window.devilCodex.closeTerminal({ id: sessionId.current });
       settleTimers.current.forEach((timer) => clearTimeout(timer));
