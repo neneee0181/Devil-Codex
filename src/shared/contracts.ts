@@ -17,6 +17,9 @@ export interface ThreadSummary {
   id: string;
   cwd: string;
   model: string;
+  provider?: ProviderId;
+  accountId?: string;
+  accountLabel?: string;
   title: string;
   preview: string;
   updatedAt: number;
@@ -133,13 +136,28 @@ export interface ProviderModelCapability {
   notes?: string[];
 }
 export interface ProviderModel { id: string; label: string; capability?: ProviderModelCapability; }
-export interface ProviderInfo { id: ProviderId; label: string; kind: "login" | "apikey"; keyRequired: boolean; models: ProviderModel[]; modelsLoaded: boolean; credentialSource: "desktop" | "environment" | "keychain" | "none"; authProvider?: "codex" | "claude" | "copilot" | "antigravity"; }
-export interface ProviderSettings { provider: ProviderId; model: string; providers: ProviderInfo[]; }
+export type ProviderCredentialSource = "desktop" | "environment" | "keychain" | "none";
+export type ProviderCredentialKind = "desktop" | "environment" | "credential" | "oauth" | "local";
+export interface ProviderAccount {
+  id: string;
+  provider: ProviderId;
+  label: string;
+  email?: string;
+  userId?: string;
+  credentialSource: ProviderCredentialSource;
+  credentialKind: ProviderCredentialKind;
+  models?: ProviderModel[];
+  modelsLoaded?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+export interface ProviderInfo { id: ProviderId; label: string; kind: "login" | "apikey"; keyRequired: boolean; models: ProviderModel[]; modelsLoaded: boolean; credentialSource: ProviderCredentialSource; authProvider?: "codex" | "claude" | "copilot" | "antigravity"; accounts: ProviderAccount[]; }
+export interface ProviderSettings { provider: ProviderId; model: string; accountId?: string; providers: ProviderInfo[]; }
 export interface SidecarSettings { webSearch: boolean; vision: boolean; webSearchLimit: number; visionLimit: number; }
 export interface ProviderAuthStatus { codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; }
 export interface DeviceCodeInfo { userCode: string; verificationUri: string; expiresIn: number; }
 export interface ProviderUsageWindow { label: string; usedPercent: number; remainingPercent: number; resetsAt?: string | number | null; }
-export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot" | "antigravity"; label: string; connected: boolean; windows: ProviderUsageWindow[]; unavailable?: string; error?: string; updatedAt: number; }
+export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot" | "antigravity"; label: string; connected: boolean; windows: ProviderUsageWindow[]; accountId?: string; accountLabel?: string; accountEmail?: string; unavailable?: string; error?: string; updatedAt: number; }
 export interface ProviderUsageReport { entries: ProviderUsageEntry[]; }
 export interface ProviderUsageChangedEvent { provider?: ProviderId | "unknown"; completed?: boolean; at: number; }
 export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; }
@@ -147,6 +165,8 @@ export interface ProviderRequestLogEntry {
   id: string;
   provider: ProviderId | "unknown";
   model: string;
+  accountId?: string;
+  accountLabel?: string;
   threadId?: string;
   route: string;
   status: "started" | "completed" | "failed";
@@ -256,7 +276,7 @@ export interface DevilCodexApi {
   connect: () => Promise<RuntimeStatus>;
   chooseWorkspace: () => Promise<string | null>;
   createProjectFolder: (input?: { name?: string }) => Promise<string>;
-  createThread: (input: { cwd: string; model: string; provider?: ProviderId; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<ThreadRef>;
+  createThread: (input: { cwd: string; model: string; provider?: ProviderId; accountId?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<ThreadRef>;
   listThreads: (input: { cwd: string; archived?: boolean }) => Promise<ThreadSummary[]>;
   searchThreads: (input: { query: string; archived?: boolean }) => Promise<ThreadSummary[]>;
   resumeThread: (input: { id: string; model: string }) => Promise<ThreadRef>;
@@ -308,23 +328,23 @@ export interface DevilCodexApi {
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
   translate: (input: { text: string; to?: string; from?: string }) => Promise<string>;
   loadProviderSettings: () => Promise<ProviderSettings>;
-  selectProvider: (input: { provider: ProviderId; model: string }) => Promise<ProviderSettings>;
-  saveProviderKey: (input: { provider: ProviderId; key: string }) => Promise<ProviderSettings>;
-  clearProviderKey: (input: { provider: ProviderId }) => Promise<ProviderSettings>;
-  refreshProviderModels: (input: { provider: Exclude<ProviderId, "codex"> }) => Promise<ProviderSettings>;
+  selectProvider: (input: { provider: ProviderId; model: string; accountId?: string }) => Promise<ProviderSettings>;
+  saveProviderKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<ProviderSettings>;
+  clearProviderKey: (input: { provider: ProviderId; accountId?: string }) => Promise<ProviderSettings>;
+  refreshProviderModels: (input: { provider: Exclude<ProviderId, "codex">; accountId?: string }) => Promise<ProviderSettings>;
   listCodexModels: () => Promise<ProviderModel[]>;
   newChatCwd: () => Promise<string>;
   providerAuthStatus: () => Promise<ProviderAuthStatus>;
-  providerLogin: (input: { provider: "codex" | "claude" | "copilot" | "antigravity" }) => Promise<DeviceCodeInfo | null>;
-  providerLogout: (input: { provider: "codex" | "claude" | "copilot" | "antigravity" }) => Promise<ProviderAuthStatus>;
-  providerOauthModels: (input: { provider: "copilot" | "claude-code" | "antigravity" }) => Promise<ProviderModel[]>;
+  providerLogin: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<DeviceCodeInfo | null>;
+  providerLogout: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<ProviderAuthStatus>;
+  providerOauthModels: (input: { provider: "copilot" | "claude-code" | "antigravity"; accountId?: string }) => Promise<ProviderModel[]>;
   providerUsage: () => Promise<ProviderUsageReport>;
   providerRequestLog: () => Promise<ProviderRequestLogEntry[]>;
   onProviderAuth: (listener: (status: ProviderAuthStatus) => void) => () => void;
   onProviderUsageChanged: (listener: (event: ProviderUsageChangedEvent) => void) => () => void;
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
   respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
-  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; retriedAfterCompaction?: boolean }) => Promise<void>;
+  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; accountId?: string; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; retriedAfterCompaction?: boolean }) => Promise<void>;
   interruptTurn: (input: { threadId: string; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;

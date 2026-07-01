@@ -7,6 +7,7 @@ type ExternalProvider = Exclude<ProviderId, "codex">;
 type ProviderTurn = {
   provider: ExternalProvider;
   model: string;
+  accountId?: string;
   threadId: string;
   text: string;
   onDelta?: (delta: string) => void;
@@ -132,9 +133,9 @@ export class ProviderRuntime {
   }
 
   private async dispatch(input: ProviderTurn, signal: AbortSignal): Promise<Response> {
-    if (input.provider === "copilot") return copilotChat(input.model, input.text, signal);
-    if (input.provider === "claude-code") return claudeChat(input.model, input.text, signal);
-    const key = await this.settings.readApiKey(input.provider);
+    if (input.provider === "copilot") return copilotChat(input.model, input.text, signal, input.accountId);
+    if (input.provider === "claude-code") return claudeChat(input.model, input.text, signal, input.accountId);
+    const key = await this.settings.readApiKey(input.provider, input.accountId);
     return this.request(input, key, signal);
   }
 

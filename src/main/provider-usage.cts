@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProviderAuthStatus, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
+import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
 import { antigravityUsage } from "./provider-antigravity.cjs";
 
@@ -131,18 +131,24 @@ function tokenSubject(token: string | null): string {
   return token ? createHash("sha256").update(token).digest("hex").slice(0, 16) : "missing";
 }
 
+function cacheKey(provider: ProviderUsageEntry["provider"], subject?: string): string {
+  return `${provider}:${subject ?? "default"}`;
+}
+
 function cached(provider: ProviderUsageEntry["provider"], subject?: string): ProviderUsageEntry | null {
-  const item = cache.get(provider);
+  const item = cache.get(cacheKey(provider, subject));
   return item && item.subject === subject && Date.now() - item.ts < CACHE_TTL_MS ? item.entry : null;
 }
 
 function remember(entry: ProviderUsageEntry, subject?: string): ProviderUsageEntry {
-  cache.set(entry.provider, { entry, ts: Date.now(), subject });
+  cache.set(cacheKey(entry.provider, subject), { entry, ts: Date.now(), subject });
   return entry;
 }
 
 export function clearProviderUsageCache(provider?: ProviderUsageEntry["provider"]): void {
-  if (provider) cache.delete(provider);
+  if (provider) {
+    for (const key of cache.keys()) if (key.startsWith(`${provider}:`)) cache.delete(key);
+  }
   else cache.clear();
 }
 
@@ -193,21 +199,29 @@ async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null
   }
 }
 
-async function claudeUsage(connected: boolean): Promise<ProviderUsageEntry | null> {
+function accountFields(account?: ProviderAccount): Pick<ProviderUsageEntry, "accountId" | "accountLabel" | "accountEmail"> {
+  return {
+    ...(account?.id ? { accountId: account.id } : {}),
+    ...(account?.label ? { accountLabel: account.label } : {}),
+    ...(account?.email ? { accountEmail: account.email } : {}),
+  };
+}
+
+async function claudeUsage(connected: boolean, account?: ProviderAccount): Promise<ProviderUsageEntry | null> {
   if (!connected) return null;
-  const token = await claudeAccessTokenForUsage();
+  const token = await claudeAccessTokenForUsage(account?.id);
   const subject = tokenSubject(token);
   const hit = cached("claude-code", subject);
   if (hit) return hit;
   if (!token) {
-    return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], unavailable: "Claude Code OAuth 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
+    return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], ...accountFields(account), unavailable: "Claude Code OAuth 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
   }
   try {
     const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], error: `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
+    if (!res.ok) return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], ...accountFields(account), error: `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
     const data = await res.json() as Record<string, unknown>;
     const fiveHour = data.five_hour as Record<string, unknown> | undefined;
     const sevenDay = data.seven_day as Record<string, unknown> | undefined;
@@ -215,30 +229,40 @@ async function claudeUsage(connected: boolean): Promise<ProviderUsageEntry | nul
       fiveHour ? windowEntry("5시간", fiveHour.utilization, fiveHour.resets_at) : null,
       sevenDay ? windowEntry("7일", sevenDay.utilization, sevenDay.resets_at) : null,
     ].filter(Boolean) as ProviderUsageWindow[];
-    return remember({ provider: "claude-code", label: "Claude Code", connected, windows, unavailable: windows.length ? undefined : "Claude Code 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+    return remember({ provider: "claude-code", label: "Claude Code", connected, windows, ...accountFields(account), unavailable: windows.length ? undefined : "Claude Code 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
   } catch (error) {
-    return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
+    return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], ...accountFields(account), error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
   }
 }
 
-function copilotUsage(connected: boolean): ProviderUsageEntry | null {
+function copilotUsage(connected: boolean, account?: ProviderAccount): ProviderUsageEntry | null {
   if (!connected) return null;
   return {
     provider: "copilot",
     label: "GitHub Copilot",
     connected,
     windows: [],
+    ...accountFields(account),
     unavailable: "GitHub Copilot은 현재 rcodex/opencodex 기준으로 구독 사용량 조회 API가 확인되지 않았습니다.",
     updatedAt: Date.now(),
   };
 }
 
-export async function providerUsageReport(auth: ProviderAuthStatus): Promise<ProviderUsageReport> {
+function accounts(settings: ProviderSettings | undefined, provider: ProviderUsageEntry["provider"]): ProviderAccount[] {
+  return settings?.providers.find((item) => item.id === provider)?.accounts ?? [];
+}
+
+export async function providerUsageReport(auth: ProviderAuthStatus, settings?: ProviderSettings): Promise<ProviderUsageReport> {
+  const claudeAccounts = accounts(settings, "claude-code");
+  const copilotAccounts = accounts(settings, "copilot");
+  const antigravityAccounts = accounts(settings, "antigravity");
   const entries = (await Promise.all([
     codexUsage(auth.codex),
-    claudeUsage(auth.claude),
-    Promise.resolve(copilotUsage(auth.copilot)),
-    auth.antigravity ? antigravityUsage(true) : Promise.resolve(null),
+    ...(claudeAccounts.length ? claudeAccounts.map((account) => claudeUsage(auth.claude, account)) : [claudeUsage(auth.claude)]),
+    ...(copilotAccounts.length ? copilotAccounts.map((account) => Promise.resolve(copilotUsage(auth.copilot, account))) : [Promise.resolve(copilotUsage(auth.copilot))]),
+    ...(auth.antigravity
+      ? (antigravityAccounts.length ? antigravityAccounts.map((account) => antigravityUsage(true, account.id)) : [antigravityUsage(true)])
+      : [Promise.resolve(null)]),
   ])).filter(Boolean) as ProviderUsageEntry[];
   return { entries };
 }

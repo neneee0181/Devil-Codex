@@ -21,6 +21,7 @@ import { claudeAuth, copilotBearer, oauthModels } from "../provider-oauth.cjs";
 import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
 import { apiProviderConfig, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
+import { getStoredAccount } from "../provider-accounts.cjs";
 
 const CHATGPT_CODEX_RESPONSES = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -95,11 +96,14 @@ function providerLabel(provider: ProxyProvider): string {
   return provider;
 }
 
-function splitModel(id: string): { provider: ProxyProvider; model: string } {
+function splitModel(id: string): { provider: ProxyProvider; accountId?: string; model: string } {
   const sep = id.indexOf(":");
   if (sep > 0) {
-    const p = id.slice(0, sep);
-    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, model: id.slice(sep + 1) };
+    const rawProvider = id.slice(0, sep);
+    const accountSep = rawProvider.indexOf("@");
+    const p = accountSep >= 0 ? rawProvider.slice(0, accountSep) : rawProvider;
+    const accountId = accountSep >= 0 ? decodeURIComponent(rawProvider.slice(accountSep + 1)) : undefined;
+    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, accountId, model: id.slice(sep + 1) };
   }
   // Fallback by name shape.
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
@@ -117,7 +121,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model);
+  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^:]+)?:/.test(model);
 }
 
 function redactSensitiveText(text: string): string {
@@ -262,32 +266,33 @@ async function handleNativeResponses(req: IncomingMessage, raw: string, res: Ser
 
 async function providerEventStream(
   provider: ProxyProvider,
+  accountId: string | undefined,
   parsed: OcxParsedRequest,
   signal: AbortSignal,
 ): Promise<AsyncGenerator<AdapterEvent>> {
   let upstream: Response;
   if (provider === "claude-code") {
-    const auth = await claudeAuth();
+    const auth = await claudeAuth(accountId);
     if (!auth) throw new Error("Claude Code 로그인이 필요합니다.");
     const reqInit = buildAnthropicRequest(parsed, auth);
     upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
     return streamAnthropic(upstream);
   }
   if (provider === "copilot") {
-    const bearer = await copilotBearer();
+    const bearer = await copilotBearer(accountId);
     if (!bearer) throw new Error("GitHub Copilot 로그인이 필요합니다.");
     const reqInit = buildCopilotRequest(parsed, bearer);
     upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
     return streamCopilot(upstream);
   }
   if (provider === "antigravity") {
-    const auth = await antigravityAuth();
+    const auth = await antigravityAuth(accountId);
     if (!auth) throw new Error("Antigravity 로그인이 필요합니다.");
     const reqInit = buildAntigravityRequest(parsed, auth);
     upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
     return streamAntigravity(upstream);
   }
-  const key = await providerSettings.readApiKey(provider);
+  const key = await providerSettings.readApiKey(provider, accountId);
   const reqInit = provider === "anthropic" ? buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
   upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
   return provider === "google" ? streamGoogle(upstream) : provider === "anthropic" ? streamAnthropic(upstream) : streamOpenAiCompatible(providerLabel(provider), upstream);
@@ -295,13 +300,14 @@ async function providerEventStream(
 
 async function streamForProvider(input: {
   provider: ProxyProvider;
+  accountId?: string;
   parsed: OcxParsedRequest;
   req: IncomingMessage;
   sidecars: { settings?: SidecarSettings; stats: SidecarStats };
   signal: AbortSignal;
 }): Promise<AsyncGenerator<AdapterEvent>> {
-  const { provider, parsed, req, sidecars, signal } = input;
-  const invoke = (next: OcxParsedRequest) => providerEventStream(provider, next, signal);
+  const { provider, accountId, parsed, req, sidecars, signal } = input;
+  const invoke = (next: OcxParsedRequest) => providerEventStream(provider, accountId, next, signal);
   if (sidecars.settings?.vision && (sidecars.settings.visionLimit || 0) > 0 && !usesNativeImages(provider)) {
     await applyVisionSidecar({ parsed, req, sidecars: sidecars.settings, stats: sidecars.stats, signal });
   }
@@ -317,7 +323,7 @@ async function streamForProvider(input: {
 
 async function handleExternalResponses(req: IncomingMessage, body: unknown, res: ServerResponse): Promise<void> {
   const parsed = parseRequest(body);
-  const { provider, model } = splitModel(parsed.model);
+  const { provider, accountId, model } = splitModel(parsed.model);
   parsed.model = model;
   const controller = new AbortController();
   res.on("close", () => controller.abort());
@@ -326,10 +332,13 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   const stats = requestPartStats(parsed);
   const startedAt = Date.now();
   const requestId = crypto.randomUUID();
+  const account = accountId ? await getStoredAccount(provider, accountId).catch(() => null) : null;
   startRequestLog({
     id: requestId,
     provider,
     model,
+    ...(accountId ? { accountId } : {}),
+    ...(account?.label ? { accountLabel: account.label } : {}),
     ...(threadId ? { threadId } : {}),
     route: "devil proxy + reconcile",
     status: "started",
@@ -346,7 +355,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   let failureType = "";
   let usage: ProviderRequestLogEntry["usage"] | undefined;
   try {
-    stream = await streamForProvider({ provider, parsed, req, sidecars, signal: controller.signal });
+    stream = await streamForProvider({ provider, accountId, parsed, req, sidecars, signal: controller.signal });
   } catch (error) {
     failureMessage = redactSensitiveText(error instanceof Error ? error.message : String(error));
     stream = (async function* () { yield { type: "error", message: failureMessage } as AdapterEvent; })();
@@ -415,19 +424,23 @@ async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: {
 }
 
 async function handleModels(res: ServerResponse): Promise<void> {
-  const [claude, copilot, antigravity, settings] = await Promise.all([
-    oauthModels("claude-code").catch(() => []),
-    oauthModels("copilot").catch(() => []),
-    antigravityModels().catch(() => []),
-    providerSettings.load(),
-  ]);
-  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && (provider.keyRequired ? provider.credentialSource !== "none" && provider.modelsLoaded : provider.modelsLoaded));
-  const data = [
-    ...claude.map((m) => ({ id: `claude-code:${m.id}`, object: "model", owned_by: "anthropic" })),
-    ...copilot.map((m) => ({ id: `copilot:${m.id}`, object: "model", owned_by: "github" })),
-    ...antigravity.map((m) => ({ id: `antigravity:${m.id}`, object: "model", owned_by: "google" })),
-    ...apiProviders.flatMap((provider) => provider.models.map((model) => ({ id: `${provider.id}:${model.id}`, object: "model", owned_by: provider.id }))),
-  ];
+  const settings = await providerSettings.load();
+  const routedId = (provider: ProviderId, accountId: string | undefined, model: string): string => `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
+  const loginRows = (await Promise.all(settings.providers
+    .filter((provider) => provider.kind === "login" && provider.id !== "codex")
+    .flatMap((provider) => provider.accounts.map(async (account) => {
+      const models = provider.id === "antigravity"
+        ? await antigravityModels(account.id).catch(() => [])
+        : await oauthModels(provider.id as "copilot" | "claude-code", account.id).catch(() => []);
+      const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : "anthropic";
+      return models.map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: owner }));
+    })))).flat();
+  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && (provider.keyRequired ? provider.accounts.length > 0 : provider.modelsLoaded));
+  const apiRows = apiProviders.flatMap((provider) => {
+    const accounts = provider.accounts.length ? provider.accounts : [{ id: undefined, models: provider.models }] as Array<{ id?: string; models?: typeof provider.models }>;
+    return accounts.flatMap((account) => (account.models?.length ? account.models : provider.models).map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: provider.id })));
+  });
+  const data = [...loginRows, ...apiRows];
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ object: "list", data }));
 }

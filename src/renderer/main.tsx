@@ -41,7 +41,7 @@ type ProjectSortMode = "manual" | "created" | "updated";
 type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
 type EnvironmentSource = { url: string; label: string };
 type ShellMenuKey = "file" | "edit" | "view" | "help";
-type SentModelState = { provider: ProviderId; model: string };
+type SentModelState = { provider: ProviderId; accountId?: string; model: string };
 type ThreadScrollPosition = { top: number; atBottom: boolean; updatedAt: number };
 
 const defaultStatus: RuntimeStatus = {
@@ -244,8 +244,8 @@ function responseSpeedLabel(value: ResponseSpeed): string {
 function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatus["state"]): boolean {
   if (!provider) return false;
   if (provider.id === "codex") return runtimeState === "connected";
-  if (provider.kind === "login") return provider.modelsLoaded;
-  return provider.keyRequired ? provider.credentialSource !== "none" && provider.modelsLoaded : provider.modelsLoaded;
+  if (provider.kind === "login") return provider.accounts.length > 0 && provider.modelsLoaded;
+  return provider.keyRequired ? provider.accounts.length > 0 && provider.modelsLoaded : provider.modelsLoaded;
 }
 
 function readLastSentModels(): Record<string, SentModelState> {
@@ -258,7 +258,7 @@ function readLastSentModels(): Record<string, SentModelState> {
 }
 
 function modelKey(value: SentModelState): string {
-  return `${value.provider}:${value.model}`;
+  return `${value.provider}:${value.accountId ?? "default"}:${value.model}`;
 }
 
 function agentMessageKey(item: ThreadHistoryItem): string {
@@ -292,6 +292,7 @@ type PendingTurnState = {
   text: string;
   model: string;
   provider?: ProviderId;
+  accountId?: string;
   skills?: Array<{ name: string; path: string }>;
   attachments?: string[];
   attachmentDetails?: ThreadAttachment[];
@@ -434,10 +435,10 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
   const rows = new Map<string, ThreadUsageModel>();
   for (const entry of input.requestLog) {
     if (!input.threadId || !entry.threadId || entry.threadId !== input.threadId) continue;
-    const key = `${entry.provider}:${entry.model}`;
+    const key = `${entry.provider}:${entry.accountId ?? "default"}:${entry.model}`;
     const row = rows.get(key) ?? {
       key,
-      label: `${providerDisplayName(entry.provider, input.providers)} · ${entry.model || "unknown"}`,
+      label: `${providerDisplayName(entry.provider, input.providers)}${entry.accountLabel ? ` · ${entry.accountLabel}` : ""} · ${entry.model || "unknown"}`,
       provider: entry.provider,
       model: entry.model || "unknown",
       requests: 0,
@@ -502,8 +503,9 @@ function App(): React.JSX.Element {
   const codexSettings = useCodexSettings();
   const englishOutput = Boolean(codexSettings.settings?.englishOutput);
   const model = providers.settings?.model ?? "gpt-5.4";
+  const accountId = providers.settings?.accountId;
   const activeProvider = providers.settings?.providers.find((provider) => provider.id === providers.settings?.provider) ?? null;
-  const setModel = (next: { provider: ProviderId; model: string }): void => { void providers.select(next); };
+  const setModel = (next: { provider: ProviderId; accountId?: string; model: string }): void => { void providers.select(next); };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
   const setReasoningEffort = (value: ReasoningEffort): void => {
@@ -1112,21 +1114,23 @@ function App(): React.JSX.Element {
 
   function modelDisplayName(input: SentModelState): string {
     const provider = providers.settings?.providers.find((item) => item.id === input.provider);
-    const modelInfo = provider?.models.find((item) => item.id === input.model);
+    const account = provider?.accounts.find((item) => item.id === input.accountId);
+    const modelInfo = (account?.models?.length ? account.models : provider?.models)?.find((item) => item.id === input.model);
     const label = modelInfo?.label || input.model;
-    return input.provider === "codex" ? label : `${provider?.label ?? input.provider} ${label}`;
+    const accountLabel = account ? `${account.email || account.label || account.id} · ` : "";
+    return input.provider === "codex" ? label : `${provider?.label ?? input.provider} ${accountLabel}${label}`;
   }
 
-  function rememberThreadModel(threadId: string, provider: ProviderId, nextModel: string): void {
+  function rememberThreadModel(threadId: string, provider: ProviderId, nextModel: string, nextAccountId?: string): void {
     if (!threadId || !nextModel) return;
-    lastSentModels.current = { ...lastSentModels.current, [threadId]: { provider, model: nextModel } };
+    lastSentModels.current = { ...lastSentModels.current, [threadId]: { provider, accountId: nextAccountId, model: nextModel } };
     localStorage.setItem(LAST_SENT_MODELS_KEY, JSON.stringify(lastSentModels.current));
   }
 
-  function modelChangeItemForThread(threadId: string, provider: ProviderId, nextModel: string): ThreadHistoryItem | null {
-    const next = { provider, model: nextModel };
+  function modelChangeItemForThread(threadId: string, provider: ProviderId, nextModel: string, nextAccountId?: string): ThreadHistoryItem | null {
+    const next = { provider, accountId: nextAccountId, model: nextModel };
     const previous = lastSentModels.current[threadId];
-    rememberThreadModel(threadId, provider, nextModel);
+    rememberThreadModel(threadId, provider, nextModel, nextAccountId);
     if (!previous || modelKey(previous) === modelKey(next)) return null;
     return {
       id: `model-change-${threadId}-${Date.now()}`,
@@ -1201,7 +1205,7 @@ function App(): React.JSX.Element {
     if (!next) return;
     if (queue.length === 0) queuedTurns.current.delete(threadId);
     syncQueuedView(threadId);
-    const modelNotice = modelChangeItemForThread(threadId, next.pending.provider ?? "codex", next.pending.model);
+    const modelNotice = modelChangeItemForThread(threadId, next.pending.provider ?? "codex", next.pending.model, next.pending.accountId);
     if (modelNotice) appendItemToThread(threadId, modelNotice);
     appendItemToThread(threadId, next.userItem);
     pendingTurn.current = next.pending;
@@ -1787,7 +1791,7 @@ function App(): React.JSX.Element {
     setProjects((current) => current.map((group) => ({ ...group, threads: group.threads.map((summary) => summary.id === threadId ? { ...summary, title } : summary) })));
   }
 
-  async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; model?: string; replaceFromItemId?: string; contextPrefix?: string } = {}): Promise<void> {
+  async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; accountId?: string; model?: string; replaceFromItemId?: string; contextPrefix?: string } = {}): Promise<void> {
     const attachmentContext = attachmentContextForModel(input.attachments);
     const imageAttachments = input.attachments.filter((item) => item.kind === "image").map((item) => item.url ?? item.path);
     const attachmentDetails = displayAttachments(input.attachments);
@@ -1798,6 +1802,7 @@ function App(): React.JSX.Element {
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = options.provider ?? providers.settings?.provider ?? "codex";
+    const sendAccountId = options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
     const sendModel = options.model ?? model;
     if (!text || !workspace || (provider === "codex" && runtime.state !== "connected")) return;
     const permissions = input.approvalMode === "full"
@@ -1820,7 +1825,7 @@ function App(): React.JSX.Element {
     }
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -1828,15 +1833,15 @@ function App(): React.JSX.Element {
     if (options.forceNewThread) navigate({ view: "thread", thread: null, items: [], projectDraft: true, environmentOpen: false });
     const editedVisibleItems = replacingFromEdit ? [...itemsRef.current.slice(0, replaceIndex), userItem] : null;
     const existingThreadId = !options.forceNewThread && !replacingFromEdit ? thread?.id : undefined;
-    const modelNotice = existingThreadId ? modelChangeItemForThread(existingThreadId, provider, sendModel) : null;
+    const modelNotice = existingThreadId ? modelChangeItemForThread(existingThreadId, provider, sendModel, sendAccountId) : null;
     const visibleTurnItems = modelNotice ? [modelNotice, userItem] : [userItem];
     setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, ...visibleTurnItems]));
     setBusy(true);
     try {
-      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, ...permissions, ...turnOptions });
+      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
       threadRef.current = activeThread;
       setThread(activeThread);
-      if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel);
+      if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
         const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
@@ -1848,7 +1853,7 @@ function App(): React.JSX.Element {
         hideThreadIdLocally(replacedThread.id);
       }
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       pendingTurn.current = pending;
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
@@ -2586,7 +2591,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} accountId={accountId} providers={providers.settings?.providers ?? []} codexConnected={runtime.state === "connected"} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -3048,7 +3053,7 @@ function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUs
         : entry.unavailable ?? "";
   return <motion.div className="account-usage-panel" initial={{ opacity: 0, height: 0, y: -4 }} animate={{ opacity: 1, height: "auto", y: 0 }} exit={{ opacity: 0, height: 0, y: -4 }} transition={{ duration: .16 }}>
     {entry?.windows.length ? <>
-      {entry.label !== "Codex" && <small className="account-usage-provider">{entry.label}</small>}
+      {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
         <span>{Math.round(window.remainingPercent)}%</span>

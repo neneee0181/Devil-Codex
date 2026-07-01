@@ -1,10 +1,11 @@
-import { app, safeStorage, shell } from "electron";
+import { shell } from "electron";
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { unlink, writeFile } from "node:fs/promises";
+import type { ProviderAccount } from "./contracts.cjs";
+import { createAccountId, defaultAccountId, deleteAllStoredAccounts, deleteStoredAccount, getStoredAccount, legacySecretPath, listStoredAccounts, migrateLegacySecret, readJsonSecret, upsertStoredAccount, writeJsonSecret } from "./provider-accounts.cjs";
 
 // In-app OAuth for providers that have their own login (no external CLI):
 //   GitHub Copilot — GitHub device flow → copilot token
@@ -34,27 +35,39 @@ const COPILOT_FALLBACK_MODELS = [
 ];
 const COPILOT_BLOCKED_MODEL_IDS = new Set(["gpt-5.4"]);
 
-function root(): string { return join(app.getPath("userData"), "providers"); }
-function tokenPath(provider: OAuthProvider): string { return join(root(), `${provider}.oauth`); }
 // After an explicit Claude logout, suppress the auto-detect that would otherwise
 // re-import Claude Code's own credentials and silently log the user back in.
-const claudeOptOutPath = (): string => join(root(), "claude-code.logout");
+const claudeOptOutPath = (): string => legacySecretPath("claude-code", "oauth").replace(/\.oauth$/, ".logout");
 function claudeOptedOut(): boolean { return existsSync(claudeOptOutPath()); }
 let claudeLoginInProgress = false;
 
-async function writeToken(provider: OAuthProvider, value: unknown): Promise<void> {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("이 시스템에서 OS Keychain 암호화를 사용할 수 없습니다.");
-  await mkdir(root(), { recursive: true });
-  await writeFile(tokenPath(provider), safeStorage.encryptString(JSON.stringify(value)).toString("base64"), { mode: 0o600 });
+async function migrateOAuth(provider: OAuthProvider): Promise<void> {
+  await migrateLegacySecret({ provider, kind: "oauth", label: provider === "copilot" ? "GitHub Copilot 기본" : "Claude Code 기본", credentialKind: "oauth" });
 }
-async function readToken<T>(provider: OAuthProvider): Promise<T | null> {
-  const path = tokenPath(provider);
-  if (!existsSync(path)) return null;
-  try { return JSON.parse(safeStorage.decryptString(Buffer.from((await readFile(path, "utf8")).trim(), "base64"))) as T; }
-  catch { return null; }
+
+async function selectedAccountId(provider: OAuthProvider, accountId?: string): Promise<string> {
+  await migrateOAuth(provider);
+  if (accountId) return accountId;
+  return (await getStoredAccount(provider))?.id ?? defaultAccountId();
 }
-async function deleteToken(provider: OAuthProvider): Promise<void> {
-  if (existsSync(tokenPath(provider))) await unlink(tokenPath(provider));
+
+async function writeToken(provider: OAuthProvider, value: unknown, account: Partial<ProviderAccount> = {}): Promise<string> {
+  await migrateOAuth(provider);
+  const id = account.id ?? await createAccountId(provider, account.email || account.userId || account.label || provider);
+  const label = account.email || account.label || (provider === "copilot" ? "GitHub Copilot 계정" : "Claude Code 계정");
+  await writeJsonSecret(provider, id, "oauth", value);
+  await upsertStoredAccount({ id, provider, label, email: account.email, userId: account.userId, credentialSource: "keychain", credentialKind: "oauth" });
+  return id;
+}
+
+async function readToken<T>(provider: OAuthProvider, accountId?: string): Promise<T | null> {
+  return readJsonSecret<T>(provider, await selectedAccountId(provider, accountId), "oauth");
+}
+
+async function deleteToken(provider: OAuthProvider, accountId?: string): Promise<void> {
+  await migrateOAuth(provider);
+  if (accountId) await deleteStoredAccount(provider, accountId);
+  else await deleteAllStoredAccounts(provider);
 }
 
 // ---------- GitHub Copilot device flow ----------
@@ -97,6 +110,23 @@ async function pollCopilotDevice(deviceCode: string, intervalSec: number, expire
   throw new Error("GitHub Copilot 로그인 시간이 초과되었습니다.");
 }
 
+async function copilotIdentity(githubToken: string): Promise<Pick<ProviderAccount, "label" | "email" | "userId">> {
+  try {
+    const res = await fetch(`${GH_API}/user`, {
+      headers: { Authorization: `token ${githubToken}`, "User-Agent": "GithubCopilot/1.155.0", accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { label: "GitHub Copilot 계정" };
+    const data = await res.json() as { login?: string; email?: string; id?: number | string };
+    const email = typeof data.email === "string" && data.email ? data.email.toLowerCase() : undefined;
+    const userId = data.id != null ? String(data.id) : undefined;
+    const label = email || data.login || userId || "GitHub Copilot 계정";
+    return { label, email, userId };
+  } catch {
+    return { label: "GitHub Copilot 계정" };
+  }
+}
+
 async function getCopilotToken(githubToken: string): Promise<string> {
   const cached = copilotTokenCache.get(githubToken);
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
@@ -119,6 +149,20 @@ async function getCopilotToken(githubToken: string): Promise<string> {
 }
 
 // ---------- Claude Code OAuth (PKCE) ----------
+function decodeJwtPayload(token: string | undefined): Record<string, unknown> | undefined {
+  const part = token?.split(".")[1];
+  if (!part) return undefined;
+  try { return JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<string, unknown>; }
+  catch { return undefined; }
+}
+
+function claudeIdentity(token: ClaudeToken): Pick<ProviderAccount, "label" | "email" | "userId"> {
+  const payload = decodeJwtPayload(token.accessToken);
+  const email = typeof payload?.email === "string" && payload.email ? payload.email.toLowerCase() : undefined;
+  const userId = typeof payload?.sub === "string" && payload.sub ? payload.sub : undefined;
+  return { label: email || userId || "Claude Code 계정", email, userId };
+}
+
 function detectClaudeCodeToken(): ClaudeToken | null {
   if (process.platform !== "darwin") return null;
   try {
@@ -196,17 +240,17 @@ async function refreshClaudeToken(refreshToken: string): Promise<ClaudeToken> {
   return { accessToken: data.access_token, refreshToken: data.refresh_token ?? refreshToken, expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000 - 60_000 };
 }
 
-async function readClaudeToken(): Promise<ClaudeToken | null> {
-  let stored = await readToken<ClaudeToken>("claude-code");
+async function readClaudeToken(accountId?: string): Promise<ClaudeToken | null> {
+  let stored = await readToken<ClaudeToken>("claude-code", accountId);
   if ((!stored?.accessToken || !stored.refreshToken) && !claudeOptedOut() && !claudeLoginInProgress) {
     stored = detectClaudeCodeToken();
-    if (stored) await writeToken("claude-code", stored);
+    if (stored && !accountId) await writeToken("claude-code", stored, { id: defaultAccountId(), ...claudeIdentity(stored) });
   }
   if (!stored?.accessToken || !stored.refreshToken) return stored;
   if (stored.expiresAt && stored.expiresAt > Date.now() + 60_000) return stored;
   try {
     const fresh = await refreshClaudeToken(stored.refreshToken);
-    await writeToken("claude-code", { ...stored, ...fresh });
+    await writeToken("claude-code", { ...stored, ...fresh }, { id: accountId ?? (await selectedAccountId("claude-code")), ...claudeIdentity({ ...stored, ...fresh }) });
     return { ...stored, ...fresh };
   } catch {
     return stored;
@@ -218,22 +262,22 @@ function copilotHeaders(token: string): Record<string, string> {
 }
 
 // ---------- Raw credentials for the local Codex Responses proxy ----------
-export async function claudeAuth(): Promise<{ apiKey?: string; accessToken?: string } | null> {
-  const stored = await readClaudeToken();
+export async function claudeAuth(accountId?: string): Promise<{ apiKey?: string; accessToken?: string } | null> {
+  const stored = await readClaudeToken(accountId);
   if (!stored) return null;
   // Prefer the official Claude Code OAuth bearer token. A created API key can
   // bill/authorize differently from the user's Claude Code subscription.
   return stored.accessToken ? { accessToken: stored.accessToken } : { apiKey: stored.apiKey };
 }
 
-export async function claudeAccessTokenForUsage(): Promise<string | null> {
-  const stored = await readClaudeToken();
+export async function claudeAccessTokenForUsage(accountId?: string): Promise<string | null> {
+  const stored = await readClaudeToken(accountId);
   return stored?.accessToken ?? null;
 }
 
 export const copilotChatHeaders = copilotHeaders;
-export async function copilotBearer(): Promise<string | null> {
-  const stored = await readToken<CopilotToken>("copilot");
+export async function copilotBearer(accountId?: string): Promise<string | null> {
+  const stored = await readToken<CopilotToken>("copilot", accountId);
   if (!stored?.githubToken) return null;
   return getCopilotToken(stored.githubToken);
 }
@@ -241,8 +285,8 @@ export async function copilotBearer(): Promise<string | null> {
 // ---------- Chat credentials/requests for the runtime ----------
 const CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-export async function claudeChat(model: string, text: string, signal: AbortSignal): Promise<Response> {
-  const stored = await readClaudeToken();
+export async function claudeChat(model: string, text: string, signal: AbortSignal, accountId?: string): Promise<Response> {
+  const stored = await readClaudeToken(accountId);
   if (!stored) throw new Error("Claude Code 로그인이 필요합니다.");
   const headers: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   const body: Record<string, unknown> = { model, max_tokens: 8192, stream: true, messages: [{ role: "user", content: text }] };
@@ -261,8 +305,8 @@ export async function claudeChat(model: string, text: string, signal: AbortSigna
   return fetch(`${ANTHROPIC_API}/messages`, { method: "POST", signal, headers, body: JSON.stringify(body) });
 }
 
-export async function copilotChat(model: string, text: string, signal: AbortSignal): Promise<Response> {
-  const stored = await readToken<CopilotToken>("copilot");
+export async function copilotChat(model: string, text: string, signal: AbortSignal, accountId?: string): Promise<Response> {
+  const stored = await readToken<CopilotToken>("copilot", accountId);
   if (!stored?.githubToken) throw new Error("GitHub Copilot 로그인이 필요합니다.");
   const token = await getCopilotToken(stored.githubToken);
   return fetch(`${COPILOT_API}/chat/completions`, { method: "POST", signal, headers: copilotHeaders(token), body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: text }] }) });
@@ -270,8 +314,9 @@ export async function copilotChat(model: string, text: string, signal: AbortSign
 
 // ---------- Public API ----------
 export async function oauthStatus(): Promise<{ copilot: boolean; claude: boolean }> {
-  const [copilot, claude] = await Promise.all([readToken<CopilotToken>("copilot"), readClaudeToken()]);
-  return { copilot: Boolean(copilot?.githubToken), claude: Boolean(claude?.apiKey || (claude?.accessToken && claude.refreshToken)) };
+  await Promise.all([migrateOAuth("copilot"), migrateOAuth("claude-code")]);
+  const [copilotAccounts, claudeAccounts, claude] = await Promise.all([listStoredAccounts("copilot"), listStoredAccounts("claude-code"), readClaudeToken()]);
+  return { copilot: copilotAccounts.length > 0, claude: claudeAccounts.length > 0 || Boolean(claude?.apiKey || (claude?.accessToken && claude.refreshToken)) };
 }
 
 // Kicks off login; for copilot returns the device code to show the user while a
@@ -284,7 +329,7 @@ export async function oauthLogin(provider: OAuthProvider, onDone: () => void): P
     void (async () => {
       try {
         const githubToken = await pollCopilotDevice(device.deviceCode, device.interval, device.expiresIn);
-        await writeToken("copilot", { githubToken } satisfies CopilotToken);
+        await writeToken("copilot", { githubToken } satisfies CopilotToken, await copilotIdentity(githubToken));
       } catch { /* surfaced via status staying false */ }
       finally { onDone(); }
     })();
@@ -300,22 +345,23 @@ export async function oauthLogin(provider: OAuthProvider, onDone: () => void): P
     try {
       const code = await wait;
       if (existsSync(claudeOptOutPath())) await unlink(claudeOptOutPath()).catch(() => undefined);
-      await writeToken("claude-code", await exchangeClaudeCode(code, verifier, state));
+      const token = await exchangeClaudeCode(code, verifier, state);
+      await writeToken("claude-code", token, claudeIdentity(token));
     } catch { /* status stays false */ }
     finally { claudeLoginInProgress = false; onDone(); }
   })();
   return null;
 }
 
-export async function oauthLogout(provider: OAuthProvider): Promise<void> {
-  await deleteToken(provider);
+export async function oauthLogout(provider: OAuthProvider, accountId?: string): Promise<void> {
+  await deleteToken(provider, accountId);
   // Mark Claude as opted out so auto-detect won't re-import its credentials.
   if (provider === "claude-code") await writeFile(claudeOptOutPath(), "1", { mode: 0o600 }).catch(() => undefined);
 }
 
-export async function oauthModels(provider: OAuthProvider): Promise<Array<{ id: string; label: string }>> {
+export async function oauthModels(provider: OAuthProvider, accountId?: string): Promise<Array<{ id: string; label: string }>> {
   if (provider === "copilot") {
-    const stored = await readToken<CopilotToken>("copilot");
+    const stored = await readToken<CopilotToken>("copilot", accountId);
     if (!stored?.githubToken) return [];
     try {
       const token = await getCopilotToken(stored.githubToken);
@@ -332,7 +378,7 @@ export async function oauthModels(provider: OAuthProvider): Promise<Array<{ id: 
       return models.length ? models : COPILOT_FALLBACK_MODELS;
     } catch { return []; }
   }
-  const stored = await readClaudeToken();
+  const stored = await readClaudeToken(accountId);
   const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
   if (stored?.accessToken) {
     headers.authorization = `Bearer ${stored.accessToken}`;

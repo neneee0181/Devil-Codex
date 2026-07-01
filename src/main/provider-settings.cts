@@ -1,9 +1,9 @@
-import { app, safeStorage } from "electron";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { app } from "electron";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
+import type { ProviderAccount, ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
 import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
+import { createAccountId, defaultAccountId, deleteStoredAccount, envAccountId, getStoredAccount, listStoredAccounts, localAccountId, migrateLegacySecret, readEncryptedText, upsertStoredAccount, virtualAccount, writeEncryptedText } from "./provider-accounts.cjs";
 
 export type ProviderAdapterKind = "openai-chat" | "anthropic" | "google";
 export interface ApiProviderConfig {
@@ -148,7 +148,7 @@ function antigravityCatalogModels(): ProviderModel[] {
   return ANTIGRAVITY_MODELS.map((id) => ({ id, label: humanLabel(id) }));
 }
 
-const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded">> = [
+const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">> = [
   { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
   { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
   { id: "copilot", label: "GitHub Copilot", kind: "login", authProvider: "copilot", keyRequired: false, models: [{ id: "gpt-5.4", label: "GPT-5.4" }, { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }] },
@@ -191,106 +191,189 @@ const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   nvidia: ["NVIDIA_API_KEY"],
 };
 
-type PersistedSettings = Pick<ProviderSettings, "provider" | "model"> & { models?: Partial<Record<ProviderId, ProviderInfo["models"]>> };
+type StoredModelMap = Partial<Record<ProviderId, ProviderInfo["models"]>>;
+type StoredAccountModelMap = Partial<Record<ProviderId, Record<string, ProviderInfo["models"]>>>;
+type PersistedSettings = Pick<ProviderSettings, "provider" | "model"> & { accountId?: string; models?: StoredModelMap; accountModels?: StoredAccountModelMap };
 const defaults: PersistedSettings = { provider: "codex", model: "gpt-5.4" };
 
 export class ProviderSettingsStore {
   private root(): string { return join(app.getPath("userData"), "providers"); }
   private settingsPath(): string { return join(this.root(), "settings.json"); }
-  private keyPath(provider: ProviderId): string {
-    return join(this.root(), `${provider}.credential`);
-  }
 
   async load(): Promise<ProviderSettings> {
+    await this.migrateLegacySecrets();
     const stored = await this.readSettings();
     const provider = catalog.some((item) => item.id === stored.provider) ? stored.provider : defaults.provider;
-    const providers = await Promise.all(catalog.map(async (item) => {
-      const models = stored.models?.[item.id]?.length ? stored.models[item.id]! : item.models;
-      const modelsLoaded = item.id === "codex" || Boolean(stored.models?.[item.id]?.length);
-      return { ...item, models: withCapabilities(item.id, models), modelsLoaded, credentialSource: await this.source(item.id) };
-    }));
+    const providers = await Promise.all(catalog.map((item) => this.providerInfo(item, stored, provider)));
     const active = providers.find((item) => item.id === provider)!;
+    const accountId = this.resolveAccountId(active, stored.accountId);
+    const activeAccount = accountId ? active.accounts.find((account) => account.id === accountId) : undefined;
+    const candidateModels = activeAccount?.models?.length ? activeAccount.models : active.models;
     // Login providers list their models dynamically (OAuth/app-server), so the
     // static catalog can't validate them — keep whatever was stored.
-    const model = LOGIN_IDS.has(active.id) ? (stored.model || active.models[0]!.id) : (active.models.some((item) => item.id === stored.model) ? stored.model : active.models[0]!.id);
-    return { provider, model, providers };
+    const model = LOGIN_IDS.has(active.id) ? (stored.model || candidateModels[0]!.id) : (candidateModels.some((item) => item.id === stored.model) ? stored.model : candidateModels[0]!.id);
+    return { provider, model, ...(accountId ? { accountId } : {}), providers };
   }
 
-  async select(input: { provider: ProviderId; model: string }): Promise<ProviderSettings> {
+  async select(input: { provider: ProviderId; model: string; accountId?: string }): Promise<ProviderSettings> {
     const provider = (await this.load()).providers.find((item) => item.id === input.provider);
     if (!provider) throw new Error("지원하지 않는 Provider입니다.");
+    const accountId = input.accountId ?? this.resolveAccountId(provider, undefined);
+    const account = accountId ? provider.accounts.find((item) => item.id === accountId) : undefined;
+    const models = account?.models?.length ? account.models : provider.models;
     // Login providers fetch their model list live, so don't validate against the
     // static catalog; only API providers are restricted to their known models.
-    if (!LOGIN_IDS.has(provider.id) && !provider.models.some((model) => model.id === input.model)) throw new Error("선택한 Provider에서 지원하지 않는 모델입니다.");
+    if (!LOGIN_IDS.has(provider.id) && !models.some((model) => model.id === input.model)) throw new Error("선택한 Provider에서 지원하지 않는 모델입니다.");
     return this.withLock(async () => {
-      await this.writeSettings({ ...(await this.readSettings()), provider: input.provider, model: input.model });
+      await this.writeSettings({ ...(await this.readSettings()), provider: input.provider, model: input.model, ...(accountId ? { accountId } : { accountId: undefined }) });
       return this.load();
     });
   }
 
-  async saveKey(input: { provider: ProviderId; key: string }): Promise<ProviderSettings> {
+  async saveKey(input: { provider: ProviderId; key: string; accountId?: string; label?: string }): Promise<ProviderSettings> {
     if (LOGIN_IDS.has(input.provider)) throw new Error("이 Provider는 로그인 세션을 사용합니다.");
     const key = input.key.trim();
     if (!key) throw new Error("API 키를 입력하세요.");
-    if (!safeStorage.isEncryptionAvailable()) throw new Error("이 시스템에서 OS Keychain 암호화를 사용할 수 없습니다.");
-    await mkdir(this.root(), { recursive: true });
-    await this.clearStoredModels(input.provider);
-    await writeFile(this.keyPath(input.provider), safeStorage.encryptString(key).toString("base64"), { mode: 0o600 });
+    const provider = catalog.find((item) => item.id === input.provider);
+    const existingAccounts = await listStoredAccounts(input.provider);
+    const existing = input.accountId ? existingAccounts.find((account) => account.id === input.accountId) : undefined;
+    const accountId = input.accountId ?? (existingAccounts.length === 0 ? defaultAccountId() : await createAccountId(input.provider, input.label || provider?.label));
+    const label = input.label?.trim() || existing?.label || (accountId === defaultAccountId() ? `${provider?.label ?? input.provider} 기본` : `${provider?.label ?? input.provider} ${accountId}`);
+    await writeEncryptedText(input.provider, accountId, "credential", key);
+    await upsertStoredAccount({ id: accountId, provider: input.provider, label, credentialSource: "keychain", credentialKind: "credential" });
+    await this.clearStoredModels(input.provider, accountId, false);
+    return this.select({ provider: input.provider, model: provider?.models[0]?.id ?? defaults.model, accountId });
+  }
+
+  async clearKey(provider: ProviderId, accountId?: string): Promise<ProviderSettings> {
+    await deleteStoredAccount(provider, accountId);
+    await this.clearStoredModels(provider, accountId);
+    const current = await this.readSettings();
+    if (current.provider === provider && (!current.accountId || current.accountId === (accountId ?? defaultAccountId()))) {
+      const accounts = await listStoredAccounts(provider);
+      await this.writeSettings({ ...current, accountId: accounts[0]?.id, model: current.model });
+    }
     return this.load();
   }
 
-  async clearKey(provider: ProviderId): Promise<ProviderSettings> {
-    const path = this.keyPath(provider);
-    if (existsSync(path)) await unlink(path);
-    await this.clearStoredModels(provider);
+  async clearModels(provider: ProviderId, accountId?: string): Promise<ProviderSettings> {
+    await this.clearStoredModels(provider, accountId);
     return this.load();
   }
 
-  async clearModels(provider: ProviderId): Promise<ProviderSettings> {
-    await this.clearStoredModels(provider);
-    return this.load();
-  }
-
-  async saveModels(provider: Exclude<ProviderId, "codex">, models: ProviderInfo["models"]): Promise<ProviderSettings> {
+  async saveModels(provider: Exclude<ProviderId, "codex">, models: ProviderInfo["models"], accountId?: string): Promise<ProviderSettings> {
     if (!models.length) throw new Error("Provider에서 사용 가능한 모델을 찾지 못했습니다.");
     return this.withLock(async () => {
       const current = await this.readSettings();
-      const model = current.provider === provider && !models.some((item) => item.id === current.model) ? models[0]!.id : current.model;
-      await this.writeSettings({ ...current, model, models: { ...current.models, [provider]: withCapabilities(provider, models) } });
+      const id = accountId || current.accountId || defaultAccountId();
+      const accountModels = { ...(current.accountModels ?? {}) };
+      accountModels[provider] = { ...(accountModels[provider] ?? {}), [id]: withCapabilities(provider, models) };
+      const model = current.provider === provider && (!current.accountId || current.accountId === id) && !models.some((item) => item.id === current.model) ? models[0]!.id : current.model;
+      await this.writeSettings({ ...current, model, accountModels, models: { ...current.models, [provider]: withCapabilities(provider, models) } });
       return this.load();
     });
   }
 
-  async readApiKey(provider: Exclude<ProviderId, "codex">): Promise<string> {
-    const path = this.keyPath(provider);
+  async readApiKey(provider: Exclude<ProviderId, "codex">, accountId?: string): Promise<string> {
     const config = apiProviderConfig(provider);
-    if (config && !config.keyRequired && !existsSync(path)) return "";
-    if (existsSync(path)) {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("이 시스템에서 OS Keychain 암호화를 사용할 수 없습니다.");
-      return safeStorage.decryptString(Buffer.from((await readFile(path, "utf8")).trim(), "base64"));
+    const stored = await this.readSettings();
+    const id = accountId ?? (stored.provider === provider ? stored.accountId : undefined) ?? (await getStoredAccount(provider))?.id;
+    if (id && id !== envAccountId() && id !== localAccountId()) {
+      const secret = await readEncryptedText(provider, id, "credential");
+      if (secret != null) return secret;
     }
     const envKey = ENV_KEY_NAMES[provider]?.map((name) => process.env[name]?.trim()).find(Boolean);
     if (envKey) return envKey;
+    if (config && !config.keyRequired) return "";
     throw new Error(`${catalog.find((item) => item.id === provider)?.label ?? provider} API 키가 설정되지 않았습니다. 설정에서 키를 입력하세요.`);
   }
 
-  private async source(provider: ProviderId): Promise<ProviderInfo["credentialSource"]> {
-    if (LOGIN_IDS.has(provider)) return "desktop";
-    if (existsSync(this.keyPath(provider))) return "keychain";
-    return ENV_KEY_NAMES[provider]?.some((name) => Boolean(process.env[name]?.trim())) ? "environment" : "none";
+  private async providerInfo(item: Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">, stored: PersistedSettings, activeProvider: ProviderId): Promise<ProviderInfo> {
+    const baseModels = stored.models?.[item.id]?.length ? stored.models[item.id]! : item.models;
+    const baseLoaded = item.id === "codex" || Boolean(stored.models?.[item.id]?.length);
+    const accounts = await this.accountsFor(item, stored);
+    const activeAccountId = item.id === activeProvider ? this.resolveAccountId({ ...item, credentialSource: "none", models: [], modelsLoaded: false, accounts }, stored.accountId) : this.resolveAccountId({ ...item, credentialSource: "none", models: [], modelsLoaded: false, accounts }, undefined);
+    const activeAccount = activeAccountId ? accounts.find((account) => account.id === activeAccountId) : undefined;
+    const models = activeAccount?.models?.length ? activeAccount.models : withCapabilities(item.id, baseModels);
+    const modelsLoaded = item.id === "codex" || Boolean(activeAccount?.modelsLoaded || baseLoaded);
+    return { ...item, models, modelsLoaded, credentialSource: this.aggregateSource(item.id, accounts), accounts };
+  }
+
+  private async accountsFor(item: Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">, stored: PersistedSettings): Promise<ProviderAccount[]> {
+    const provider = item.id;
+    const baseModels = withCapabilities(provider, stored.models?.[provider]?.length ? stored.models[provider]! : item.models);
+    const baseLoaded = provider === "codex" || Boolean(stored.models?.[provider]?.length);
+    const storedAccounts = await listStoredAccounts(provider);
+    const accounts = storedAccounts.map((account) => this.withAccountModels(account, stored, baseModels, baseLoaded));
+    if (provider === "codex") {
+      const codex = virtualAccount({ provider, id: defaultAccountId(), label: "Codex CLI", credentialSource: "desktop", credentialKind: "desktop" });
+      return [this.withAccountModels(codex, stored, baseModels, true)];
+    }
+    if (item.kind === "apikey") {
+      const env = ENV_KEY_NAMES[provider]?.some((name) => Boolean(process.env[name]?.trim()));
+      if (env) accounts.push(this.withAccountModels(virtualAccount({ provider, id: envAccountId(), label: ".env.local", credentialSource: "environment", credentialKind: "environment" }), stored, baseModels, true));
+      if (!item.keyRequired && !accounts.some((account) => account.id === localAccountId())) {
+        accounts.push(this.withAccountModels(virtualAccount({ provider, id: localAccountId(), label: "로컬 endpoint", credentialSource: "none", credentialKind: "local" }), stored, baseModels, baseLoaded));
+      }
+    }
+    return accounts;
+  }
+
+  private withAccountModels(account: ProviderAccount, stored: PersistedSettings, fallbackModels: ProviderInfo["models"], fallbackLoaded: boolean): ProviderAccount {
+    const accountModels = stored.accountModels?.[account.provider]?.[account.id];
+    const legacyModels = account.id === defaultAccountId() ? stored.models?.[account.provider] : undefined;
+    const models = accountModels?.length ? accountModels : legacyModels?.length ? legacyModels : fallbackModels;
+    return {
+      ...account,
+      models: withCapabilities(account.provider, models),
+      modelsLoaded: account.provider === "codex" || Boolean(accountModels?.length || legacyModels?.length || account.modelsLoaded || fallbackLoaded),
+    };
+  }
+
+  private aggregateSource(provider: ProviderId, accounts: ProviderAccount[]): ProviderInfo["credentialSource"] {
+    if (provider === "codex") return "desktop";
+    if (accounts.some((account) => account.credentialSource === "keychain")) return "keychain";
+    if (accounts.some((account) => account.credentialSource === "environment")) return "environment";
+    if (accounts.some((account) => account.credentialSource === "desktop")) return "desktop";
+    return "none";
+  }
+
+  private resolveAccountId(provider: ProviderInfo, requested: string | undefined): string | undefined {
+    if (requested && provider.accounts.some((account) => account.id === requested)) return requested;
+    return provider.accounts[0]?.id;
+  }
+
+  private async migrateLegacySecrets(): Promise<void> {
+    await Promise.all(catalog.map((item) => {
+      if (item.kind === "apikey" && item.keyRequired) {
+        return migrateLegacySecret({ provider: item.id, kind: "credential", label: `${item.label} 기본`, credentialKind: "credential" });
+      }
+      if (item.kind === "login" && item.id !== "codex") {
+        return migrateLegacySecret({ provider: item.id, kind: "oauth", label: `${item.label} 기본`, credentialKind: "oauth" });
+      }
+      return Promise.resolve();
+    }));
   }
 
   // Callers (saveKey/clearKey/clearModels) don't lock, so locking here is safe
   // (no nesting) and keeps the read-modify-write atomic against refresh writes.
-  private async clearStoredModels(provider: ProviderId): Promise<void> {
+  private async clearStoredModels(provider: ProviderId, accountId?: string, resetSelection = true): Promise<void> {
     await this.withLock(async () => {
       const current = await this.readSettings();
-      if (!current.models?.[provider]) return;
+      const id = accountId || current.accountId || defaultAccountId();
       const models = { ...current.models };
-      delete models[provider];
-      const nextProvider = current.provider === provider ? defaults.provider : current.provider;
-      const nextModel = current.provider === provider ? defaults.model : current.model;
-      await this.writeSettings({ ...current, provider: nextProvider, model: nextModel, models });
+      if (id === defaultAccountId()) delete models[provider];
+      const accountModels = { ...(current.accountModels ?? {}) };
+      if (accountModels[provider]) {
+        const nextProviderModels = { ...accountModels[provider] };
+        delete nextProviderModels[id];
+        if (Object.keys(nextProviderModels).length) accountModels[provider] = nextProviderModels;
+        else delete accountModels[provider];
+      }
+      const resetActive = resetSelection && current.provider === provider && (!current.accountId || current.accountId === id);
+      const nextProvider = resetActive ? defaults.provider : current.provider;
+      const nextModel = resetActive ? defaults.model : current.model;
+      await this.writeSettings({ ...current, provider: nextProvider, model: nextModel, models, accountModels });
     });
   }
 

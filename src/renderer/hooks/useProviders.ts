@@ -4,10 +4,10 @@ import type { ProviderId, ProviderModel, ProviderSettings } from "../../shared/c
 export function useProviders(): {
   settings: ProviderSettings | null;
   state: "loading" | "saved" | "error";
-  select: (input: { provider: ProviderId; model: string }) => Promise<void>;
-  saveKey: (input: { provider: ProviderId; key: string }) => Promise<void>;
-  clearKey: (provider: ProviderId) => Promise<void>;
-  refreshModels: (provider: Exclude<ProviderId, "codex">) => Promise<void>;
+  select: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>;
+  saveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>;
+  clearKey: (provider: ProviderId, accountId?: string) => Promise<void>;
+  refreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void>;
 } {
   const [settings, setSettings] = useState<ProviderSettings | null>(null);
   const [codexModels, setCodexModels] = useState<ProviderModel[]>([]);
@@ -25,20 +25,23 @@ export function useProviders(): {
     catch { setState("error"); }
   }, []);
 
-  const syncOauthModels = useCallback((): void => {
+  const oauthModelKey = (provider: ProviderId, accountId: string): string => `${provider}:${accountId}`;
+  const syncOauthModels = useCallback((source?: ProviderSettings | null): void => {
     (["copilot", "claude-code", "antigravity"] as const).forEach((provider) => {
-      window.devilCodex.providerOauthModels({ provider }).then((models) => {
+      const accounts = source?.providers.find((item) => item.id === provider)?.accounts ?? [];
+      accounts.forEach((account) => window.devilCodex.providerOauthModels({ provider, accountId: account.id }).then((models) => {
         setOauthModels((prev) => {
           const next = { ...prev };
-          if (models.length) next[provider] = models;
-          else delete next[provider];
+          const key = oauthModelKey(provider, account.id);
+          if (models.length) next[key] = models;
+          else delete next[key];
           return next;
         });
       }).catch(() => setOauthModels((prev) => {
         const next = { ...prev };
-        delete next[provider];
+        delete next[oauthModelKey(provider, account.id)];
         return next;
-      }));
+      })));
     });
   }, []);
 
@@ -50,12 +53,13 @@ export function useProviders(): {
         setSettings(hideUnverifiedLocalProviders(loaded));
         setState("saved");
         window.devilCodex.listCodexModels().then((models) => { if (models.length) setCodexModels(models); }).catch(() => undefined);
-        syncOauthModels();
+        syncOauthModels(loaded);
         for (const provider of loaded.providers) {
           if (provider.kind === "apikey" && (!provider.keyRequired || provider.credentialSource !== "none")) {
-            window.devilCodex.refreshProviderModels({ provider: provider.id as Exclude<ProviderId, "codex"> })
+            const accounts = provider.accounts.length ? provider.accounts : [undefined];
+            accounts.forEach((account) => window.devilCodex.refreshProviderModels({ provider: provider.id as Exclude<ProviderId, "codex">, accountId: account?.id })
               .then(setSettings)
-              .catch(() => window.devilCodex.loadProviderSettings().then((next) => setSettings(hideUnverifiedLocalProviders(next))).catch(() => undefined));
+              .catch(() => window.devilCodex.loadProviderSettings().then((next) => setSettings(hideUnverifiedLocalProviders(next))).catch(() => undefined)));
           }
         }
       } catch { setState("error"); }
@@ -63,12 +67,16 @@ export function useProviders(): {
     const dispose = window.devilCodex.onProviderAuth((status) => {
       setOauthModels((prev) => {
         const next = { ...prev };
-        if (!status.copilot) delete next.copilot;
-        if (!status.claude) delete next["claude-code"];
-        if (!status.antigravity) delete next.antigravity;
+        if (!status.copilot) for (const key of Object.keys(next)) if (key.startsWith("copilot:")) delete next[key];
+        if (!status.claude) for (const key of Object.keys(next)) if (key.startsWith("claude-code:")) delete next[key];
+        if (!status.antigravity) for (const key of Object.keys(next)) if (key.startsWith("antigravity:")) delete next[key];
         return next;
       });
-      syncOauthModels();
+      window.devilCodex.loadProviderSettings().then((next) => {
+        const visible = hideUnverifiedLocalProviders(next);
+        setSettings(visible);
+        syncOauthModels(visible);
+      }).catch(() => undefined);
     });
     return dispose;
   }, [hideUnverifiedLocalProviders, syncOauthModels]);
@@ -79,8 +87,14 @@ export function useProviders(): {
       ...settings,
       providers: settings.providers.map((provider) => {
         if (provider.id === "codex" && codexModels.length) return { ...provider, models: codexModels, modelsLoaded: true };
-        const live = oauthModels[provider.id];
-        if (live?.length) return { ...provider, models: live, modelsLoaded: true };
+        if (provider.kind === "login" && provider.id !== "codex") {
+          const accounts = provider.accounts.map((account) => {
+            const live = oauthModels[oauthModelKey(provider.id, account.id)];
+            return live?.length ? { ...account, models: live, modelsLoaded: true } : account;
+          });
+          const activeAccount = accounts.find((account) => account.id === settings.accountId) ?? accounts[0];
+          return { ...provider, accounts, models: activeAccount?.models?.length ? activeAccount.models : provider.models, modelsLoaded: Boolean(activeAccount?.modelsLoaded || provider.modelsLoaded) };
+        }
         return provider;
       }),
     };
@@ -90,11 +104,11 @@ export function useProviders(): {
     settings: merged,
     state,
     select: async (input) => {
-      setSettings((current) => current ? { ...current, provider: input.provider, model: input.model } : current);
+      setSettings((current) => current ? { ...current, provider: input.provider, accountId: input.accountId, model: input.model } : current);
       await run(() => window.devilCodex.selectProvider(input));
     },
     saveKey: (input) => run(() => window.devilCodex.saveProviderKey(input)),
-    clearKey: (provider) => run(() => window.devilCodex.clearProviderKey({ provider })),
-    refreshModels: (provider) => run(() => window.devilCodex.refreshProviderModels({ provider })),
+    clearKey: (provider, accountId) => run(() => window.devilCodex.clearProviderKey({ provider, accountId })),
+    refreshModels: (provider, accountId) => run(() => window.devilCodex.refreshProviderModels({ provider, accountId })),
   };
 }

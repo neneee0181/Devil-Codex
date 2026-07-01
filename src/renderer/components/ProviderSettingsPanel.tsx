@@ -1,6 +1,6 @@
 import { Check, KeyRound, LogIn, LogOut, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
+import type { ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
 
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const notifyProviderAuthChanged = (): void => window.dispatchEvent(new Event("devil-codex:provider-auth-changed"));
@@ -11,15 +11,20 @@ function authedFor(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
 }
 
 function loginStatusLabel(provider: ProviderInfo, auth: ProviderAuthStatus): string {
-  return authedFor(provider, auth) ? "로그인됨" : "로그인 안 됨";
+  if (!authedFor(provider, auth)) return "로그인 안 됨";
+  return provider.accounts.length > 1 ? `${provider.accounts.length}개 계정 로그인됨` : "로그인됨";
 }
 
 function keyStatusLabel(provider: ProviderInfo): string {
   if (!provider.keyRequired) return "API 키 필요 없음 · 로컬 endpoint";
   const suffix = provider.modelsLoaded ? "모델 확인됨" : "모델 확인 필요";
-  if (provider.credentialSource === "keychain") return `API 키 · macOS Keychain · ${suffix}`;
+  if (provider.credentialSource === "keychain") return `API 키 ${provider.accounts.length || 1}개 · Keychain · ${suffix}`;
   if (provider.credentialSource === "environment") return `API 키 · .env.local · ${suffix}`;
   return "연결 안 됨";
+}
+
+function accountName(account: ProviderAccount): string {
+  return account.email || account.label || account.id;
 }
 
 function capabilityBadgeClass(value: string): string {
@@ -50,8 +55,9 @@ function compatibilityFor(provider: ProviderId, model: string, requestLog: Provi
   return { tone: "good", label: "동작 확인", detail: `성공 ${successes} / 실패 ${failures}` };
 }
 
-export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, onClearKey, onRefreshModels }: { settings: ProviderSettings | null; state: "loading" | "saved" | "error"; onSelect: (input: { provider: ProviderId; model: string }) => Promise<void>; onSaveKey: (input: { provider: ProviderId; key: string }) => Promise<void>; onClearKey: (provider: ProviderId) => Promise<void>; onRefreshModels: (provider: Exclude<ProviderId, "codex">) => Promise<void> }): React.JSX.Element {
+export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, onClearKey, onRefreshModels }: { settings: ProviderSettings | null; state: "loading" | "saved" | "error"; onSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const [keys, setKeys] = useState<Partial<Record<ProviderId, string>>>({});
+  const [labels, setLabels] = useState<Partial<Record<ProviderId, string>>>({});
   const [auth, setAuth] = useState<ProviderAuthStatus>(emptyAuth);
   const [requestLog, setRequestLog] = useState<ProviderRequestLogEntry[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -71,8 +77,9 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
   const save = async (provider: ProviderInfo): Promise<void> => {
     const key = (keys[provider.id] ?? "").trim();
     if (!key) return;
-    await onSaveKey({ provider: provider.id, key });
+    await onSaveKey({ provider: provider.id, key, label: labels[provider.id]?.trim() || undefined });
     setKeys((current) => ({ ...current, [provider.id]: "" }));
+    setLabels((current) => ({ ...current, [provider.id]: "" }));
   };
 
   const login = async (provider: ProviderInfo): Promise<void> => {
@@ -91,20 +98,22 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
     notifyProviderAuthChanged();
     setBusy(null);
   };
-  const logout = async (provider: ProviderInfo): Promise<void> => {
+  const logout = async (provider: ProviderInfo, accountId?: string): Promise<void> => {
     if (!provider.authProvider) return;
-    setBusy(provider.id);
-    setAuth(await window.devilCodex.providerLogout({ provider: provider.authProvider }).catch(() => auth));
+    setBusy(`${provider.id}:${accountId ?? "all"}`);
+    setAuth(await window.devilCodex.providerLogout({ provider: provider.authProvider, accountId }).catch(() => auth));
     notifyProviderAuthChanged();
     setBusy(null);
   };
 
   const setKeyDraft = (provider: ProviderInfo, value: string): void => setKeys((current) => ({ ...current, [provider.id]: value }));
+  const setLabelDraft = (provider: ProviderInfo, value: string): void => setLabels((current) => ({ ...current, [provider.id]: value }));
 
   const providerCard = (provider: ProviderInfo, sub: string): React.JSX.Element => {
     const activeCard = provider.id === active.id;
     const keyValue = keys[provider.id] ?? "";
-    const connected = provider.kind === "login" ? authedFor(provider, auth) : provider.credentialSource !== "none";
+    const labelValue = labels[provider.id] ?? "";
+    const connected = provider.kind === "login" ? authedFor(provider, auth) : provider.accounts.length > 0 || provider.credentialSource !== "none";
     return <article key={provider.id} className={`provider-card ${activeCard ? "active" : ""} ${connected ? "connected" : ""}`}>
       <button type="button" className="provider-choice" onClick={() => { setViewingId(provider.id); setNotice(""); }}>
         <span><strong>{provider.label}</strong><small><i className="provider-dot" />{sub}</small></span>
@@ -112,18 +121,27 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
       </button>
       {activeCard && provider.kind === "login" && provider.authProvider && <div className="provider-inline-panel">
         <div><strong>{provider.label} 로그인</strong><p>{loginStatusLabel(provider, auth)}</p></div>
-        <div className="provider-key-actions">{authedFor(provider, auth)
-          ? <button type="button" className="provider-btn danger" disabled={busy === provider.id} onClick={() => void logout(provider)}><LogOut size={14} />{busy === provider.id ? "처리 중…" : "로그아웃"}</button>
-          : <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : "로그인"}</button>}</div>
+        {provider.accounts.length > 0 && <div className="provider-account-list">{provider.accounts.map((account) => <div className="provider-account-row" key={account.id}>
+          <span><strong>{accountName(account)}</strong><small>{account.id}</small></span>
+          <button type="button" className="provider-btn danger" disabled={busy === `${provider.id}:${account.id}`} onClick={() => void logout(provider, account.id)}><LogOut size={14} />로그아웃</button>
+        </div>)}</div>}
+        <div className="provider-key-actions">
+          <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : provider.accounts.length ? "계정 추가" : "로그인"}</button>
+        </div>
         {notice && <p className="provider-notice inline">{notice}</p>}
       </div>}
       {activeCard && provider.kind === "apikey" && <div className="provider-inline-panel">
         <div><strong>{provider.label} 연결 상태</strong><p>{keyStatusLabel(provider)}</p></div>
+        {provider.accounts.length > 0 && <div className="provider-account-list">{provider.accounts.map((account) => <div className="provider-account-row" key={account.id}>
+          <span><strong>{accountName(account)}</strong><small>{account.credentialSource === "environment" ? "환경 변수" : `${account.models?.length ?? provider.models.length}개 모델`}</small></span>
+          <div className="provider-key-actions">
+            <button type="button" className="provider-btn" onClick={() => void onRefreshModels(provider.id as Exclude<ProviderId, "codex">, account.id)}><RefreshCw size={14} />모델</button>
+            {account.credentialSource === "keychain" && <button type="button" className="provider-btn" onClick={() => void onClearKey(provider.id, account.id)}><Trash2 size={14} />삭제</button>}
+          </div>
+        </div>)}</div>}
         {!provider.keyRequired
           ? <p className="provider-local-note">로컬 OpenAI-compatible 서버가 실행 중이면 모델 목록 새로고침 후 picker에 표시됩니다.</p>
-          : provider.credentialSource === "none"
-          ? <div className="provider-key-input"><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder={`${provider.label} API 키`} autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>Keychain에 저장</button></div>
-          : <div className="provider-key-actions">{provider.credentialSource === "keychain" && <button type="button" className="provider-btn" onClick={() => void onClearKey(provider.id)}><Trash2 size={14} />저장 키 삭제</button>}<div className="provider-key-input"><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder="키 교체" autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>교체</button></div></div>}
+          : <div className="provider-key-input multi"><input type="text" value={labelValue} onChange={(event) => setLabelDraft(provider, event.target.value)} placeholder="계정 이름 예: work, personal" autoComplete="off" /><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder={`${provider.label} API 키`} autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>키 추가</button></div>}
       </div>}
     </article>;
   };
@@ -177,7 +195,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
             const sidecar = entry.sidecar ? `web ${entry.sidecar.webSearchRequests} · vision ${entry.sidecar.visionRequests}${entry.sidecar.failures.length ? ` · fail ${entry.sidecar.failures.length}` : ""}` : "sidecar 없음";
             const parts = `tools ${entry.tools ?? 0} · images ${entry.images ?? 0} · files ${entry.files ?? 0}`;
             return <div key={entry.id} className={`provider-request-log-row ${entry.status}`}>
-              <span><strong>{entry.provider}</strong><small>{entry.model}</small></span>
+              <span><strong>{entry.provider}</strong><small>{[entry.accountLabel, entry.model].filter(Boolean).join(" · ")}</small></span>
               <span>{entry.route}</span>
               <span>{parts}</span>
               <span>{sidecar}</span>

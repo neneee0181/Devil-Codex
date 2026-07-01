@@ -1,10 +1,9 @@
-import { app, safeStorage, shell } from "electron";
+import { shell } from "electron";
 import { createServer, type Server } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import type { ProviderModel, ProviderUsageEntry, ProviderUsageWindow } from "./contracts.cjs";
+import { createAccountId, defaultAccountId, deleteAllStoredAccounts, deleteStoredAccount, getStoredAccount, listStoredAccounts, migrateLegacySecret, readJsonSecret, upsertStoredAccount, writeJsonSecret } from "./provider-accounts.cjs";
 
 type AntigravityToken = {
   accessToken: string;
@@ -74,23 +73,33 @@ let antigravityLoginInProgress = false;
 let antigravityLoginSession = 0;
 let activeCallback: { server: Server; timeout: ReturnType<typeof setTimeout>; reject: (error: Error) => void } | null = null;
 
-function root(): string { return join(app.getPath("userData"), "providers"); }
-function tokenPath(): string { return join(root(), "antigravity.oauth"); }
-
-async function writeToken(value: AntigravityToken): Promise<void> {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("이 시스템에서 OS Keychain 암호화를 사용할 수 없습니다.");
-  await mkdir(root(), { recursive: true });
-  await writeFile(tokenPath(), safeStorage.encryptString(JSON.stringify(value)).toString("base64"), { mode: 0o600 });
+async function migrateAntigravityToken(): Promise<void> {
+  await migrateLegacySecret({ provider: "antigravity", kind: "oauth", label: "Antigravity 기본", credentialKind: "oauth" });
 }
 
-async function readStoredToken(): Promise<AntigravityToken | null> {
-  const path = tokenPath();
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(safeStorage.decryptString(Buffer.from((await readFile(path, "utf8")).trim(), "base64"))) as AntigravityToken;
-  } catch {
-    return null;
-  }
+async function selectedAccountId(accountId?: string): Promise<string> {
+  await migrateAntigravityToken();
+  if (accountId) return accountId;
+  return (await getStoredAccount("antigravity"))?.id ?? defaultAccountId();
+}
+
+async function writeToken(value: AntigravityToken, accountId?: string): Promise<string> {
+  await migrateAntigravityToken();
+  const id = accountId ?? await createAccountId("antigravity", value.email || "Antigravity");
+  await writeJsonSecret("antigravity", id, "oauth", value);
+  await upsertStoredAccount({
+    id,
+    provider: "antigravity",
+    label: value.email || "Antigravity 계정",
+    email: value.email,
+    credentialSource: "keychain",
+    credentialKind: "oauth",
+  });
+  return id;
+}
+
+async function readStoredToken(accountId?: string): Promise<AntigravityToken | null> {
+  return readJsonSecret<AntigravityToken>("antigravity", await selectedAccountId(accountId), "oauth");
 }
 
 function requestSignal(signal: AbortSignal | undefined): AbortSignal {
@@ -285,8 +294,8 @@ function waitForAntigravityCallback(expectedState: string): Promise<string> {
   });
 }
 
-async function readAntigravityToken(): Promise<AntigravityToken | null> {
-  const stored = await readStoredToken();
+async function readAntigravityToken(accountId?: string): Promise<AntigravityToken | null> {
+  const stored = await readStoredToken(accountId);
   if (!stored?.refreshToken) return stored;
   let next = stored;
   if (!stored.accessToken || !stored.expiresAt || stored.expiresAt <= Date.now() + 60_000) {
@@ -296,14 +305,15 @@ async function readAntigravityToken(): Promise<AntigravityToken | null> {
     const projectId = await discoverAntigravityProject(next.accessToken).catch(() => undefined);
     if (projectId) next = { ...next, projectId };
   }
-  if (next !== stored) await writeToken(next).catch(() => undefined);
+  if (next !== stored) await writeToken(next, accountId ?? (await selectedAccountId())).catch(() => undefined);
   return next;
 }
 
 export async function antigravityStatus(): Promise<boolean> {
   if (antigravityLoginInProgress) return false;
-  const token = await readAntigravityToken();
-  return Boolean(token?.accessToken && token.refreshToken && token.projectId);
+  await migrateAntigravityToken();
+  const accounts = await listStoredAccounts("antigravity");
+  return accounts.length > 0;
 }
 
 export async function antigravityLogin(onDone: () => void): Promise<null> {
@@ -340,19 +350,22 @@ export async function antigravityLogin(onDone: () => void): Promise<null> {
   return null;
 }
 
-export async function antigravityLogout(): Promise<void> {
+export async function antigravityLogout(accountId?: string): Promise<void> {
   antigravityLoginSession += 1;
   antigravityLoginInProgress = false;
   closeActiveCallback(new Error("Antigravity OAuth 로그인 요청이 로그아웃으로 취소되었습니다."));
-  if (existsSync(tokenPath())) await unlink(tokenPath());
+  if (accountId) await deleteStoredAccount("antigravity", accountId);
+  else await deleteAllStoredAccounts("antigravity");
   modelCache.clear();
   quotaCache.clear();
 }
 
-export async function antigravityAuth(): Promise<{ accessToken: string; projectId: string } | null> {
-  const token = await readAntigravityToken();
+export async function antigravityAuth(accountId?: string): Promise<{ accessToken: string; projectId: string; accountId?: string; accountLabel?: string; email?: string } | null> {
+  const id = await selectedAccountId(accountId);
+  const token = await readAntigravityToken(id);
   if (!token?.accessToken || !token.projectId) return null;
-  return { accessToken: token.accessToken, projectId: token.projectId };
+  const account = await getStoredAccount("antigravity", id);
+  return { accessToken: token.accessToken, projectId: token.projectId, accountId: id, accountLabel: account?.label, email: account?.email };
 }
 
 function humanLabel(value: string): string {
@@ -394,8 +407,8 @@ function modelsFromAvailable(data: Record<string, unknown> | null): ProviderMode
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
-export async function antigravityModels(): Promise<ProviderModel[]> {
-  const auth = await antigravityAuth();
+export async function antigravityModels(accountId?: string): Promise<ProviderModel[]> {
+  const auth = await antigravityAuth(accountId);
   if (!auth) return [];
   const cacheKey = `${auth.accessToken.slice(0, 16)}:${auth.projectId}`;
   const cached = modelCache.get(cacheKey);
@@ -429,25 +442,25 @@ function quotaWindowsFromAvailable(data: Record<string, unknown> | null): Provid
   }).sort((left, right) => left.label.localeCompare(right.label));
 }
 
-export async function antigravityUsage(connected: boolean): Promise<ProviderUsageEntry> {
+export async function antigravityUsage(connected: boolean, accountId?: string): Promise<ProviderUsageEntry> {
   if (!connected) {
     return { provider: "antigravity", label: "Antigravity", connected, windows: [], unavailable: "Antigravity OAuth 토큰을 찾지 못했습니다.", updatedAt: Date.now() };
   }
-  const auth = await antigravityAuth();
+  const auth = await antigravityAuth(accountId);
   if (!auth) {
     return { provider: "antigravity", label: "Antigravity", connected: false, windows: [], unavailable: "Antigravity OAuth 토큰을 찾지 못했습니다.", updatedAt: Date.now() };
   }
   const cacheKey = `${auth.accessToken.slice(0, 16)}:${auth.projectId}`;
   const cached = quotaCache.get(cacheKey);
   if (cached && cached.fetchedAt > Date.now() - QUOTA_CACHE_TTL_MS) {
-    return { provider: "antigravity", label: "Antigravity", connected, windows: cached.windows, updatedAt: Date.now() };
+    return { provider: "antigravity", label: "Antigravity", connected, windows: cached.windows, accountId: auth.accountId, accountLabel: auth.accountLabel, accountEmail: auth.email, updatedAt: Date.now() };
   }
   try {
     const windows = quotaWindowsFromAvailable(await fetchAvailableModels(auth.accessToken, auth.projectId));
     quotaCache.set(cacheKey, { windows, fetchedAt: Date.now() });
-    return { provider: "antigravity", label: "Antigravity", connected, windows, unavailable: windows.length ? undefined : "Antigravity 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() };
+    return { provider: "antigravity", label: "Antigravity", connected, windows, accountId: auth.accountId, accountLabel: auth.accountLabel, accountEmail: auth.email, unavailable: windows.length ? undefined : "Antigravity 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() };
   } catch (error) {
-    return { provider: "antigravity", label: "Antigravity", connected, windows: [], error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() };
+    return { provider: "antigravity", label: "Antigravity", connected, windows: [], accountId: auth.accountId, accountLabel: auth.accountLabel, accountEmail: auth.email, error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() };
   }
 }
 

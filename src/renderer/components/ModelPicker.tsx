@@ -2,7 +2,7 @@ import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, ChevronDown, ChevronRight, LogIn, LogOut, Zap } from "lucide-react";
-import type { ContextUsage, ProviderAuthStatus, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
+import type { ContextUsage, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 
 const efforts: Array<{ value: ReasoningEffort; label: string }> = [
@@ -51,11 +51,19 @@ function selectableApiProvider(provider: ProviderInfo): boolean {
   // fail (offline) or get wiped, hiding a perfectly working provider. Local
   // providers (ollama/vllm/lm-studio) have no fixed models, so they still need
   // a successfully loaded list.
-  if (provider.keyRequired) return provider.credentialSource !== "none" && provider.models.length > 0;
+  if (provider.keyRequired) return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
   return provider.modelsLoaded;
 }
 
-export function ModelPicker({ model, providerId, providers, codexConnected, contextUsage, reasoningEffort, responseSpeed, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; providers: ProviderInfo[]; codexConnected: boolean; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; onModelChange: (input: { provider: ProviderId; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
+function accountModels(provider: ProviderInfo, account: ProviderAccount | undefined): ProviderModel[] {
+  return account?.models?.length ? account.models : provider.models;
+}
+
+function accountLabel(account: ProviderAccount): string {
+  return account.email || account.label || account.id;
+}
+
+export function ModelPicker({ model, providerId, accountId, providers, codexConnected, contextUsage, reasoningEffort, responseSpeed, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; codexConnected: boolean; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
   const speedButtonRef = useRef<HTMLButtonElement>(null);
   const speedSubmenuRef = useRef<HTMLDivElement>(null);
@@ -65,7 +73,7 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
   const [auth, setAuth] = useState<ProviderAuthStatus>(emptyAuth);
   const [busy, setBusy] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<ProviderId>>(() => new Set([providerId]));
-  const [visibleModelCounts, setVisibleModelCounts] = useState<Partial<Record<ProviderId, number>>>({});
+  const [visibleModelCounts, setVisibleModelCounts] = useState<Record<string, number>>({});
   const close = (): void => { setOpen(false); setSubmenu(null); };
   useOutsideDismiss(root, close, open, speedSubmenuRef);
 
@@ -101,7 +109,8 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
   }, [open, submenu]);
 
   const active = providers.find((provider) => provider.id === providerId);
-  const selected = active?.models.find((item) => item.id === model);
+  const activeAccount = active?.accounts.find((account) => account.id === accountId) ?? active?.accounts[0];
+  const selected = active ? accountModels(active, activeAccount).find((item) => item.id === model) : undefined;
   const effortLabel = efforts.find((item) => item.value === reasoningEffort)?.label ?? "중간";
   const speedLabel = speeds.find((item) => item.value === responseSpeed)?.label ?? "표준";
   const contextPercent = contextUsage ? Math.min(100, Math.max(0, Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100))) : 0;
@@ -128,15 +137,19 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
       return next;
     });
   };
-  const visibleModelCount = (provider: ProviderInfo): number => {
-    const selectedIndex = provider.id === providerId ? provider.models.findIndex((item) => item.id === model) : -1;
+  const accountKey = (provider: ProviderInfo, account?: ProviderAccount): string => `${provider.id}:${account?.id ?? "default"}`;
+  const visibleModelCount = (provider: ProviderInfo, account?: ProviderAccount): number => {
+    const models = accountModels(provider, account);
+    const selectedIndex = provider.id === providerId && (!account?.id || account.id === accountId) ? models.findIndex((item) => item.id === model) : -1;
     const selectedPage = selectedIndex >= 0 ? Math.ceil((selectedIndex + 1) / modelPageSize) * modelPageSize : modelPageSize;
-    return Math.min(provider.models.length, Math.max(visibleModelCounts[provider.id] ?? modelPageSize, selectedPage));
+    return Math.min(models.length, Math.max(visibleModelCounts[accountKey(provider, account)] ?? modelPageSize, selectedPage));
   };
-  const showMoreModels = (provider: ProviderInfo): void => {
+  const showMoreModels = (provider: ProviderInfo, account?: ProviderAccount): void => {
     setVisibleModelCounts((current) => {
-      const nextCount = Math.min(provider.models.length, visibleModelCount(provider) + modelPageSize);
-      return { ...current, [provider.id]: nextCount };
+      const key = accountKey(provider, account);
+      const models = accountModels(provider, account);
+      const nextCount = Math.min(models.length, visibleModelCount(provider, account) + modelPageSize);
+      return { ...current, [key]: nextCount };
     });
   };
 
@@ -193,10 +206,8 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
             const canAuth = provider.kind === "login" && Boolean(provider.authProvider);
             const loggedIn = authedFor(provider);
             const expanded = expandedProviders.has(provider.id);
-            const selectedModel = provider.models.find((item) => item.id === model);
-            const count = visibleModelCount(provider);
-            const visibleModels = provider.models.slice(0, count);
-            const remaining = provider.models.length - count;
+            const selectedAccount = provider.accounts.find((account) => account.id === accountId) ?? provider.accounts[0];
+            const selectedModel = accountModels(provider, selectedAccount).find((item) => item.id === model);
             return (
               <div className="model-picker-provider-group" key={provider.id}>
                 <div className="model-picker-provider-head">
@@ -204,7 +215,7 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     <span>
                       <strong>{provider.label}</strong>
-                      <small>{provider.id === providerId && selectedModel ? selectedModel.label : `${provider.models.length}개 모델`}</small>
+                      <small>{provider.id === providerId && selectedModel ? `${selectedAccount ? `${accountLabel(selectedAccount)} · ` : ""}${selectedModel.label}` : `${provider.accounts.length || 1}개 계정`}</small>
                     </span>
                   </button>
                   {canAuth && (loggedIn
@@ -214,25 +225,37 @@ export function ModelPicker({ model, providerId, providers, codexConnected, cont
                 <AnimatePresence initial={false}>
                   {expanded && (
                     <motion.div className="model-provider-options" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }}>
-                      {visibleModels.map((item) => (
-                        <button type="button" className="model-option" key={item.id} title={capabilityTitle(provider, item.id)} onClick={() => { onModelChange({ provider: provider.id, model: item.id }); close(); }}>
-                          <span className="model-option-label">
-                            <strong>{item.label}</strong>
-                            {item.capability && <small>
-                              <i className={`cap ${item.capability.diagnostics}`}>{item.capability.diagnostics}</i>
-                              <i>tool {capabilityLabel(item.capability.tools)}</i>
-                              <i>img {capabilityLabel(item.capability.images)}</i>
-                            </small>}
-                          </span>
-                          {provider.id === providerId && item.id === model && <Check size={15} />}
-                        </button>
-                      ))}
-                      {remaining > 0 && (
-                        <button type="button" className="model-show-more" onClick={() => showMoreModels(provider)}>
-                          <span>더보기</span>
-                          <small>{Math.min(modelPageSize, remaining)}개 더 보기 · {count}/{provider.models.length}</small>
-                        </button>
-                      )}
+                      {(provider.accounts.length ? provider.accounts : [undefined]).map((account) => {
+                        const models = accountModels(provider, account);
+                        const count = visibleModelCount(provider, account);
+                        const visibleModels = models.slice(0, count);
+                        const remaining = models.length - count;
+                        const selectedHere = provider.id === providerId && (!account?.id || account.id === accountId);
+                        return (
+                          <div className="model-account-group" key={account?.id ?? `${provider.id}:default`}>
+                            {account && <div className="model-account-head"><strong>{accountLabel(account)}</strong><small>{account.credentialSource === "environment" ? "환경 변수" : account.credentialKind === "local" ? "로컬" : account.id}</small></div>}
+                            {visibleModels.map((item) => (
+                              <button type="button" className="model-option" key={`${account?.id ?? "default"}:${item.id}`} title={capabilityTitle(provider, item.id)} onClick={() => { onModelChange({ provider: provider.id, accountId: account?.id, model: item.id }); close(); }}>
+                                <span className="model-option-label">
+                                  <strong>{item.label}</strong>
+                                  {item.capability && <small>
+                                    <i className={`cap ${item.capability.diagnostics}`}>{item.capability.diagnostics}</i>
+                                    <i>tool {capabilityLabel(item.capability.tools)}</i>
+                                    <i>img {capabilityLabel(item.capability.images)}</i>
+                                  </small>}
+                                </span>
+                                {selectedHere && item.id === model && <Check size={15} />}
+                              </button>
+                            ))}
+                            {remaining > 0 && (
+                              <button type="button" className="model-show-more" onClick={() => showMoreModels(provider, account)}>
+                                <span>더보기</span>
+                                <small>{Math.min(modelPageSize, remaining)}개 더 보기 · {count}/{models.length}</small>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </motion.div>
                   )}
                 </AnimatePresence>

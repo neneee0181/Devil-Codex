@@ -25,7 +25,7 @@ const groups = [
   { label: "설정", items: [["구성", TerminalSquare], ["연결", Globe2], ["사용량 및 청구", CreditCard]] },
 ] as const;
 
-export function SettingsView({ active, appInfo, onSelect, onBack, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; onSelect: (value: string) => void; onBack: () => void; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">) => Promise<void> }): React.JSX.Element {
+export function SettingsView({ active, appInfo, onSelect, onBack, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; onSelect: (value: string) => void; onBack: () => void; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<Config>(() => {
     try { return { ...defaults, ...JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") }; } catch { return defaults; }
@@ -57,7 +57,7 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
   </div>;
 }
 
-function SettingsPage({ active, appInfo, config, update, backendState, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">) => Promise<void> }): React.JSX.Element {
+function SettingsPage({ active, appInfo, config, update, backendState, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const usage = useProviderUsage(active === "사용량 및 청구");
   if (active === "구성") return <><h1>구성</h1><p className="page-lead">승인 정책 및 샌드박스 설정을 구성합니다. <span className={`settings-save-state ${backendState}`}>{backendState === "loading" ? "저장 중…" : backendState === "saved" ? "config.toml 저장됨" : "저장 실패"}</span></p><section><h2>앱 정보</h2><div className="setting-card app-version-card"><Row title="Devil Codex 현재 버전" detail="현재 실행 중인 데스크톱 앱 버전입니다. 업데이트 확인이나 설치 빌드 검증 때 기준으로 사용합니다."><span className="app-version-badge">{appInfo?.version ? `v${appInfo.version}` : "확인 중..."}</span></Row><Row title="플랫폼" detail="앱이 감지한 현재 실행 환경입니다."><span className="app-version-platform">{appInfo?.platform ?? "unknown"}</span></Row></div></section><section><h2>사용자 지정 config.toml 설정</h2><div className="setting-card"><Row title="승인 정책" detail="Codex가 승인을 요청할 시점을 선택합니다"><Select value={config.approval} options={["요청 시", "항상", "사용 안 함"]} onChange={(v) => update("approval", v)} /></Row><Row title="샌드박스 설정" detail="명령을 실행하는 동안 수행할 수 있는 작업 범위"><Select value={config.sandbox} options={["읽기 전용", "작업 공간 쓰기", "전체 접근"]} onChange={(v) => update("sandbox", v)} /></Row></div></section><section><h2>Devil MCP 도구</h2><p className="section-help">브라우저와 컴퓨터 제어 도구는 켠 동안에만 Codex MCP 목록에 등록됩니다.</p><div className="setting-card"><Row title="브라우저/컴퓨터 제어 MCP" detail="필요할 때만 켜세요. 끄면 공유 config.toml에서 Devil MCP 블록을 제거하고 app-server를 다시 연결합니다."><Toggle value={config.devilMcpEnabled} onChange={(v) => update("devilMcpEnabled", v)} /></Row></div></section><section><h2>영어 응답 + 번역</h2><p className="section-help">켜면 한글로 질문해도 모델은 영어로만 답합니다(토큰 절약). 각 AI 답변 우측의 번역 토글을 켜면 무료 번역기로 한글로 볼 수 있습니다. 끄면 영어 강제 프롬프트만 제거됩니다.</p><div className="setting-card"><Row title="모델 영어 응답" detail="사용자 언어와 무관하게 모델 출력을 영어로 고정합니다. 코드/경로/명령어는 그대로 둡니다."><Toggle value={config.englishOutput} onChange={(v) => update("englishOutput", v)} /></Row></div></section><section><h2>외부 모델 Sidecar</h2><p className="section-help">외부 모델에서만 사용하는 보조 Codex 기능입니다. Codex 모델은 항상 순정 app-server 직통 경로를 유지합니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델이 web_search 도구를 호출하면 Codex sidecar가 실제 웹 검색을 실행하고 결과를 모델에게 다시 전달합니다."><Toggle value={config.sidecarWebSearch} onChange={(v) => update("sidecarWebSearch", v)} /></Row><Row title="웹 검색 최대 요청 수" detail="모델이 한 요청에서 검색을 반복 호출할 때 폭주를 막습니다."><Select value={String(config.sidecarWebSearchLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarWebSearchLimit", Number(v))} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달할 준비 상태로 둡니다. 현재는 진단 표시까지 지원합니다."><Toggle value={config.sidecarVision} onChange={(v) => update("sidecarVision", v)} /></Row><Row title="이미지 설명 최대 요청 수" detail="여러 이미지/반복 설명 호출의 비용과 지연을 제한합니다."><Select value={String(config.sidecarVisionLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarVisionLimit", Number(v))} /></Row></div></section></>;
   if (active === "사용량 및 청구") return <ProviderUsagePage report={usage.report} requestLog={usage.requestLog} providerSettings={providerSettings} state={usage.state} onRefresh={() => void usage.refresh()} />;
@@ -99,7 +99,7 @@ function ProviderUsagePage({ report, requestLog, providerSettings, state, onRefr
     </div>
     {tab === "devil" ? <DevilUsageTab summary={devil} state={state} /> : <section><h2>Provider 한도</h2>{state === "error" && <p className="provider-error">사용량을 불러오지 못했습니다.</p>}{!entries.length && state !== "loading"
       ? <div className="setting-card usage-empty"><strong>로그인된 Provider가 없습니다.</strong><p>연결 설정에서 Codex, Claude Code, GitHub Copilot 중 하나에 로그인하면 여기에 표시됩니다.</p></div>
-      : <div className="usage-provider-grid">{entries.map((entry) => <ProviderUsageCard key={entry.provider} entry={entry} />)}</div>}</section>}</>;
+      : <div className="usage-provider-grid">{entries.map((entry) => <ProviderUsageCard key={`${entry.provider}:${entry.accountId ?? entry.accountLabel ?? "default"}`} entry={entry} />)}</div>}</section>}</>;
 }
 
 function DevilUsageTab({ summary, state }: { summary: ReturnType<typeof summarizeDevilUsage>; state: string }): React.JSX.Element {
@@ -141,7 +141,8 @@ function ModelUsageCard({ row }: { row: ModelUsageRow }): React.JSX.Element {
 }
 
 function ProviderUsageCard({ entry }: { entry: ProviderUsageEntry }): React.JSX.Element {
-  return <div className="setting-card usage-provider-card"><header><span><strong>{entry.label}</strong><small>{entry.connected ? "로그인됨" : "로그인 안 됨"}</small></span><small>{formatUpdated(entry.updatedAt)}</small></header>
+  const account = entry.accountEmail || entry.accountLabel;
+  return <div className="setting-card usage-provider-card"><header><span><strong>{entry.label}</strong><small>{[account, entry.connected ? "로그인됨" : "로그인 안 됨"].filter(Boolean).join(" · ")}</small></span><small>{formatUpdated(entry.updatedAt)}</small></header>
     {entry.windows.length ? <div>{entry.windows.map((window) => <UsageWindow key={window.label} title={window.label} remaining={window.remainingPercent} resetsAt={window.resetsAt} />)}</div> : <p className={entry.error ? "usage-error" : "usage-unavailable"}>{entry.error ? `오류: ${entry.error}` : entry.unavailable ?? "표시할 사용량 데이터가 없습니다."}</p>}</div>;
 }
 
@@ -170,11 +171,11 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
   const labels = new Map<ProviderId, string>((settings?.providers ?? []).map((provider) => [provider.id, provider.label]));
   const rows = new Map<string, ModelUsageRow>();
   for (const entry of entries) {
-    const key = `${entry.provider}:${entry.model}`;
+    const key = `${entry.provider}:${entry.accountId ?? "default"}:${entry.model}`;
     const current = rows.get(key) ?? {
       key,
       provider: entry.provider,
-      providerLabel: entry.provider === "unknown" ? "알 수 없음" : labels.get(entry.provider) ?? providerFallbackLabel(entry.provider),
+      providerLabel: [entry.provider === "unknown" ? "알 수 없음" : labels.get(entry.provider) ?? providerFallbackLabel(entry.provider), entry.accountLabel].filter(Boolean).join(" · "),
       model: entry.model || "unknown",
       requests: 0,
       completed: 0,

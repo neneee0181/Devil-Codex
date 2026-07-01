@@ -232,6 +232,16 @@ function usesCodexProxy(provider?: string): boolean {
   return Boolean(provider && provider !== "codex");
 }
 
+function routedProviderModel(provider: ProviderId, model: string, accountId?: string): string {
+  return `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
+}
+
+async function providerAccountLabel(provider: ProviderId | undefined, accountId: string | undefined): Promise<string | undefined> {
+  if (!provider || !accountId) return undefined;
+  const settings = await providerSettingsStore.load().catch(() => null);
+  return settings?.providers.find((item) => item.id === provider)?.accounts.find((account) => account.id === accountId)?.label;
+}
+
 interface SidecarDiagnosticsSnapshot {
   webSearchRequests: number;
   webSearchToolCalls?: number;
@@ -242,7 +252,7 @@ interface SidecarDiagnosticsSnapshot {
   failures: string[];
 }
 
-const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }>();
+const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; accountId?: string; accountLabel?: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }>();
 const turnFileSnapshots = new Map<string, { cwd: string; files: Map<string, string> }>();
 const nativeFileChangeTurns = new Set<string>();
 
@@ -261,10 +271,11 @@ function sidecarDiagnostics(sidecars?: SidecarSettings, actual?: SidecarDiagnost
   ];
 }
 
-function providerDiagnosticsDetail(input: { provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): string {
+function providerDiagnosticsDetail(input: { provider: string; model: string; accountLabel?: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): string {
   const cap = capabilityFor(input.provider as ProviderId, input.model);
   return [
     `provider: ${input.provider}`,
+    ...(input.accountLabel ? [`account: ${input.accountLabel}`] : []),
     `model: ${input.model}`,
     `route: ${input.provider === "codex" ? "app-server direct" : "devil proxy + reconcile"}`,
     `approvalPolicy: ${input.approvalPolicy ?? "on-request"}`,
@@ -281,7 +292,7 @@ function providerDiagnosticsDetail(input: { provider: string; model: string; sta
   ].join("\n");
 }
 
-function emitProviderDiagnostics(input: { threadId: string; turnId?: string; provider: string; model: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): void {
+function emitProviderDiagnostics(input: { threadId: string; turnId?: string; provider: string; model: string; accountLabel?: string; status: "completed" | "failed"; error?: string; sidecars?: SidecarSettings; sidecarActual?: SidecarDiagnosticsSnapshot; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string }): void {
   const item = {
     id: `provider-diagnostics-${crypto.randomUUID()}`,
     type: "providerDiagnostics",
@@ -499,6 +510,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
       ...(turnId ? { turnId } : {}),
       provider: pendingDiagnostics.provider,
       model: pendingDiagnostics.model,
+      accountLabel: pendingDiagnostics.accountLabel,
       status: turnStatus === "failed" ? "failed" : "completed",
       ...(turnStatus === "failed" ? { error: contextWindowFailures.get(threadId) ?? recentAppServerError() } : {}),
       sidecars: pendingDiagnostics.sidecars,
@@ -1169,10 +1181,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("providers:select", (_event, input) => providerSettingsStore.select(input));
   ipcMain.handle("providers:save-key", async (_event, input) => {
     await providerSettingsStore.saveKey(input);
-    return providerModels.refresh(input.provider);
+    return providerModels.refresh(input.provider, input.accountId);
   });
-  ipcMain.handle("providers:clear-key", (_event, input) => providerSettingsStore.clearKey(input.provider));
-  ipcMain.handle("providers:refresh-models", (_event, input) => providerModels.refresh(input.provider));
+  ipcMain.handle("providers:clear-key", (_event, input) => providerSettingsStore.clearKey(input.provider, input.accountId));
+  ipcMain.handle("providers:refresh-models", (_event, input) => providerModels.refresh(input.provider, input.accountId));
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
     if (input.provider === "codex") { clearProviderUsageCache("codex"); codexCliLogin("codex"); return null; }
@@ -1191,20 +1203,20 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("providers:logout", async (_event, input) => {
     if (input.provider === "codex") { await codexCliLogout("codex"); clearProviderUsageCache("codex"); restartAppServer(); }
     else if (input.provider === "antigravity") {
-      await antigravityLogout();
+      await antigravityLogout(input.accountId);
       clearProviderUsageCache("antigravity");
     }
     else {
       const provider = input.provider === "claude" ? "claude-code" : "copilot";
-      await oauthLogout(provider);
+      await oauthLogout(provider, input.accountId);
       clearProviderUsageCache(provider);
     }
     const status = await combinedAuthStatus();
     sendToRenderer("provider:auth", status);
     return status;
   });
-  ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels() : oauthModels(input.provider));
-  ipcMain.handle("providers:usage", async () => providerUsageReport(await combinedAuthStatus()));
+  ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
+  ipcMain.handle("providers:usage", async () => providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load()));
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
   ipcMain.handle("approval:respond", (_event, input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => {
@@ -1223,11 +1235,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     let bound = false;
     try {
       if (usesCodexProxy(input.provider)) {
-        const thread = await instance.createThread({ ...input, model: `${input.provider}:${input.model}`, modelProvider: "devil" });
+        const routedModel = routedProviderModel(input.provider, input.model, input.accountId);
+        const thread = await instance.createThread({ ...input, model: routedModel, modelProvider: "devil" });
         bindThreadServer(thread.id, instance);
         bound = true;
         loadedThreads.add(thread.id);
-        await providerTranscripts.saveMeta({ ...thread, provider: input.provider, title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
+        await providerTranscripts.saveMeta({ ...thread, provider: input.provider, accountId: input.accountId, accountLabel: await providerAccountLabel(input.provider, input.accountId), title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
         return thread;
       }
       // API-key providers still use the established local transcript path until
@@ -1428,10 +1441,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       attachmentDetails: attachmentEnrichment.attachments,
     };
     if (usesCodexProxy(input.provider)) {
-      const routedModel = `${input.provider}:${input.model}`;
+      const routedModel = routedProviderModel(input.provider, input.model, input.accountId);
+      const accountLabel = await providerAccountLabel(input.provider, input.accountId);
       // External providers use app-server tools and native rollout storage so stock Codex can see the turn after reconcile.
       await providerReconciler.markPending({ threadId: input.threadId, actualProvider: input.provider, actualModel: input.model });
-      await providerTranscripts.recordProviderTurn({ threadId: input.threadId, provider: input.provider, model: input.model });
+      await providerTranscripts.recordProviderTurn({ threadId: input.threadId, provider: input.provider, model: input.model, accountId: input.accountId, accountLabel });
       try {
         // Existing thread: provider was flipped to "devil" → restart + resume so
         // the app-server routes this turn through the proxy. New thread: nothing
@@ -1467,12 +1481,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             cwd: input.cwd ?? "",
             model: input.model,
             provider: input.provider,
+            accountId: input.accountId,
+            accountLabel,
             preview: previewFromText(input.text),
             updatedAt: Date.now(),
             ...(title ? { title } : {}),
           });
         }
-        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
+        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, accountId: input.accountId, accountLabel, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
         codexProxy.setSidecarSettings(input.threadId, input.sidecars);
         await rememberTurnFileSnapshot(input.threadId, input.cwd);
         await threadServer(input.threadId).sendTurn({ ...turnInput, model: routedModel });
@@ -1488,6 +1504,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           threadId: input.threadId,
           provider: pendingDiagnostics?.provider ?? input.provider,
           model: pendingDiagnostics?.model ?? input.model,
+          accountLabel: pendingDiagnostics?.accountLabel,
           status: "failed",
           error: detail,
           sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,
@@ -1501,6 +1518,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     if (input.provider && input.provider !== "codex") {
       const firstTurn = !(await providerTranscripts.isExternal(input.threadId));
+      const accountLabel = await providerAccountLabel(input.provider, input.accountId);
       await providerTranscripts.append(input.threadId, {
         id: crypto.randomUUID(),
         kind: "user",
@@ -1512,6 +1530,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         cwd: input.cwd ?? "",
         model: input.model,
         provider: input.provider,
+        accountId: input.accountId,
+        accountLabel,
         preview: previewFromText(input.text),
         updatedAt: Date.now(),
         ...(firstTurn ? { title: titleFromText(input.text) } : {}),
@@ -1538,6 +1558,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         threadId: input.threadId,
         provider: pendingDiagnostics?.provider ?? input.provider ?? "codex",
         model: pendingDiagnostics?.model ?? input.model,
+        accountLabel: pendingDiagnostics?.accountLabel,
         status: "failed",
         error: detail,
         sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,

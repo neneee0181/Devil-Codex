@@ -7,6 +7,8 @@ import type { ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./co
 type ProviderTurnMeta = {
   provider: string;
   model: string;
+  accountId?: string;
+  accountLabel?: string;
   startedAt: number;
   completedAt?: number;
   syncStatus?: "pending" | "synced" | "failed";
@@ -171,12 +173,14 @@ export class ProviderTranscriptStore {
     });
   }
 
-  async recordProviderTurn(input: { threadId: string; provider: string; model: string }): Promise<void> {
+  async recordProviderTurn(input: { threadId: string; provider: string; model: string; accountId?: string; accountLabel?: string }): Promise<void> {
     await this.mutate((all) => {
       all.providerTurns ??= {};
       all.providerTurns[input.threadId] = [...(all.providerTurns[input.threadId] ?? []), {
         provider: input.provider,
         model: input.model,
+        accountId: input.accountId,
+        accountLabel: input.accountLabel,
         startedAt: Date.now(),
         syncStatus: "pending",
       }];

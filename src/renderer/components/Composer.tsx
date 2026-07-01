@@ -101,6 +101,7 @@ export function Composer({
   connected,
   model,
   providerId,
+  accountId,
   providers,
   codexConnected,
   contextUsage,
@@ -126,6 +127,7 @@ export function Composer({
   connected: boolean;
   model: string;
   providerId: ProviderId;
+  accountId?: string;
   providers: ProviderInfo[];
   codexConnected: boolean;
   contextUsage?: ContextUsage;
@@ -134,7 +136,7 @@ export function Composer({
   projectContext?: { name: string; branch: string };
   skillOptions: Array<{ name: string; description: string }>;
   inject?: { attachments?: ComposerAttachment[]; text?: string; nonce: number } | null;
-  onModelChange: (input: { provider: ProviderId; model: string }) => void;
+  onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
   onResponseSpeedChange: (value: ResponseSpeed) => void;
   onSubmit: (input: ComposerInput) => void;
@@ -439,7 +441,7 @@ export function Composer({
             <button type="button" className={goalMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setGoalMode((active) => !active); }}><Target size={14} />목표</button>
           </div>
           <div className="composer-spacer" />
-          <ModelPicker model={model} providerId={providerId} providers={providers} codexConnected={codexConnected} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />
+          <ModelPicker model={model} providerId={providerId} accountId={accountId} providers={providers} codexConnected={codexConnected} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />
           {busy && !canSend
             ? <button type="button" className="send-button stop-button" aria-label="작업 중지" title="작업 중지" onClick={onStop}><Square size={14} fill="currentColor" /></button>
             : <button type="submit" className="send-button" disabled={!canSend} title={busy ? "대기열에 추가" : "보내기"}><ArrowRight size={18} /></button>}

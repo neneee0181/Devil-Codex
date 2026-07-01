@@ -104,7 +104,7 @@ function readThreadRow(db: DatabaseSync, threadId: string): ThreadRow {
 }
 
 function isExternalModel(model: string | null | undefined): boolean {
-  return Boolean(model && /^(copilot|claude-code|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio):/.test(model));
+  return Boolean(model && /^(copilot|claude-code|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^:]+)?:/.test(model));
 }
 
 async function readDefaultCodexModel(): Promise<string> {
