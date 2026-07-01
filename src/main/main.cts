@@ -34,7 +34,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -122,6 +122,7 @@ let appServer: CodexAppServer | undefined;
 const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
+const appServerThreadIds = new WeakMap<CodexAppServer, string>();
 const activeThreadServerTurns = new Set<string>();
 const approvalRequestServers = new Map<string, CodexAppServer>();
 // Threads whose rollout is currently loaded on their (live) per-thread server.
@@ -148,9 +149,9 @@ function recentAppServerError(): string | undefined {
   if (!appServerStderr.length) return undefined;
   const cutoff = Date.now() - APP_SERVER_ERROR_CONTEXT_MS;
   const recent = appServerStderr.filter((entry) => entry.at >= cutoff);
-  const rows = recent.length ? recent : appServerStderr.slice(-8);
-  const errish = rows.filter((entry) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(entry.line));
-  const picked = (errish.length ? errish : rows).slice(-4).map((entry) => entry.line);
+  if (!recent.length) return undefined;
+  const errish = recent.filter((entry) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(entry.line));
+  const picked = (errish.length ? errish : recent).slice(-4).map((entry) => entry.line);
   return picked.join(" | ").slice(0, 600) || undefined;
 }
 function tokenCountInfo(event: { method: string; params?: unknown }): { context: number; total: number; max: number } | undefined {
@@ -865,15 +866,24 @@ function baseServerCwd(): string {
   return app.isPackaged ? app.getPath("home") : app.getAppPath();
 }
 
+function scopedAppServerEvent(instance: CodexAppServer, event: AppServerEvent): AppServerEvent {
+  const threadId = appServerThreadIds.get(instance);
+  if (!threadId) return event;
+  const params = event.params && typeof event.params === "object" ? event.params as Record<string, unknown> : {};
+  if (params.threadId) return event;
+  return { ...event, params: { ...params, threadId } };
+}
+
 function attachAppServerEvents(instance: CodexAppServer, reportStatus: boolean): CodexAppServer {
   if (reportStatus) instance.on("status", (status) => sendToRenderer("app-server:status", status));
   instance.on("diagnostic", (line: string) => recordAppServerStderr(line));
   instance.on("event", (event) => {
-    if (event.requestId !== undefined && (event.method === "item/commandExecution/requestApproval" || event.method === "item/fileChange/requestApproval")) {
-      approvalRequestServers.set(String(event.requestId), instance);
+    const scoped = scopedAppServerEvent(instance, event);
+    if (scoped.requestId !== undefined && (scoped.method === "item/commandExecution/requestApproval" || scoped.method === "item/fileChange/requestApproval")) {
+      approvalRequestServers.set(String(scoped.requestId), instance);
     }
-    sendToRenderer("app-server:event", event);
-    handleAppServerEvent(event);
+    sendToRenderer("app-server:event", scoped);
+    handleAppServerEvent(scoped);
   });
   return instance;
 }
@@ -938,6 +948,7 @@ function bindThreadServer(threadId: string, instance: CodexAppServer): CodexAppS
   const previous = threadServers.get(threadId);
   if (previous && previous !== instance) previous.dispose();
   threadServers.set(threadId, instance);
+  appServerThreadIds.set(instance, threadId);
   touchThreadServer(threadId);
   pruneThreadServers();
   return instance;

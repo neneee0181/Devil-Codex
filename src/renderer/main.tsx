@@ -1260,14 +1260,20 @@ function App(): React.JSX.Element {
       return;
     }
     const eventParams = (event.params ?? {}) as Record<string, unknown>;
-    detectPermissionHint(eventParams);
     if (event.method === "thread/compaction_started") {
       rememberCompactionRetry(String(eventParams.threadId ?? ""));
       return;
     }
+    const inferredThreadId = String(eventParams.threadId ?? activeTurn.current?.threadId ?? pendingTurn.current?.threadId ?? "");
+    const requiresThreadScope = event.method.startsWith("turn/")
+      || event.method.startsWith("item/")
+      || event.method === "response.failed"
+      || event.method === "thread/compacted";
+    if (requiresThreadScope && !inferredThreadId) return;
+    detectPermissionHint(eventParams);
     if (event.method === "turn/started") {
       const turnId = String(eventParams.turnId ?? (eventParams.turn as { id?: unknown } | undefined)?.id ?? "");
-      const threadId = String(eventParams.threadId ?? "");
+      const threadId = inferredThreadId;
       if (turnId && threadId) {
         activeTurn.current = { threadId, turnId };
         activeTurnsByThread.current.set(threadId, turnId);
@@ -1297,7 +1303,7 @@ function App(): React.JSX.Element {
       }
       return;
     }
-    const eventThreadId = String(eventParams.threadId ?? activeTurn.current?.threadId ?? pendingTurn.current?.threadId ?? "");
+    const eventThreadId = inferredThreadId;
     const visibleThreadId = threadRef.current?.id ?? "";
     if (eventThreadId && eventThreadId !== visibleThreadId) {
       const next = applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], event);

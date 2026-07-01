@@ -250,9 +250,11 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
 
     const startedAt = Number(turn.startedAt ?? 0);
     const completedAt = Number(turn.completedAt ?? 0);
+    const rawStatus = String(turn.status ?? "completed") as ThreadHistoryItem["status"];
+    const status = rawStatus === "failed" && finalMessages.length > 0 ? "completed" : rawStatus;
     history.push({
       id: `activity-${turnId}`, kind: "activity", text: "", turnId, activities,
-      status: String(turn.status ?? "completed") as ThreadHistoryItem["status"],
+      status,
       durationMs: Number(turn.durationMs ?? (startedAt && completedAt ? (completedAt - startedAt) * 1000 : 0)), startedAt: startedAt * 1000,
       contextUsage: contextUsageFromRaw(turn),
       ...turnTokenUsageFromRaw(turn),

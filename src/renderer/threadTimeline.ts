@@ -271,6 +271,38 @@ function hasFinalAgentMessage(items: ThreadHistoryItem[], turnId: string): boole
   return items.some((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim().length > 0);
 }
 
+function isSyntheticProviderFailure(entry: ThreadActivityEntry, turnId: string): boolean {
+  return entry.kind === "message"
+    && entry.status === "failed"
+    && (entry.id === `response-error-${turnId}` || entry.title === "Provider 응답 실패");
+}
+
+function normalizeFinalAnswerActivity(items: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
+  if (!turnId || !hasFinalAgentMessage(items, turnId)) return items;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item.kind !== "activity" || item.turnId !== turnId) return item;
+    let itemChanged = false;
+    const activities = (item.activities ?? []).flatMap((entry): ThreadActivityEntry[] => {
+      if (isSyntheticProviderFailure(entry, turnId)) {
+        itemChanged = true;
+        return [];
+      }
+      if (entry.kind === "diagnostic" && entry.status === "failed") {
+        itemChanged = true;
+        return [{ ...entry, status: "completed" }];
+      }
+      return [entry];
+    });
+    const status = item.status === "failed" ? "completed" : item.status;
+    itemChanged ||= status !== item.status;
+    if (!itemChanged) return item;
+    changed = true;
+    return { ...item, status, activities };
+  });
+  return changed ? next : items;
+}
+
 export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerEvent): ThreadHistoryItem[] {
   const params = (event.params ?? {}) as Record<string, unknown>;
   const explicitTurnId = String(params.turnId ?? (params.turn as RawItem | undefined)?.id ?? "");
@@ -304,9 +336,10 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       ...(tokenUsage?.tokenUsage ? { tokenUsage: tokenUsage.tokenUsage } : {}),
       ...(tokenUsage?.cumulativeTokenUsage ? { cumulativeTokenUsage: tokenUsage.cumulativeTokenUsage } : {}),
     }));
-    const activity = completed.find((current) => current.kind === "activity" && current.turnId === turnId);
+    const normalized = hasFinalAnswer ? normalizeFinalAnswerActivity(completed, turnId) : completed;
+    const activity = normalized.find((current) => current.kind === "activity" && current.turnId === turnId);
     if (rawStatus === "failed" && !hasFinalAnswer && activity && !hasFailureEntry(activity)) {
-      return upsertEntry(completed, turnId, {
+      return upsertEntry(normalized, turnId, {
         id: `response-error-${turnId}`,
         kind: "message",
         title: "Provider 응답 실패",
@@ -314,10 +347,10 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
         status: "failed",
       });
     }
-    return completed;
+    return normalized;
   }
   if (event.method === "response.failed" && turnId) {
-    if (hasFinalAgentMessage(items, turnId)) return items;
+    if (hasFinalAgentMessage(items, turnId)) return normalizeFinalAnswerActivity(items, turnId);
     const response = params.response as RawItem | undefined;
     const message = responseErrorMessage(response);
     return upsertEntry(items, turnId, {
@@ -339,7 +372,8 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       // into the work timeline; keep this latest message standalone (the final
       // answer until something later proves otherwise).
       const base = demotePriorAgentMessages(items, turnId, id);
-      return exists ? base.map((current) => current.id === id ? { ...current, text } : current) : [...base, { id, kind: "agent", text, turnId }];
+      const next = exists ? base.map((current) => current.id === id ? { ...current, text } : current) : [...base, { id, kind: "agent", text, turnId }];
+      return normalizeFinalAnswerActivity(next, turnId);
     }
     const mapped = entryFromItem(item);
     const entry = mapped && event.method === "item/completed" ? {
@@ -355,7 +389,8 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     // work tab — they arrive after it.
     const WORK_KINDS = new Set(["command", "fileChange", "mcp", "webSearch", "subagent"]);
     const base = WORK_KINDS.has(entry.kind) ? demotePriorAgentMessages(items, turnId) : items;
-    return upsertEntry(base, turnId, entry);
+    const next = upsertEntry(base, turnId, entry);
+    return hasFinalAgentMessage(next, turnId) ? normalizeFinalAnswerActivity(next, turnId) : next;
   }
   if (event.method === "item/agentMessage/delta" && turnId) {
     const itemId = String(params.itemId ?? "stream");
@@ -366,7 +401,8 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     if (exists) return items.map((current) => current.id === itemId ? { ...current, text: current.text + delta } : current);
     // First delta of a brand-new message: fold any earlier message into the
     // work timeline, keep this one streaming standalone.
-    return [...demotePriorAgentMessages(items, turnId, itemId), { id: itemId, kind: "agent", text: delta, turnId }];
+    const next = [...demotePriorAgentMessages(items, turnId, itemId), { id: itemId, kind: "agent", text: delta, turnId }];
+    return normalizeFinalAnswerActivity(next, turnId);
   }
   if ((event.method === "item/reasoning/summaryTextDelta" || event.method === "item/plan/delta") && turnId) return appendEntryText(items, turnId, String(params.itemId ?? crypto.randomUUID()), event.method.includes("reasoning") ? "reasoning" : "message", String(params.delta ?? ""));
   if (event.method === "item/commandExecution/outputDelta" && turnId) {
