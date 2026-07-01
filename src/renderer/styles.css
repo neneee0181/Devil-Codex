@@ -977,11 +977,47 @@ button:active:not(:disabled) { transform: scale(.96); }
 .terminal-resize::after { position: absolute; top: 4px; right: 0; left: 0; height: 1px; background: #3d3d3d; content: ""; transition: background .16s ease, height .16s ease; }
 .terminal-resize:hover::after, .terminal-resize:active::after { top: 3px; height: 2px; background: #7a7a7a; }
 .bottom-dock-content { flex: 1; min-height: 0; display: flex; overflow: hidden; }
-.terminal-session { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; cursor: text; background: #121212; }
-.terminal-xterm { position: absolute; inset: 0; box-sizing: border-box; padding: 8px 8px 8px 12px; }
+.terminal-session { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; cursor: text; background: #121212; }
+.terminal-wave-toolbar { flex: 0 0 38px; display: flex; min-width: 0; gap: 10px; align-items: center; border-bottom: 1px solid #2c2c2c; background: #191919; padding: 0 10px 0 12px; cursor: default; }
+.terminal-wave-title { display: flex; flex: 1; min-width: 0; gap: 7px; align-items: center; }
+.terminal-wave-title strong { overflow: hidden; color: #ececec; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-wave-title small { overflow: hidden; color: #8f8f8f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-live-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: #58d17a; box-shadow: 0 0 0 3px #58d17a22; }
+.terminal-wave-actions { display: flex; flex: 0 0 auto; gap: 3px; align-items: center; }
+.terminal-wave-actions button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #a9a9a9; padding: 0; }
+.terminal-wave-actions button:hover { border-color: #3d3d3d; background: #292929; color: #ededed; }
+.terminal-wave-body { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+.terminal-bottom.history-open .terminal-wave-body { grid-template-columns: minmax(0, 1fr) minmax(260px, 30%); }
+.terminal-right.history-open .terminal-wave-body { grid-template-rows: minmax(0, 1fr) minmax(160px, 38%); }
+.terminal-xterm { position: relative; min-width: 0; min-height: 0; box-sizing: border-box; padding: 8px 8px 8px 12px; }
 .terminal-xterm .xterm { width: 100%; height: 100%; }
 .terminal-xterm .xterm-viewport { background: transparent !important; scrollbar-color: #555 transparent; }
 .terminal-error { position: absolute; z-index: 2; inset: 12px auto auto 16px; color: #ef7770; font-size: 12px; }
+.terminal-command-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid #2f2f2f; background: #181818; cursor: default; }
+.terminal-right .terminal-command-panel { border-top: 1px solid #2f2f2f; border-left: 0; }
+.terminal-command-panel > header { flex: 0 0 auto; display: flex; gap: 8px; justify-content: space-between; align-items: center; padding: 9px 10px 7px; }
+.terminal-command-panel > header strong { color: #ededed; font-size: 12px; font-weight: 650; }
+.terminal-command-panel > header small { color: #8f8f8f; font-size: 11px; }
+.terminal-command-search { display: flex; flex: 0 0 auto; gap: 6px; align-items: center; margin: 0 8px 8px; border: 1px solid #383838; border-radius: 8px; background: #222; color: #919191; padding: 6px 8px; }
+.terminal-command-search input { min-width: 0; flex: 1; outline: 0; border: 0; background: transparent; color: #e1e1e1; font: 12px inherit; }
+.terminal-command-list { flex: 1; min-height: 0; display: grid; align-content: start; gap: 8px; overflow: auto; padding: 0 8px 10px; scrollbar-width: thin; scrollbar-color: #575757 transparent; }
+.terminal-command-list > p { margin: 14px 8px; color: #878787; font-size: 12px; line-height: 1.45; }
+.terminal-command-card { overflow: hidden; border: 1px solid #333; border-radius: 8px; background: #202020; }
+.terminal-command-card.pinned { border-color: #50684f; box-shadow: inset 2px 0 #58d17a; }
+.terminal-command-card.danger { border-color: #684541; box-shadow: inset 2px 0 #ef7770; }
+.terminal-command-card > header { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 4px; align-items: center; padding: 7px 8px; }
+.terminal-command-collapse { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #9d9d9d; padding: 0; }
+.terminal-command-collapse:hover { background: #333; color: #eee; }
+.terminal-command-card > header span { display: grid; min-width: 0; gap: 2px; }
+.terminal-command-card > header strong { overflow: hidden; color: #f0f0f0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-command-card > header small { color: #929292; font-size: 10.5px; }
+.terminal-command-card pre { max-height: 150px; overflow: auto; margin: 0; border-top: 1px solid #2d2d2d; background: #171717; color: #cfcfcf; padding: 8px 9px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-path-row { display: flex; flex-wrap: wrap; gap: 5px; border-top: 1px solid #2d2d2d; padding: 7px 8px; }
+.terminal-path-row button { max-width: 100%; overflow: hidden; border: 1px solid #394557; border-radius: 999px; background: #202936; color: #b9d6ff; padding: 3px 7px; font: 10.5px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-path-row button:hover { background: #27364a; color: #eef6ff; }
+.terminal-command-card footer { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; border-top: 1px solid #2d2d2d; padding: 6px 7px; }
+.terminal-command-card footer button { display: inline-flex; min-width: 0; height: 24px; gap: 4px; align-items: center; border: 0; border-radius: 6px; background: transparent; color: #a9a9a9; padding: 0 6px; font-size: 10.5px; }
+.terminal-command-card footer button:hover { background: #343434; color: #eeeeee; }
 .tool-launcher.compact { display: grid; gap: 3px; overflow: visible; padding: 0; }
 .tool-launcher.compact button { background: transparent; padding: 7px 8px; font-size: 12px; }
 .tool-launcher.compact button:hover { background: #454545; }

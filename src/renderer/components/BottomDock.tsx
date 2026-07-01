@@ -21,6 +21,8 @@ export function BottomDock({
   subagentHistory,
   subagentBusy,
   subagentPick,
+  onTerminalAsk,
+  onTerminalOpenPath,
   onSubagentPick,
   onSubagentHistory,
   onSelect,
@@ -46,6 +48,8 @@ export function BottomDock({
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
   subagentPick: Record<string, { provider: ProviderId; model: string }>;
+  onTerminalAsk: (text: string) => void;
+  onTerminalOpenPath: (path: string) => void;
   onSubagentPick: (id: string, pick: { provider: ProviderId; model: string }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
   onSelect: (tool: string) => void;
@@ -77,7 +81,7 @@ export function BottomDock({
         <button type="button" onClick={onClose} aria-label="하단 패널 닫기"><X size={17} /></button>
       </header>
       <div className="bottom-dock-content">
-        {active === "terminal" && <TerminalSession active={open} workspace={workspace} onShell={setShellStable} />}
+        {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="bottom" onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
         {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "사이드 채팅" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
         {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       </div>
