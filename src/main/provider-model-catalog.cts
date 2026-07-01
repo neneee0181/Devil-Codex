@@ -61,7 +61,7 @@ export class ProviderModelCatalog {
           await this.settings.clearModels(provider, accountId);
           throw new Error(message);
         }
-        return this.withFallback(provider, message);
+        return this.withFallback(provider, message, accountId);
       }
       const payload = await response.json() as { data?: ModelRow[]; models?: ModelRow[] };
       const rows = provider === "google"
@@ -70,7 +70,7 @@ export class ProviderModelCatalog {
           ? (payload.data ?? []).filter(isOpenRouterFreeModel)
           : payload.data ?? [];
       const models = normalizeModels(rows);
-      if (!models.length) return this.withFallback(provider, "사용 가능한 대화 모델이 없습니다.");
+      if (!models.length) return this.withFallback(provider, "사용 가능한 대화 모델이 없습니다.", accountId);
       modelCache.set(cacheKey, { models, fetchedAt: Date.now() });
       return this.settings.saveModels(provider, models, accountId);
     } catch (error) {

@@ -1180,8 +1180,15 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", (_event, input) => providerSettingsStore.select(input));
   ipcMain.handle("providers:save-key", async (_event, input) => {
-    await providerSettingsStore.saveKey(input);
-    return providerModels.refresh(input.provider, input.accountId);
+    const saved = await providerSettingsStore.saveKey(input);
+    try {
+      return await providerModels.refresh(input.provider, saved.accountId ?? input.accountId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("401") || message.includes("403")) throw error;
+      console.warn("[devil-codex providers] model refresh after key save failed:", message);
+      return saved;
+    }
   });
   ipcMain.handle("providers:clear-key", (_event, input) => providerSettingsStore.clearKey(input.provider, input.accountId));
   ipcMain.handle("providers:refresh-models", (_event, input) => providerModels.refresh(input.provider, input.accountId));
