@@ -63,7 +63,7 @@ function accountLabel(account: ProviderAccount): string {
   return account.email || account.label || account.id;
 }
 
-export function ModelPicker({ model, providerId, accountId, providers, codexConnected, contextUsage, reasoningEffort, responseSpeed, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; codexConnected: boolean; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
+export function ModelPicker({ model, providerId, accountId, providers, contextUsage, reasoningEffort, responseSpeed, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
   const speedButtonRef = useRef<HTMLButtonElement>(null);
   const speedSubmenuRef = useRef<HTMLDivElement>(null);
@@ -115,8 +115,9 @@ export function ModelPicker({ model, providerId, accountId, providers, codexConn
   const speedLabel = speeds.find((item) => item.value === responseSpeed)?.label ?? "표준";
   const contextPercent = contextUsage ? Math.min(100, Math.max(0, Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100))) : 0;
   const authedFor = (provider: ProviderInfo): boolean => provider.authProvider ? auth[provider.authProvider] : false;
+  const visibleAccountsFor = (provider: ProviderInfo): ProviderAccount[] => provider.kind === "login" && !authedFor(provider) ? [] : provider.accounts;
   const connected = providers.filter((provider) => provider.kind === "login"
-    ? (provider.id === "codex" ? codexConnected || auth.codex : authedFor(provider) && provider.modelsLoaded)
+    ? authedFor(provider) && provider.modelsLoaded
     : selectableApiProvider(provider));
 
   useEffect(() => {
@@ -206,7 +207,8 @@ export function ModelPicker({ model, providerId, accountId, providers, codexConn
             const canAuth = provider.kind === "login" && Boolean(provider.authProvider);
             const loggedIn = authedFor(provider);
             const expanded = expandedProviders.has(provider.id);
-            const selectedAccount = provider.accounts.find((account) => account.id === accountId) ?? provider.accounts[0];
+            const visibleAccounts = visibleAccountsFor(provider);
+            const selectedAccount = visibleAccounts.find((account) => account.id === accountId) ?? visibleAccounts[0];
             const selectedModel = accountModels(provider, selectedAccount).find((item) => item.id === model);
             return (
               <div className="model-picker-provider-group" key={provider.id}>
@@ -215,7 +217,7 @@ export function ModelPicker({ model, providerId, accountId, providers, codexConn
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     <span>
                       <strong>{provider.label}</strong>
-                      <small>{provider.id === providerId && selectedModel ? `${selectedAccount ? `${accountLabel(selectedAccount)} · ` : ""}${selectedModel.label}` : `${provider.accounts.length || 1}개 계정`}</small>
+                      <small>{provider.id === providerId && selectedModel ? `${selectedAccount ? `${accountLabel(selectedAccount)} · ` : ""}${selectedModel.label}` : `${visibleAccounts.length || 1}개 계정`}</small>
                     </span>
                   </button>
                   {canAuth && (loggedIn
@@ -225,7 +227,7 @@ export function ModelPicker({ model, providerId, accountId, providers, codexConn
                 <AnimatePresence initial={false}>
                   {expanded && (
                     <motion.div className="model-provider-options" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }}>
-                      {(provider.accounts.length ? provider.accounts : [undefined]).map((account) => {
+                      {(visibleAccounts.length ? visibleAccounts : [undefined]).map((account) => {
                         const models = accountModels(provider, account);
                         const count = visibleModelCount(provider, account);
                         const visibleModels = models.slice(0, count);

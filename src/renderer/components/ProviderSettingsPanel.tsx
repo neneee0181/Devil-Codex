@@ -10,9 +10,14 @@ function authedFor(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
   return auth[provider.authProvider];
 }
 
+function visibleLoginAccounts(provider: ProviderInfo, auth: ProviderAuthStatus): ProviderAccount[] {
+  return authedFor(provider, auth) ? provider.accounts : [];
+}
+
 function loginStatusLabel(provider: ProviderInfo, auth: ProviderAuthStatus): string {
   if (!authedFor(provider, auth)) return "로그인 안 됨";
-  return provider.accounts.length > 1 ? `${provider.accounts.length}개 계정 로그인됨` : "로그인됨";
+  const accounts = visibleLoginAccounts(provider, auth);
+  return accounts.length > 1 ? `${accounts.length}개 계정 로그인됨` : "로그인됨";
 }
 
 function keyStatusLabel(provider: ProviderInfo): string {
@@ -113,6 +118,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
     const activeCard = provider.id === active.id;
     const keyValue = keys[provider.id] ?? "";
     const labelValue = labels[provider.id] ?? "";
+    const loginAccounts = provider.kind === "login" ? visibleLoginAccounts(provider, auth) : [];
     const connected = provider.kind === "login" ? authedFor(provider, auth) : provider.accounts.length > 0 || provider.credentialSource !== "none";
     return <article key={provider.id} className={`provider-card ${activeCard ? "active" : ""} ${connected ? "connected" : ""}`}>
       <button type="button" className="provider-choice" onClick={() => { setViewingId(provider.id); setNotice(""); }}>
@@ -121,12 +127,12 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
       </button>
       {activeCard && provider.kind === "login" && provider.authProvider && <div className="provider-inline-panel">
         <div><strong>{provider.label} 로그인</strong><p>{loginStatusLabel(provider, auth)}</p></div>
-        {provider.accounts.length > 0 && <div className="provider-account-list">{provider.accounts.map((account) => <div className="provider-account-row" key={account.id}>
+        {loginAccounts.length > 0 && <div className="provider-account-list">{loginAccounts.map((account) => <div className="provider-account-row" key={account.id}>
           <span><strong>{accountName(account)}</strong><small>{account.id}</small></span>
           <button type="button" className="provider-btn danger" disabled={busy === `${provider.id}:${account.id}`} onClick={() => void logout(provider, account.id)}><LogOut size={14} />로그아웃</button>
         </div>)}</div>}
         <div className="provider-key-actions">
-          <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : provider.accounts.length ? "계정 추가" : "로그인"}</button>
+          <button type="button" className="provider-btn primary" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={14} />{busy === provider.id ? "로그인 중…" : loginAccounts.length ? "계정 추가" : "로그인"}</button>
         </div>
         {notice && <p className="provider-notice inline">{notice}</p>}
       </div>}
