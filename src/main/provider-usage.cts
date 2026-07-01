@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
 import { antigravityUsage } from "./provider-antigravity.cjs";
+import { readCodexStoredAuth } from "./provider-codex-accounts.cjs";
 
 const CACHE_TTL_MS = 90_000;
 const cache = new Map<string, { entry: ProviderUsageEntry; ts: number; subject?: string }>();
@@ -152,7 +153,11 @@ export function clearProviderUsageCache(provider?: ProviderUsageEntry["provider"
   else cache.clear();
 }
 
-async function codexAccessToken(): Promise<string | null> {
+async function codexAccessToken(account?: ProviderAccount): Promise<string | null> {
+  if (account?.id) {
+    const stored = await readCodexStoredAuth(account.id);
+    return stored?.tokens?.access_token ?? null;
+  }
   const path = join(app.getPath("home"), ".codex", "auth.json");
   if (!existsSync(path)) return null;
   try {
@@ -163,14 +168,14 @@ async function codexAccessToken(): Promise<string | null> {
   }
 }
 
-async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null> {
+async function codexUsage(connected: boolean, account?: ProviderAccount): Promise<ProviderUsageEntry | null> {
   if (!connected) return null;
-  const token = await codexAccessToken();
+  const token = await codexAccessToken(account);
   const subject = tokenSubject(token);
   const hit = cached("codex", subject);
   if (hit) return hit;
   if (!token) {
-    return remember({ provider: "codex", label: "Codex", connected, windows: [], unavailable: "Codex 로그인 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
+    return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable: "Codex 로그인 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
   }
   try {
     const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -181,7 +186,7 @@ async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null
       const unavailable = res.status === 401 || res.status === 403
         ? `ChatGPT usage API가 Codex OAuth 토큰을 거부했습니다. (${res.status})`
         : undefined;
-      return remember({ provider: "codex", label: "Codex", connected, windows: [], unavailable, error: unavailable ? undefined : `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
+      return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable, error: unavailable ? undefined : `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
     }
     const data = await res.json() as Record<string, unknown>;
     const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
@@ -193,9 +198,9 @@ async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null
       ...Object.entries(rateLimitsById ?? {}).flatMap(([, value]) => value && typeof value === "object" ? collectUsageWindows(value as Record<string, unknown>) : []),
     ];
     const unique = [...new Map(windows.map((window) => [`${window.label}:${window.resetsAt ?? ""}`, window])).values()];
-    return remember({ provider: "codex", label: "Codex", connected, windows: unique, unavailable: unique.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+    return remember({ provider: "codex", label: "Codex", connected, windows: unique, ...accountFields(account), unavailable: unique.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
   } catch (error) {
-    return remember({ provider: "codex", label: "Codex", connected, windows: [], error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
+    return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
   }
 }
 
@@ -253,11 +258,12 @@ function accounts(settings: ProviderSettings | undefined, provider: ProviderUsag
 }
 
 export async function providerUsageReport(auth: ProviderAuthStatus, settings?: ProviderSettings): Promise<ProviderUsageReport> {
+  const codexAccounts = accounts(settings, "codex");
   const claudeAccounts = accounts(settings, "claude-code");
   const copilotAccounts = accounts(settings, "copilot");
   const antigravityAccounts = accounts(settings, "antigravity");
   const entries = (await Promise.all([
-    codexUsage(auth.codex),
+    ...(codexAccounts.length ? codexAccounts.map((account) => codexUsage(auth.codex, account)) : [codexUsage(auth.codex)]),
     ...(claudeAccounts.length ? claudeAccounts.map((account) => claudeUsage(auth.claude, account)) : [claudeUsage(auth.claude)]),
     ...(copilotAccounts.length ? copilotAccounts.map((account) => Promise.resolve(copilotUsage(auth.copilot, account))) : [Promise.resolve(copilotUsage(auth.copilot))]),
     ...(auth.antigravity

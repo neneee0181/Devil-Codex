@@ -82,7 +82,18 @@ export function useProviders(): {
         syncOauthModels(visible);
       }).catch(() => undefined);
     });
-    return dispose;
+    const reloadProviderSettings = (): void => {
+      window.devilCodex.loadProviderSettings().then((next) => {
+        const visible = hideUnverifiedLocalProviders(next);
+        setSettings(visible);
+        syncOauthModels(visible);
+      }).catch(() => undefined);
+    };
+    window.addEventListener("devil-codex:provider-auth-changed", reloadProviderSettings);
+    return () => {
+      dispose();
+      window.removeEventListener("devil-codex:provider-auth-changed", reloadProviderSettings);
+    };
   }, [hideUnverifiedLocalProviders, syncOauthModels]);
 
   const merged = useMemo<ProviderSettings | null>(() => {

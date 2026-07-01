@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProviderAccount, ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
 import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
+import { importCurrentCodexAuth } from "./provider-codex-accounts.cjs";
 import { createAccountId, defaultAccountId, deleteStoredAccount, envAccountId, getStoredAccount, listStoredAccounts, localAccountId, migrateLegacySecret, readEncryptedText, upsertStoredAccount, virtualAccount, writeEncryptedText } from "./provider-accounts.cjs";
 
 export type ProviderAdapterKind = "openai-chat" | "anthropic" | "google";
@@ -202,6 +203,7 @@ export class ProviderSettingsStore {
 
   async load(): Promise<ProviderSettings> {
     await this.migrateLegacySecrets();
+    await importCurrentCodexAuth().catch(() => undefined);
     const stored = await this.readSettings();
     const provider = catalog.some((item) => item.id === stored.provider) ? stored.provider : defaults.provider;
     const providers = await Promise.all(catalog.map((item) => this.providerInfo(item, stored, provider)));
@@ -306,6 +308,7 @@ export class ProviderSettingsStore {
     const storedAccounts = await listStoredAccounts(provider);
     const accounts = storedAccounts.map((account) => this.withAccountModels(account, stored, baseModels, baseLoaded));
     if (provider === "codex") {
+      if (accounts.length) return accounts;
       const codex = virtualAccount({ provider, id: defaultAccountId(), label: "Codex CLI", credentialSource: "desktop", credentialKind: "desktop" });
       return [this.withAccountModels(codex, stored, baseModels, true)];
     }
