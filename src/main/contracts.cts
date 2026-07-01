@@ -11,6 +11,9 @@ export interface ThreadRef {
   id: string;
   cwd: string;
   model: string;
+  provider?: ProviderId;
+  accountId?: string;
+  accountLabel?: string;
 }
 
 export interface ThreadSummary {
@@ -279,17 +282,17 @@ export interface DevilCodexApi {
   createThread: (input: { cwd: string; model: string; provider?: ProviderId; accountId?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<ThreadRef>;
   listThreads: (input: { cwd: string; archived?: boolean }) => Promise<ThreadSummary[]>;
   searchThreads: (input: { query: string; archived?: boolean }) => Promise<ThreadSummary[]>;
-  resumeThread: (input: { id: string; model: string }) => Promise<ThreadRef>;
+  resumeThread: (input: { id: string; model: string; accountId?: string }) => Promise<ThreadRef>;
   renameThread: (input: { id: string; name: string; cwd?: string; model?: string; preview?: string }) => Promise<void>;
   forkThread: (input: { id: string; cwd: string; model: string }) => Promise<ThreadRef>;
-  compactThread: (input: { id: string; cwd?: string; model: string }) => Promise<void>;
-  readThread: (input: { id: string }) => Promise<ThreadHistoryItem[]>;
-  cacheThreadHistory: (input: { id: string; items: ThreadHistoryItem[] }) => Promise<void>;
-  syncThreadHistory: (input: { id: string }) => Promise<ThreadHistoryItem[]>;
+  compactThread: (input: { id: string; cwd?: string; model: string; accountId?: string }) => Promise<void>;
+  readThread: (input: { id: string; accountId?: string }) => Promise<ThreadHistoryItem[]>;
+  cacheThreadHistory: (input: { id: string; items: ThreadHistoryItem[]; accountId?: string }) => Promise<void>;
+  syncThreadHistory: (input: { id: string; accountId?: string }) => Promise<ThreadHistoryItem[]>;
   listProjects: (input?: { archived?: boolean }) => Promise<ThreadSummary[]>;
-  archiveThread: (input: { id: string }) => Promise<void>;
-  unarchiveThread: (input: { id: string }) => Promise<void>;
-  deleteThread: (input: { id: string }) => Promise<void>;
+  archiveThread: (input: { id: string; accountId?: string }) => Promise<void>;
+  unarchiveThread: (input: { id: string; accountId?: string }) => Promise<void>;
+  deleteThread: (input: { id: string; accountId?: string }) => Promise<void>;
   undoFileChanges: (input: { cwd: string; changes: Array<{ path: string; diff: string; additions: number; deletions: number }> }) => Promise<void>;
   stageWorkspaceFiles: (input: { cwd: string; paths: string[] }) => Promise<void>;
   unstageWorkspaceFiles: (input: { cwd: string; paths: string[] }) => Promise<void>;

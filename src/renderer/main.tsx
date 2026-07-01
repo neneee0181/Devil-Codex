@@ -690,7 +690,7 @@ function App(): React.JSX.Element {
       const activeThreadId = threadRef.current?.id;
       if (!activeThreadId) return;
       if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
-      void window.devilCodex.syncThreadHistory({ id: activeThreadId }).then((history) => {
+      void window.devilCodex.syncThreadHistory({ id: activeThreadId, accountId: threadRef.current?.accountId }).then((history) => {
         threadHistoryCache.current.set(activeThreadId, history);
         if (threadRef.current?.id === activeThreadId) setItems(history);
       }).catch(() => undefined);
@@ -1350,8 +1350,9 @@ function App(): React.JSX.Element {
       if (threadId) window.setTimeout(() => {
         void (async () => {
           const localHistory = threadHistoryCache.current.get(threadId) ?? itemsRef.current;
-          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory });
-          const history = await window.devilCodex.syncThreadHistory({ id: threadId });
+          const cachedAccountId = threadRef.current?.id === threadId ? threadRef.current.accountId : undefined;
+          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, accountId: cachedAccountId });
+          const history = await window.devilCodex.syncThreadHistory({ id: threadId, accountId: cachedAccountId });
           let recoveredHistory = appendMissingAgentMessagesForTurn(localHistory, history, turnId);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
@@ -1513,17 +1514,17 @@ function App(): React.JSX.Element {
       const currentCwdKey = cwdKey(cwd);
       const pending = [...pendingThreads.current.values()].filter((summary) => cwdKey(summary.cwd) === currentCwdKey && !loaded.some((item) => item.id === summary.id));
       setThreads([...pending, ...loaded].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt));
-      for (const summary of loaded.slice(0, 4)) window.setTimeout(() => { void prefetchThreadHistory(summary.id); }, 0);
+      for (const summary of loaded.slice(0, 4)) window.setTimeout(() => { void prefetchThreadHistory(summary.id, summary.accountId); }, 0);
     } catch (error) {
       if (options?.quiet) return;
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 목록 오류", text: String(error) }]);
     }
   }
 
-  async function prefetchThreadHistory(threadId: string): Promise<void> {
+  async function prefetchThreadHistory(threadId: string, accountId?: string): Promise<void> {
     if (threadHistoryCache.current.has(threadId) || prefetchingThreadHistory.current.has(threadId)) return;
     prefetchingThreadHistory.current.add(threadId);
-    try { threadHistoryCache.current.set(threadId, await window.devilCodex.readThread({ id: threadId })); }
+    try { threadHistoryCache.current.set(threadId, await window.devilCodex.readThread({ id: threadId, accountId })); }
     catch { /* prefetch is opportunistic; opening the thread still reports real errors. */ }
     finally { prefetchingThreadHistory.current.delete(threadId); }
   }
@@ -1665,10 +1666,10 @@ function App(): React.JSX.Element {
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running
       ? Promise.resolve(threadHistoryCache.current.get(summary.id) ?? [])
-      : window.devilCodex.readThread({ id: summary.id });
+      : window.devilCodex.readThread({ id: summary.id, accountId: summary.accountId });
     void historyPromise.catch(() => undefined);
     try {
-      const next = await window.devilCodex.resumeThread({ id: summary.id, model });
+      const next = await window.devilCodex.resumeThread({ id: summary.id, model, accountId: summary.accountId });
       if (activeResume.current !== summary.id) return;
       setThread(next);
       setWorkspace(next.cwd);
@@ -1720,7 +1721,7 @@ function App(): React.JSX.Element {
         await navigator.clipboard?.writeText(summary.id);
         return;
       }
-      const history = threadHistoryCache.current.get(summary.id) ?? await window.devilCodex.readThread({ id: summary.id });
+      const history = threadHistoryCache.current.get(summary.id) ?? await window.devilCodex.readThread({ id: summary.id, accountId: summary.accountId });
       threadHistoryCache.current.set(summary.id, history);
       const markdown = [`# ${summary.title}`, "", `- Session ID: ${summary.id}`, `- Directory: ${summary.cwd}`, "", ...history.map((item) => `## ${item.kind}${item.title ? `: ${item.title}` : ""}\n\n${item.text || ""}`)].join("\n");
       await navigator.clipboard?.writeText(markdown);
@@ -1747,7 +1748,7 @@ function App(): React.JSX.Element {
 
   async function unarchiveThread(summary: ThreadSummary): Promise<void> {
     try {
-      await window.devilCodex.unarchiveThread({ id: summary.id });
+      await window.devilCodex.unarchiveThread({ id: summary.id, accountId: summary.accountId });
       setArchivedThreads((current) => current.filter((item) => item.id !== summary.id));
       await Promise.all([refreshThreads(summary.cwd || workspace), refreshProjects()]);
     } catch (error) { setExternalError(`채팅 복원 실패: ${String(error)}`); }
@@ -1802,7 +1803,8 @@ function App(): React.JSX.Element {
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = options.provider ?? providers.settings?.provider ?? "codex";
-    const sendAccountId = options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
+    const existingCodexAccountId = provider === "codex" && !options.forceNewThread ? thread?.accountId : undefined;
+    const sendAccountId = options.accountId ?? existingCodexAccountId ?? (provider === providers.settings?.provider ? accountId : undefined);
     const sendModel = options.model ?? model;
     if (!text || !workspace || (provider === "codex" && runtime.state !== "connected")) return;
     const permissions = input.approvalMode === "full"
@@ -1844,7 +1846,7 @@ function App(): React.JSX.Element {
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
-        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
+        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id && summary.id !== replacedThread?.id)]);
       }
@@ -1879,7 +1881,8 @@ function App(): React.JSX.Element {
   function startAutomationChat(prompt: string): void {
     const codexProvider = providers.settings?.providers.find((item) => item.id === "codex");
     const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.4";
-    void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
+    const codexAccountId = providers.settings?.provider === "codex" ? providers.settings.accountId : codexProvider?.accounts[0]?.id;
+    void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", accountId: codexAccountId, model: codexModel });
   }
 
   function renameProject(): void {
@@ -2013,7 +2016,7 @@ function App(): React.JSX.Element {
     setProjectHeaderMenuOpen(false);
     setProjectHeaderSubmenu(null);
     try {
-      await Promise.all(all.map((summary) => window.devilCodex.archiveThread({ id: summary.id }).catch(() => undefined)));
+      await Promise.all(all.map((summary) => window.devilCodex.archiveThread({ id: summary.id, accountId: summary.accountId }).catch(() => undefined)));
       await Promise.all([refreshThreads(), refreshProjects()]);
     } catch (error) {
       setExternalError(`모든 채팅 보관 실패: ${String(error)}`);
@@ -2146,7 +2149,7 @@ function App(): React.JSX.Element {
     try {
       markThreadRunning(thread.id);
       setBusy(true);
-      await window.devilCodex.compactThread({ id: thread.id, cwd: workspace, model: thread.model || model });
+      await window.devilCodex.compactThread({ id: thread.id, cwd: workspace, model: thread.model || model, accountId: thread.accountId });
     } catch (error) {
       clearThreadRunning(thread.id);
       setBusy(false);
@@ -2236,7 +2239,7 @@ function App(): React.JSX.Element {
     if (command === "open-folder") { void chooseWorkspace(); return; }
     if (command === "archive") {
       if (!activeSummary) { void showArchivedThreads(); return; }
-      void window.devilCodex.archiveThread({ id: activeSummary.id }).then(async () => {
+      void window.devilCodex.archiveThread({ id: activeSummary.id, accountId: activeSummary.accountId }).then(async () => {
         setThread(null);
         setItems([]);
         await Promise.all([refreshThreads(), refreshProjects()]);
@@ -2361,7 +2364,10 @@ function App(): React.JSX.Element {
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
     try {
       const seed = providers.settings?.provider === "codex" ? model : "gpt-5.4";
-      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex" });
+      const codexAccountId = providers.settings?.provider === "codex"
+        ? providers.settings.accountId
+        : providers.settings?.providers.find((item) => item.id === "codex")?.accounts[0]?.id;
+      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex", accountId: codexAccountId });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
       openSideTab(created.id, label, dock);
@@ -2458,7 +2464,7 @@ function App(): React.JSX.Element {
             <div className="sidebar-label">채팅</div>
             {generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
               <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
-                <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
+                <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id, summary.accountId)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
                 {runningThreadIds.has(summary.id) ? <span className="thread-running" title="응답 생성 중" /> : <time>{relativeTime(summary.updatedAt)}</time>}
               </div>
             ))}
@@ -2485,7 +2491,7 @@ function App(): React.JSX.Element {
                 <div className="thread-list flat-thread-list">
                   {timelineProjectThreads.slice(0, 20).map((summary) => (
                     <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
-                      <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
+                      <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id, summary.accountId)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
                       {runningThreadIds.has(summary.id) ? <span className="thread-running" title="응답 생성 중" /> : <time>{relativeTime(summary.updatedAt)}</time>}
                     </div>
                   ))}
@@ -2503,7 +2509,7 @@ function App(): React.JSX.Element {
                   onMenu={() => toggleProjectMenu(group.cwd)}
                   onNewThread={() => void newThreadInProject(group.cwd)}
                   onOpen={(summary) => void resumeThread(summary)}
-                  onPrefetch={(summary) => void prefetchThreadHistory(summary.id)}
+                  onPrefetch={(summary) => void prefetchThreadHistory(summary.id, summary.accountId)}
                   pinnedThreadIds={pinnedThreads}
                   onThreadContextMenu={openThreadContextMenu}
                   onPin={() => pinProjectCwd(group.cwd)}
@@ -2520,7 +2526,7 @@ function App(): React.JSX.Element {
             <div className="sidebar-label">채팅</div>
             {generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
               <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
-                <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
+                <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id, summary.accountId)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
                 {runningThreadIds.has(summary.id) ? <span className="thread-running" title="응답 생성 중" /> : <time>{relativeTime(summary.updatedAt)}</time>}
               </div>
             ))}

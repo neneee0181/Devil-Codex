@@ -28,13 +28,14 @@ import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
 import { AskControlServer } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
+import { codexHomeForAccount } from "./codex-account-home.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
 import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange } from "./contracts.cjs";
+import type { ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -122,6 +123,7 @@ let appServer: CodexAppServer | undefined;
 const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
+const threadServerAccountIds = new Map<string, string>();
 const activeThreadServerTurns = new Set<string>();
 const approvalRequestServers = new Map<string, CodexAppServer>();
 // Threads whose rollout is currently loaded on their (live) per-thread server.
@@ -240,6 +242,27 @@ async function providerAccountLabel(provider: ProviderId | undefined, accountId:
   if (!provider || !accountId) return undefined;
   const settings = await providerSettingsStore.load().catch(() => null);
   return settings?.providers.find((item) => item.id === provider)?.accounts.find((account) => account.id === accountId)?.label;
+}
+
+async function activeCodexAccount(): Promise<{ accountId?: string; accountLabel?: string }> {
+  const settings = await providerSettingsStore.load().catch(() => null);
+  if (settings?.provider !== "codex") return {};
+  const accountId = settings.accountId;
+  if (!accountId) return {};
+  const account = settings.providers.find((item) => item.id === "codex")?.accounts.find((item) => item.id === accountId);
+  return { accountId, accountLabel: account?.email || account?.label || accountId };
+}
+
+function annotateCodexSummaries<T extends ThreadSummary>(threads: T[], account: { accountId?: string; accountLabel?: string }): T[] {
+  return threads.map((thread) => {
+    if (account.accountId) threadServerAccountIds.set(thread.id, account.accountId);
+    return {
+      ...thread,
+      provider: "codex" as const,
+      ...(account.accountId ? { accountId: account.accountId } : {}),
+      ...(account.accountLabel ? { accountLabel: account.accountLabel } : {}),
+    };
+  });
 }
 
 interface SidecarDiagnosticsSnapshot {
@@ -869,14 +892,29 @@ function attachAppServerEvents(instance: CodexAppServer, reportStatus: boolean):
   return instance;
 }
 
-function createAppServer(reportStatus = false): CodexAppServer {
-  return attachAppServerEvents(new CodexAppServer(baseServerCwd()), reportStatus);
+function createAppServer(reportStatus = false, codexHomePath?: string): CodexAppServer {
+  return attachAppServerEvents(new CodexAppServer(baseServerCwd(), codexHomePath ? { codexHome: codexHomePath } : {}), reportStatus);
+}
+
+async function createAccountAppServer(reportStatus = false, accountId?: string): Promise<CodexAppServer> {
+  return createAppServer(reportStatus, await codexHomeForAccount(accountId));
 }
 
 function server(): CodexAppServer {
   if (appServer) return appServer;
   appServer = createAppServer(true);
   return appServer;
+}
+
+async function withCodexAccountServer<T>(accountId: string | undefined, task: (instance: CodexAppServer) => Promise<T>): Promise<T> {
+  const home = await codexHomeForAccount(accountId);
+  if (!home) return task(server());
+  const instance = createAppServer(false, home);
+  try {
+    return await task(instance);
+  } finally {
+    instance.dispose();
+  }
 }
 
 function restartAppServer(): void {
@@ -888,6 +926,7 @@ function restartAppServer(): void {
   for (const instance of threadServers.values()) instance.dispose();
   threadServers.clear();
   threadServerLastUsed.clear();
+  threadServerAccountIds.clear();
   activeThreadServerTurns.clear();
   approvalRequestServers.clear();
   loadedThreads.clear();
@@ -895,10 +934,10 @@ function restartAppServer(): void {
 
 // Resume an existing thread on its server when that server is fresh (after a
 // restart/prune), so a turn can be sent. No-op once the thread is loaded.
-async function ensureThreadLoaded(input: { threadId: string; model: string; cwd?: string; modelProvider?: string }): Promise<void> {
+async function ensureThreadLoaded(input: { threadId: string; model: string; cwd?: string; modelProvider?: string; accountId?: string }): Promise<void> {
   await repairMirroredRolloutJsonl(input.threadId).catch(() => undefined);
   if (loadedThreads.has(input.threadId)) return;
-  await threadServer(input.threadId).resumeThread({
+  await (await threadServerFor(input.threadId, input.accountId)).resumeThread({
     id: input.threadId,
     model: input.model,
     ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -921,14 +960,17 @@ function pruneThreadServers(): void {
     threadServers.get(threadId)?.dispose();
     threadServers.delete(threadId);
     threadServerLastUsed.delete(threadId);
+    threadServerAccountIds.delete(threadId);
     loadedThreads.delete(threadId);
   }
 }
 
-function bindThreadServer(threadId: string, instance: CodexAppServer): CodexAppServer {
+function bindThreadServer(threadId: string, instance: CodexAppServer, accountId?: string): CodexAppServer {
   const previous = threadServers.get(threadId);
   if (previous && previous !== instance) previous.dispose();
   threadServers.set(threadId, instance);
+  if (accountId) threadServerAccountIds.set(threadId, accountId);
+  else threadServerAccountIds.delete(threadId);
   touchThreadServer(threadId);
   pruneThreadServers();
   return instance;
@@ -943,11 +985,22 @@ function threadServer(threadId: string): CodexAppServer {
   return bindThreadServer(threadId, createAppServer(false));
 }
 
-function restartThreadServer(threadId: string): CodexAppServer {
+async function threadServerFor(threadId: string, accountId?: string): Promise<CodexAppServer> {
+  const existing = threadServers.get(threadId);
+  if (existing) {
+    touchThreadServer(threadId);
+    return existing;
+  }
+  const resolvedAccountId = accountId ?? threadServerAccountIds.get(threadId);
+  return bindThreadServer(threadId, await createAccountAppServer(false, resolvedAccountId), resolvedAccountId);
+}
+
+async function restartThreadServer(threadId: string, accountId?: string): Promise<CodexAppServer> {
   threadServers.get(threadId)?.dispose();
   threadServerLastUsed.delete(threadId);
   loadedThreads.delete(threadId);
-  return bindThreadServer(threadId, createAppServer(false));
+  const resolvedAccountId = accountId ?? threadServerAccountIds.get(threadId);
+  return bindThreadServer(threadId, await createAccountAppServer(false, resolvedAccountId), resolvedAccountId);
 }
 
 // A newer stock-Codex rollout can't be deserialized by an older bundled codex
@@ -1237,7 +1290,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return target.respondApproval(input);
   });
   ipcMain.handle("thread:create", async (_event, input) => {
-    const instance = createAppServer(false);
+    const codexAccountId = (input.provider ?? "codex") === "codex" ? input.accountId : undefined;
+    const instance = codexAccountId ? await createAccountAppServer(false, codexAccountId) : createAppServer(false);
     let bound = false;
     try {
       if (usesCodexProxy(input.provider)) {
@@ -1252,10 +1306,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       // API-key providers still use the established local transcript path until
       // their Responses adapters are registered with the local proxy as well.
       const thread = await instance.createThread({ ...input, model: input.provider && input.provider !== "codex" ? "gpt-5.4" : input.model });
-      bindThreadServer(thread.id, instance);
+      bindThreadServer(thread.id, instance, codexAccountId);
       bound = true;
       loadedThreads.add(thread.id);
-      return thread;
+      return { ...thread, provider: input.provider ?? "codex", ...(codexAccountId ? { accountId: codexAccountId, accountLabel: await providerAccountLabel("codex", codexAccountId) } : {}) };
     } catch (error) {
       if (!bound) instance.dispose();
       throw error;
@@ -1264,11 +1318,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:list", async (_event, input) => {
     // Codex can still be booting while the renderer asks for a sidebar refresh.
     // Devil's own durable index must remain visible in that short window.
-    const [codex, external] = await Promise.all([server().listThreads(input).catch(() => []), providerTranscripts.summaries()]);
+    const account = await activeCodexAccount();
+    const [codex, external] = await Promise.all([withCodexAccountServer(account.accountId, (instance) => instance.listThreads(input)).catch(() => []), providerTranscripts.summaries()]);
     const requestedCwd = cwdKey(input.cwd);
     const extra = external.filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...codex.filter((summary) => !ids.has(summary.id))];
+    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), account)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
@@ -1281,7 +1336,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await fsMkdir(dir, { recursive: true }).catch(() => undefined);
     return dir;
   });
-  ipcMain.handle("thread:search", async (_event, input) => applySessionIndexTitles(await server().searchThreads(input)));
+  ipcMain.handle("thread:search", async (_event, input) => {
+    const account = await activeCodexAccount();
+    return applySessionIndexTitles(annotateCodexSummaries(await withCodexAccountServer(account.accountId, (instance) => instance.searchThreads(input)), account));
+  });
   ipcMain.handle("thread:resume", async (_event, input) => {
     if (await providerTranscripts.isExternal(input.id)) {
       const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
@@ -1291,10 +1349,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await threadServer(input.id).resumeThread(input).then(() => loadedThreads.add(input.id)).catch(() => undefined);
       return { id: input.id, cwd: meta?.cwd ?? "", model: meta?.model || input.model };
     }
-    const instance = threadServer(input.id);
+    const instance = await threadServerFor(input.id, input.accountId);
     const ref = await instance.resumeThread(input);
     loadedThreads.add(input.id);
-    return ref;
+    return { ...ref, provider: "codex", ...(input.accountId ? { accountId: input.accountId, accountLabel: await providerAccountLabel("codex", input.accountId) } : {}) };
   });
   ipcMain.handle("thread:rename", async (_event, input) => {
     const name = String(input.name ?? "").trim();
@@ -1328,9 +1386,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("thread:fork", (_event, input) => server().forkThread(input));
-  ipcMain.handle("thread:compact", async (_event, input: { id: string; cwd?: string; model: string }) => {
-    await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model });
-    await threadServer(input.id).compactThread({ threadId: input.id });
+  ipcMain.handle("thread:compact", async (_event, input: { id: string; cwd?: string; model: string; accountId?: string }) => {
+    await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model, accountId: input.accountId ?? threadServerAccountIds.get(input.id) });
+    await (await threadServerFor(input.id, input.accountId)).compactThread({ threadId: input.id });
   });
   ipcMain.handle("thread:read", async (_event, input) => {
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
@@ -1352,7 +1410,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(local));
     }
     try {
-      const rollout = await enrichThreadImages(input.id, await server().readThread(input));
+      const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id, input.accountId)).readThread(input));
       return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
     } catch (error) {
       if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
@@ -1367,7 +1425,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:sync-history", async (_event, input) => {
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     if (!(await providerTranscripts.isExternal(input.id))) {
-      const rollout = await enrichThreadImages(input.id, await server().readThread(input));
+      const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id, input.accountId)).readThread(input));
       return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
     }
     const local = await providerTranscripts.read(input.id);
@@ -1379,17 +1437,18 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   ipcMain.handle("thread:projects", async (_event, input) => {
     const archived = (input ?? {}).archived ?? false;
-    const [codex, external] = await Promise.all([server().listProjects(input ?? {}).catch(() => []), providerTranscripts.summaries()]);
+    const account = await activeCodexAccount();
+    const [codex, external] = await Promise.all([withCodexAccountServer(account.accountId, (instance) => instance.listProjects(input ?? {})).catch(() => []), providerTranscripts.summaries()]);
     const extra = external.filter((summary) => summary.archived === archived);
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...codex.filter((summary) => !ids.has(summary.id))];
+    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), account)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
   ipcMain.handle("thread:archive", async (_event, input) => {
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
-    try { await server().archiveThread(input); }
+    try { await (await threadServerFor(input.id, input.accountId)).archiveThread(input); }
     catch (error) { nativeError = error; }
     if (external) {
       await providerTranscripts.archive(input.id);
@@ -1400,7 +1459,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:unarchive", async (_event, input) => {
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
-    try { await server().unarchiveThread(input); }
+    try { await (await threadServerFor(input.id, input.accountId)).unarchiveThread(input); }
     catch (error) { nativeError = error; }
     if (external) {
       await providerTranscripts.unarchive(input.id);
@@ -1411,7 +1470,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:delete", async (_event, input) => {
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
-    try { await server().deleteThread(input); }
+    try { await (await threadServerFor(input.id, input.accountId)).deleteThread(input); }
     catch (error) { nativeError = error; }
     if (external) {
       await providerTranscripts.delete(input.id);
@@ -1458,7 +1517,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         // to patch (already created with modelProvider:"devil") → just proceed.
         const switched = await providerReconciler.prepareExternalTurn(input.threadId);
         if (switched) {
-          await restartThreadServer(input.threadId).resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
+          await (await restartThreadServer(input.threadId)).resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
         } else {
           // Thread server may be fresh (after a restart/prune) — resume so the
           // rollout is loaded before the turn, else "thread not found".
@@ -1548,8 +1607,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     try {
       await rememberTurnFileSnapshot(input.threadId, input.cwd);
-      await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd });
-      const instance = threadServer(input.threadId);
+      await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd, accountId: input.accountId });
+      const instance = await threadServerFor(input.threadId, input.accountId);
       if (await maybeStartContextCompaction(instance, input)) return;
       pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy });
       codexProxy.setSidecarSettings(input.threadId, input.sidecars);

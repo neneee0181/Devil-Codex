@@ -99,7 +99,7 @@ export class CodexAppServer extends EventEmitter {
   private status: RuntimeStatus;
   private connecting?: Promise<RuntimeStatus>;
 
-  constructor(private readonly cwd: string) {
+  constructor(private readonly cwd: string, private readonly options: { codexHome?: string } = {}) {
     super();
     this.status = this.probe();
   }
@@ -130,6 +130,7 @@ export class CodexAppServer extends EventEmitter {
         env: {
           ...process.env,
           CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1",
+          ...(this.options.codexHome ? { CODEX_HOME: this.options.codexHome, DEVIL_CODEX_CODEX_HOME: this.options.codexHome } : {}),
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -199,7 +200,7 @@ export class CodexAppServer extends EventEmitter {
     }
     const id = result.thread?.id;
     if (!id) throw new Error("Codex app-server returned a thread without an id");
-    await syncStockThreadPermissions(id, input.cwd, approvalPolicy, sandboxMode).catch(() => undefined);
+    await syncStockThreadPermissions(id, input.cwd, approvalPolicy, sandboxMode, this.options.codexHome).catch(() => undefined);
     return { id, cwd: input.cwd, model: input.model };
   }
 
@@ -414,7 +415,7 @@ export class CodexAppServer extends EventEmitter {
       ...baseParams,
       ...turnPermissionFields(requestedApprovalPolicy, requestedSandbox, input.cwd),
     };
-    await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox).catch(() => undefined);
+    await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     try {
       await this.request("turn/start", permissionParams);
     } catch (error) {
@@ -554,8 +555,6 @@ export class CodexAppServer extends EventEmitter {
   }
 }
 
-const STOCK_STATE_PATH = join(codexHome(), ".codex-global-state.json");
-
 function stockSandboxPolicy(mode: ThreadSandboxMode, cwd: string): Record<string, unknown> {
   if (mode === "danger-full-access") return { type: "dangerFullAccess" };
   if (mode === "read-only") return { type: "readOnly", networkAccess: false };
@@ -568,9 +567,14 @@ function stockPermissionProfile(mode: ThreadSandboxMode): { id: string; extends:
   return null;
 }
 
-async function syncStockThreadPermissions(threadId: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode): Promise<void> {
+function stockStatePath(home?: string): string {
+  return join(home ?? codexHome(), ".codex-global-state.json");
+}
+
+async function syncStockThreadPermissions(threadId: string, cwd: string, approvalPolicy: ThreadApprovalPolicy, sandboxMode: ThreadSandboxMode, home?: string): Promise<void> {
+  const path = stockStatePath(home);
   let state: Record<string, unknown> = {};
-  try { state = JSON.parse(await readFile(STOCK_STATE_PATH, "utf8")) as Record<string, unknown>; } catch { state = {}; }
+  try { state = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>; } catch { state = {}; }
   const atom = typeof state["electron-persisted-atom-state"] === "object" && state["electron-persisted-atom-state"] !== null
     ? state["electron-persisted-atom-state"] as Record<string, unknown>
     : {};
@@ -592,6 +596,6 @@ async function syncStockThreadPermissions(threadId: string, cwd: string, approva
     atom["thread-writable-roots"] = roots;
   }
   state["electron-persisted-atom-state"] = atom;
-  await mkdir(dirname(STOCK_STATE_PATH), { recursive: true });
-  await writeFile(STOCK_STATE_PATH, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
 }

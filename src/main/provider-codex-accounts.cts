@@ -34,7 +34,7 @@ function decodeJwtPayload(token: string | undefined): Record<string, unknown> | 
   }
 }
 
-function authSubject(auth: CodexAuthJson): { id: string; email?: string; userId?: string; label: string } | null {
+export function codexAuthSubject(auth: CodexAuthJson): { id: string; email?: string; userId?: string; label: string } | null {
   const idPayload = decodeJwtPayload(auth.tokens?.id_token);
   const accessPayload = decodeJwtPayload(auth.tokens?.access_token);
   const payload = idPayload ?? accessPayload ?? {};
@@ -59,7 +59,7 @@ export async function readCurrentCodexAuth(): Promise<CodexAuthJson | null> {
 export async function importCurrentCodexAuth(): Promise<ProviderAccount | null> {
   const auth = await readCurrentCodexAuth();
   if (!auth?.tokens?.access_token && !auth?.OPENAI_API_KEY) return null;
-  const subject = authSubject(auth);
+  const subject = codexAuthSubject(auth);
   if (!subject) return null;
   await writeJsonSecret("codex", subject.id, "oauth", auth);
   return upsertStoredAccount({
