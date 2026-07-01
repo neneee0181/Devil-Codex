@@ -815,8 +815,12 @@ button:active:not(:disabled) { transform: scale(.96); }
 .utility-panel > .terminal-session { flex: 1; background: #121212; }
 .dock-header { position: relative; z-index: 20; flex: 0 0 46px; display: flex; min-width: 0; gap: 10px; align-items: center; padding: 0 14px; border-bottom: 1px solid #353535; }
 .dock-header > button { border: 0; background: transparent; color: #a2a2a2; font-size: 20px; }
-.dock-tab-strip { display: flex; flex: 1; min-width: 0; gap: 6px; align-items: center; overflow-x: auto; scrollbar-width: none; }
-.dock-tab-strip::-webkit-scrollbar { display: none; }
+.dock-tab-strip { display: flex; flex: 1; min-width: 0; gap: 6px; align-items: center; overflow: hidden; }
+.dock-tabs-scroll { display: flex; flex: 1; min-width: 0; gap: 6px; align-items: center; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; padding: 2px 0 5px; scrollbar-width: thin; scrollbar-color: #555 transparent; }
+.dock-tabs-scroll::-webkit-scrollbar { height: 8px; }
+.dock-tabs-scroll::-webkit-scrollbar-track { background: transparent; }
+.dock-tabs-scroll::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: #555; background-clip: content-box; }
+.dock-tabs-scroll::-webkit-scrollbar-thumb:hover { background: #707070; background-clip: content-box; }
 .dock-tab { display: flex; flex: 0 0 auto; max-width: min(320px, 56vw); gap: 7px; align-items: center; overflow: hidden; border: 0; border-radius: 10px; background: transparent; color: #a8a8a8; padding: 7px 9px; font-size: 13px; white-space: nowrap; }
 .dock-tab:hover, .dock-tab.active { background: #292929; color: #e3e3e3; }
 .dock-tab > span { overflow: hidden; text-overflow: ellipsis; }
@@ -824,7 +828,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .dock-tab i { display: grid; width: 14px; height: 14px; place-items: center; border-radius: 4px; color: #858585; font-style: normal; opacity: 0; }
 .dock-tab:hover i { opacity: 1; }
 .dock-tab i:hover { background: #4a4a4a; color: #eeeeee; }
-.dock-tab-add { position: relative; flex: 0 0 auto; }
+.dock-tab-add { position: relative; flex: 0 0 auto; margin-bottom: 3px; }
 .dock-tab-add > button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #ababab; }
 .dock-tab-add > button:hover { background: #2e2e2e; color: #e7e7e7; }
 .dock-tab-menu { position: absolute; z-index: 60; width: 218px; border: 1px solid #4b4b4b; border-radius: 12px; background: #303030f7; box-shadow: 0 18px 48px #0009; padding: 6px; backdrop-filter: blur(18px); }
@@ -1000,17 +1004,17 @@ button:active:not(:disabled) { transform: scale(.96); }
 .terminal-command-panel > header small { color: #8f8f8f; font-size: 11px; }
 .terminal-command-search { display: flex; flex: 0 0 auto; gap: 6px; align-items: center; margin: 0 8px 8px; border: 1px solid #383838; border-radius: 8px; background: #222; color: #919191; padding: 6px 8px; }
 .terminal-command-search input { min-width: 0; flex: 1; outline: 0; border: 0; background: transparent; color: #e1e1e1; font: 12px inherit; }
-.terminal-command-list { flex: 1; min-height: 0; display: grid; align-content: start; gap: 8px; overflow: auto; padding: 0 8px 10px; scrollbar-width: thin; scrollbar-color: #575757 transparent; }
+.terminal-command-list { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: auto; padding: 0 8px 14px; scrollbar-width: thin; scrollbar-color: #575757 transparent; }
 .terminal-command-list > p { margin: 14px 8px; color: #878787; font-size: 12px; line-height: 1.45; }
-.terminal-command-card { overflow: hidden; border: 1px solid #333; border-radius: 8px; background: #202020; }
+.terminal-command-card { flex: 0 0 auto; overflow: hidden; border: 1px solid #333; border-radius: 8px; background: #202020; }
 .terminal-command-card.pinned { border-color: #50684f; box-shadow: inset 2px 0 #58d17a; }
 .terminal-command-card.danger { border-color: #684541; box-shadow: inset 2px 0 #ef7770; }
-.terminal-command-card > header { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 4px; align-items: center; padding: 7px 8px; }
+.terminal-command-card > header { display: grid; min-height: 42px; grid-template-columns: 22px minmax(0, 1fr); gap: 4px; align-items: start; padding: 7px 8px; }
 .terminal-command-collapse { display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #9d9d9d; padding: 0; }
 .terminal-command-collapse:hover { background: #333; color: #eee; }
 .terminal-command-card > header span { display: grid; min-width: 0; gap: 2px; }
-.terminal-command-card > header strong { overflow: hidden; color: #f0f0f0; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-command-card > header small { color: #929292; font-size: 10.5px; }
+.terminal-command-card > header strong { overflow: hidden; color: #f0f0f0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-command-card > header small { color: #929292; font-size: 10.5px; line-height: 1.35; }
 .terminal-command-card pre { max-height: 150px; overflow: auto; margin: 0; border-top: 1px solid #2d2d2d; background: #171717; color: #cfcfcf; padding: 8px 9px; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .terminal-path-row { display: flex; flex-wrap: wrap; gap: 5px; border-top: 1px solid #2d2d2d; padding: 7px 8px; }
 .terminal-path-row button { max-width: 100%; overflow: hidden; border: 1px solid #394557; border-radius: 999px; background: #202936; color: #b9d6ff; padding: 3px 7px; font: 10.5px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { Bot, FileText, Folder, Globe2, MessageSquarePlus, Plus, SquareTerminal, X } from "lucide-react";
@@ -46,9 +46,18 @@ export function DockTabStrip({
 }): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const [pos, setPos] = useState({ left: 0, top: 0 });
+  const stripRef = useRef<HTMLDivElement>(null);
   const addRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   useOutsideDismiss(menuRef, () => setMenuOpen(false), menuOpen, addRef);
+
+  const scrollTabs = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    const strip = stripRef.current;
+    if (!strip || strip.scrollWidth <= strip.clientWidth) return;
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    strip.scrollLeft += event.deltaY;
+  };
 
   // Position the menu via a viewport portal so the dock's overflow/stacking
   // (and the terminal capture overlay) can't clip or hide it.
@@ -68,21 +77,23 @@ export function DockTabStrip({
 
   return (
     <div className={`dock-tab-strip ${dock}`}>
-      {tabs.map((tool) => {
-        const isSub = tool.startsWith("subagent:");
-        const isSide = tool.startsWith("sidechat:");
-        const chatId = isSub ? tool.slice("subagent:".length) : isSide ? tool.slice("sidechat:".length) : "";
-        const Icon = isSub ? Bot : isSide ? MessageSquarePlus : icons[tool] ?? MessageSquarePlus;
-        const label = isSub ? (subagentLabels?.[chatId] || "서브에이전트") : isSide ? (subagentLabels?.[chatId] || "사이드 채팅") : tool === "terminal" ? projectName : labels[tool] ?? tool;
-        return (
-          <button type="button" className={active === tool ? "dock-tab active" : "dock-tab"} key={tool} onClick={() => onSelect(tool)}>
-            <Icon size={15} />
-            <span>{label}</span>
-            {tool === "terminal" && shell && <small>{shell}</small>}
-            <i role="button" aria-label={`${label} 탭 닫기`} onClick={(event) => { event.stopPropagation(); onCloseTab(tool); }}><X size={12} /></i>
-          </button>
-        );
-      })}
+      <div className="dock-tabs-scroll" ref={stripRef} onWheel={scrollTabs}>
+        {tabs.map((tool) => {
+          const isSub = tool.startsWith("subagent:");
+          const isSide = tool.startsWith("sidechat:");
+          const chatId = isSub ? tool.slice("subagent:".length) : isSide ? tool.slice("sidechat:".length) : "";
+          const Icon = isSub ? Bot : isSide ? MessageSquarePlus : icons[tool] ?? MessageSquarePlus;
+          const label = isSub ? (subagentLabels?.[chatId] || "서브에이전트") : isSide ? (subagentLabels?.[chatId] || "사이드 채팅") : tool === "terminal" ? projectName : labels[tool] ?? tool;
+          return (
+            <button type="button" className={active === tool ? "dock-tab active" : "dock-tab"} key={tool} onClick={() => onSelect(tool)}>
+              <Icon size={15} />
+              <span>{label}</span>
+              {tool === "terminal" && shell && <small>{shell}</small>}
+              <i role="button" aria-label={`${label} 탭 닫기`} onClick={(event) => { event.stopPropagation(); onCloseTab(tool); }}><X size={12} /></i>
+            </button>
+          );
+        })}
+      </div>
       <div className="dock-tab-add" ref={addRef}>
         <button type="button" onClick={() => setMenuOpen((value) => !value)} aria-label={`${dock === "bottom" ? "하단" : "우측"} 도구 추가`}><Plus size={17} /></button>
       </div>

@@ -441,15 +441,15 @@ export function TerminalSession({
               {!entry.collapsed && <>
                 <pre>{output || (entry.status === "running" ? "출력 대기 중..." : "출력 없음")}</pre>
                 {paths.length > 0 && <div className="terminal-path-row">{paths.map((path) => <button type="button" key={path} title={path} onClick={() => onOpenPath?.(path)}>{shortPath(path)}</button>)}</div>}
+                <footer>
+                  <button type="button" onClick={() => copyText(entry.command)} title="명령 복사"><Copy size={13} />명령</button>
+                  <button type="button" onClick={() => copyText(output || entry.output)} title="출력 복사"><Copy size={13} />출력</button>
+                  <button type="button" onClick={() => writeCommand(entry.command)} title="다시 실행"><RotateCcw size={13} />재실행</button>
+                  <button type="button" onClick={() => onSendToComposer?.(formatForComposer(entry))} title="채팅 입력으로 보내기"><Bot size={13} />AI</button>
+                  <button type="button" onClick={() => setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, pinned: !item.pinned } : item))} title={entry.pinned ? "고정 해제" : "고정"}>{entry.pinned ? <PinOff size={13} /> : <Pin size={13} />}</button>
+                  <button type="button" onClick={() => removeEntry(entry.id)} title="기록 삭제"><Trash2 size={13} /></button>
+                </footer>
               </>}
-              <footer>
-                <button type="button" onClick={() => copyText(entry.command)} title="명령 복사"><Copy size={13} />명령</button>
-                <button type="button" onClick={() => copyText(output || entry.output)} title="출력 복사"><Copy size={13} />출력</button>
-                <button type="button" onClick={() => writeCommand(entry.command)} title="다시 실행"><RotateCcw size={13} />재실행</button>
-                <button type="button" onClick={() => onSendToComposer?.(formatForComposer(entry))} title="채팅 입력으로 보내기"><Bot size={13} />AI</button>
-                <button type="button" onClick={() => setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, pinned: !item.pinned } : item))} title={entry.pinned ? "고정 해제" : "고정"}>{entry.pinned ? <PinOff size={13} /> : <Pin size={13} />}</button>
-                <button type="button" onClick={() => removeEntry(entry.id)} title="기록 삭제"><Trash2 size={13} /></button>
-              </footer>
             </article>;
           })}
         </div>
