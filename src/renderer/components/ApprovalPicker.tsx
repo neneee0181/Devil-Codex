@@ -18,11 +18,13 @@ export function ApprovalPicker({ value, onChange, onOpen }: { value: ApprovalMod
   const root = useRef<HTMLDivElement>(null);
   useOutsideDismiss(root, () => setOpen(false), open);
   const selected = options.find((option) => option.mode === value) ?? options[1];
+  const SelectedIcon = selected.icon;
+  const fullAccess = value === "full";
   const choose = (mode: ApprovalMode): void => {
     setOpen(false);
     if (mode === "full") { setWarningOpen(true); return; }
     onChange(mode);
   };
 
-  return <><div className="approval-picker" ref={root} data-popover-root><button type="button" className="text-chip" onClick={() => { onOpen?.(); setOpen((current) => !current); }}><ShieldCheck size={15} />{selected.label}<ChevronDown size={13} /></button><AnimatePresence>{open && <motion.div className="approval-menu" initial={{ opacity: 0, y: 4, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 3, scale: .98 }}><header>Codex 작업 승인은 어떻게 해야 하나요?</header>{options.map(({ mode, label, detail, icon: Icon }) => <button type="button" key={mode} className={value === mode ? "active" : ""} onClick={() => choose(mode)}><Icon size={18} /><span><strong>{label}</strong><small>{detail}</small></span>{value === mode && <Check size={18} />}</button>)}</motion.div>}</AnimatePresence></div><AnimatePresence>{warningOpen && <PermissionWarningDialog onCancel={() => setWarningOpen(false)} onConfirm={() => { onChange("full"); setWarningOpen(false); }} />}</AnimatePresence></>;
+  return <><div className="approval-picker" ref={root} data-popover-root><button type="button" className={`text-chip approval-chip${fullAccess ? " full-access" : ""}`} onClick={() => { onOpen?.(); setOpen((current) => !current); }}><SelectedIcon size={15} />{selected.label}<ChevronDown size={13} /></button><AnimatePresence>{open && <motion.div className="approval-menu" initial={{ opacity: 0, y: 4, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 3, scale: .98 }}><header>Codex 작업 승인은 어떻게 해야 하나요?</header>{options.map(({ mode, label, detail, icon: Icon }) => <button type="button" key={mode} className={`${value === mode ? "active" : ""}${mode === "full" ? " full-access" : ""}`.trim()} onClick={() => choose(mode)}><Icon size={18} /><span><strong>{label}</strong><small>{detail}</small></span>{value === mode && <Check size={18} />}</button>)}</motion.div>}</AnimatePresence></div><AnimatePresence>{warningOpen && <PermissionWarningDialog onCancel={() => setWarningOpen(false)} onConfirm={() => { onChange("full"); setWarningOpen(false); }} />}</AnimatePresence></>;
 }
