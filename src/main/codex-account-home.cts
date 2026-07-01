@@ -10,7 +10,7 @@ function accountRoot(): string {
   return join(app.getPath("userData"), "codex-accounts");
 }
 
-function accountHome(accountId: string): string {
+export function codexAccountHomePath(accountId: string): string {
   const digest = createHash("sha256").update(accountId).digest("hex").slice(0, 24);
   return join(accountRoot(), digest);
 }
@@ -47,7 +47,7 @@ export async function codexHomeForAccount(accountId?: string): Promise<string | 
   const stored = await readCodexStoredAuth(accountId);
   if (!hasUsableAuth(stored)) throw new Error("선택한 Codex 계정 토큰을 찾지 못했습니다. 해당 계정으로 다시 로그인한 뒤 선택하세요.");
 
-  const home = accountHome(accountId);
+  const home = codexAccountHomePath(accountId);
   await mkdir(home, { recursive: true });
   await syncBaseConfig(home);
 

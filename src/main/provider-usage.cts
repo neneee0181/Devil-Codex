@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
 import { antigravityUsage } from "./provider-antigravity.cjs";
-import { readCodexStoredAuth } from "./provider-codex-accounts.cjs";
+import { codexAuthSubject, readCodexStoredAuth, readCurrentCodexAuth, type CodexAuthJson } from "./provider-codex-accounts.cjs";
+import { codexAccountHomePath } from "./codex-account-home.cjs";
 
 const CACHE_TTL_MS = 90_000;
 const cache = new Map<string, { entry: ProviderUsageEntry; ts: number; subject?: string }>();
@@ -153,16 +154,38 @@ export function clearProviderUsageCache(provider?: ProviderUsageEntry["provider"
   else cache.clear();
 }
 
-async function codexAccessToken(account?: ProviderAccount): Promise<string | null> {
-  if (account?.id) {
-    const stored = await readCodexStoredAuth(account.id);
-    return stored?.tokens?.access_token ?? null;
+function codexToken(auth: CodexAuthJson | null): string | null {
+  return auth?.tokens?.access_token ?? null;
+}
+
+function authMatchesAccount(auth: CodexAuthJson | null, accountId: string): boolean {
+  return codexAuthSubject(auth ?? {})?.id === accountId;
+}
+
+async function readCodexHomeAuth(accountId: string): Promise<CodexAuthJson | null> {
+  const path = join(codexAccountHomePath(accountId), "auth.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as CodexAuthJson;
+  } catch {
+    return null;
   }
+}
+
+async function codexAccessToken(account?: ProviderAccount): Promise<string | null> {
+  const current = await readCurrentCodexAuth();
+  if (account?.id) {
+    if (authMatchesAccount(current, account.id)) return codexToken(current);
+    const homeAuth = await readCodexHomeAuth(account.id);
+    if (authMatchesAccount(homeAuth, account.id)) return codexToken(homeAuth);
+    return codexToken(await readCodexStoredAuth(account.id));
+  }
+  const currentToken = codexToken(current);
+  if (currentToken) return currentToken;
   const path = join(app.getPath("home"), ".codex", "auth.json");
   if (!existsSync(path)) return null;
   try {
-    const auth = JSON.parse(await readFile(path, "utf8")) as { tokens?: { access_token?: string } };
-    return auth.tokens?.access_token ?? null;
+    return codexToken(JSON.parse(await readFile(path, "utf8")) as CodexAuthJson);
   } catch {
     return null;
   }
