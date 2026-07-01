@@ -2600,7 +2600,7 @@ function App(): React.JSX.Element {
         ) : view === "archive" ? (
           <ArchivedThreadsView threads={archivedThreads} loading={archivedBusy} onBack={() => openView("thread")} onOpen={(summary) => void resumeThread(summary)} onRestore={(summary) => void unarchiveThread(summary)} relativeTime={relativeTime} />
         ) : view === "settings" ? (
-          <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} providerSettings={providers.settings} providerState={providers.state} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider) => providers.clearKey(provider)} onProviderRefreshModels={(provider) => providers.refreshModels(provider)} />
+          <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} providerSettings={providers.settings} providerState={providers.state} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider, accountId) => providers.clearKey(provider, accountId)} onProviderRefreshModels={(provider, accountId) => providers.refreshModels(provider, accountId)} />
         ) : view === "plugins" ? (
           <IntegrationsView skills={availableSkills} threadId={thread?.id ?? null} cwd={workspace} />
         ) : (
