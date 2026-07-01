@@ -23,40 +23,48 @@ function windowEntry(label: string, used: unknown, resetsAt: unknown): ProviderU
 
 function resetValue(window: Record<string, unknown> | undefined): string | number | null {
   if (!window) return null;
-  const absolute = window.reset_at ?? window.resets_at;
+  const absolute = window.reset_at ?? window.resets_at ?? window.resetAt ?? window.resetsAt;
   if (absolute != null) {
     if (typeof absolute === "number" && absolute > 0 && absolute < 10_000_000_000) return absolute * 1000;
     return absolute as string | number;
   }
-  const relative = window.reset_after_seconds ?? window.reset_after;
+  const relative = window.reset_after_seconds ?? window.resetAfterSeconds ?? window.reset_after ?? window.resetAfter;
   return typeof relative === "number" ? Date.now() + relative * 1000 : null;
 }
 
 function usageValue(window: Record<string, unknown>): unknown {
-  return window.used_percent ?? window.percent_used ?? window.utilization ?? window.usedPercent ?? window.percentUsed ?? window.used;
+  const used = window.used_percent ?? window.percent_used ?? window.utilization ?? window.usedPercent ?? window.percentUsed ?? window.used_percentage ?? window.usedPercentage;
+  if (used != null) return used;
+  const remaining = window.remaining_percent ?? window.percent_remaining ?? window.remainingPercent ?? window.percentRemaining;
+  if (remaining != null) return 100 - clampPercent(remaining);
+  const consumed = Number(window.used ?? window.current ?? window.consumed ?? window.usage);
+  const limit = Number(window.limit ?? window.total ?? window.maximum ?? window.max);
+  return Number.isFinite(consumed) && Number.isFinite(limit) && limit > 0 ? (consumed / limit) * 100 : undefined;
 }
 
 function secondsValue(window: Record<string, unknown>): number | null {
-  const value = window.duration_seconds ?? window.window_seconds ?? window.period_seconds ?? window.limit_seconds;
+  const value = window.duration_seconds ?? window.durationSeconds ?? window.window_seconds ?? window.windowSeconds ?? window.period_seconds ?? window.periodSeconds ?? window.limit_seconds ?? window.limitSeconds ?? window.limit_window_seconds ?? window.limitWindowSeconds;
   const seconds = typeof value === "number" ? value : Number(value);
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
 function windowLabel(key: string, window: Record<string, unknown>): string {
   const explicit = window.label ?? window.name ?? window.display_name ?? window.displayName ?? window.window_label ?? window.windowLabel;
+  const seconds = secondsValue(window);
+  if (seconds) {
+    const hours = Math.round(seconds / 3600);
+    const days = Math.round(seconds / 86400);
+    if (hours >= 4 && hours <= 6) return "5시간";
+    if (days >= 6 && days <= 8) return "7일";
+    if (hours <= 48) return `${hours}시간`;
+    if (days >= 28 && days <= 31) return "월간";
+    return `${days}일`;
+  }
   if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
   const lower = key.toLowerCase();
   if (/five|5h|5_hour|5-hour|primary/.test(lower)) return "5시간";
   if (/seven|7d|7_day|7-day|weekly|secondary/.test(lower)) return "7일";
   if (/month|monthly|30d|30_day|30-day|tertiary/.test(lower)) return "월간";
-  const seconds = secondsValue(window);
-  if (seconds) {
-    const hours = Math.round(seconds / 3600);
-    const days = Math.round(seconds / 86400);
-    if (hours <= 48) return `${hours}시간`;
-    if (days >= 28 && days <= 31) return "월간";
-    return `${days}일`;
-  }
   return key.replace(/[_-]?window$/i, "").replace(/[_-]/g, " ");
 }
 
@@ -68,7 +76,14 @@ function usageWindowFrom(key: string, value: unknown): ProviderUsageWindow | nul
   return windowEntry(windowLabel(key, window), used, resetValue(window));
 }
 
-function collectUsageWindows(body: Record<string, unknown>): ProviderUsageWindow[] {
+function usageWindowOrder(label: string): number {
+  if (/5\s*시간|5h/i.test(label)) return 0;
+  if (/7\s*일|7d|weekly/i.test(label)) return 1;
+  if (/월|month|30d/i.test(label)) return 2;
+  return 10;
+}
+
+function collectUsageWindows(body: Record<string, unknown>, depth = 0): ProviderUsageWindow[] {
   const candidates: Array<[string, unknown]> = [];
   const direct = body.rate_limit && typeof body.rate_limit === "object" ? body.rate_limit as Record<string, unknown> : body;
   for (const key of ["primary_window", "primary", "five_hour", "fiveHour", "secondary_window", "secondary", "seven_day", "sevenDay", "monthly_window", "monthly", "month", "tertiary_window", "tertiary"]) {
@@ -81,17 +96,35 @@ function collectUsageWindows(body: Record<string, unknown>): ProviderUsageWindow
   if (Array.isArray(arrayWindows)) {
     arrayWindows.forEach((value, index) => candidates.push([`window_${index}`, value]));
   }
+  for (const key of ["additional_rate_limits", "additionalRateLimits", "rate_limits_by_limit_id", "rateLimitsByLimitId"]) {
+    const value = body[key];
+    if (!value || typeof value !== "object") continue;
+    for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      if (nestedValue && typeof nestedValue === "object") candidates.push([nestedKey, nestedValue]);
+    }
+  }
+  for (const [key, value] of Object.entries(body)) {
+    if (!value || typeof value !== "object" || key === "rate_limit") continue;
+    if (/rate.?limit|window|usage/i.test(key)) candidates.push([key, value]);
+  }
   const seen = new Set<string>();
   const windows: ProviderUsageWindow[] = [];
-  for (const [key, value] of candidates) {
-    const window = usageWindowFrom(key, value);
-    if (!window) continue;
+  const addWindow = (window: ProviderUsageWindow): void => {
     const dedupeKey = `${window.label}:${window.resetsAt ?? ""}`;
-    if (seen.has(dedupeKey)) continue;
+    if (seen.has(dedupeKey)) return;
     seen.add(dedupeKey);
     windows.push(window);
+  };
+  for (const [key, value] of candidates) {
+    const window = usageWindowFrom(key, value);
+    if (window) {
+      addWindow(window);
+      continue;
+    }
+    if (depth >= 2 || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    for (const nested of collectUsageWindows(value as Record<string, unknown>, depth + 1)) addWindow(nested);
   }
-  return windows;
+  return windows.sort((a, b) => usageWindowOrder(a.label) - usageWindowOrder(b.label));
 }
 
 function tokenSubject(token: string | null): string {
@@ -146,7 +179,7 @@ async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null
     }
     const data = await res.json() as Record<string, unknown>;
     const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
-    const rawLimits = [data.rate_limit, data.rate_limits, rateLimitsById?.codex]
+    const rawLimits = [data, data.rate_limit, data.rate_limits, rateLimitsById?.codex]
       .flatMap((value) => Array.isArray(value) ? value : [value])
       .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
     const windows = [
