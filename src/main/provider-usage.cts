@@ -1,15 +1,17 @@
-import { app } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
 import { antigravityUsage } from "./provider-antigravity.cjs";
-import { codexAuthSubject, readCodexStoredAuth, readCurrentCodexAuth, type CodexAuthJson } from "./provider-codex-accounts.cjs";
+import { codexAuthSubject, readCodexStoredAuth, readCurrentCodexAuth, refreshCodexAuth, writeCurrentCodexAuth, type CodexAuthJson } from "./provider-codex-accounts.cjs";
 import { codexAccountHomePath } from "./codex-account-home.cjs";
+import { upsertStoredAccount, writeJsonSecret } from "./provider-accounts.cjs";
 
 const CACHE_TTL_MS = 90_000;
+const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_ACCESS_TOKEN_REFRESH_WINDOW_MS = 5 * 60_000;
 const cache = new Map<string, { entry: ProviderUsageEntry; ts: number; subject?: string }>();
 
 function clampPercent(value: unknown): number {
@@ -162,6 +164,11 @@ function authMatchesAccount(auth: CodexAuthJson | null, accountId: string): bool
   return codexAuthSubject(auth ?? {})?.id === accountId;
 }
 
+type CodexAuthSource = {
+  auth: CodexAuthJson;
+  save: (auth: CodexAuthJson) => Promise<void>;
+};
+
 async function readCodexHomeAuth(accountId: string): Promise<CodexAuthJson | null> {
   const path = join(codexAccountHomePath(accountId), "auth.json");
   if (!existsSync(path)) return null;
@@ -172,56 +179,194 @@ async function readCodexHomeAuth(accountId: string): Promise<CodexAuthJson | nul
   }
 }
 
-async function codexAccessToken(account?: ProviderAccount): Promise<string | null> {
-  const current = await readCurrentCodexAuth();
-  if (account?.id) {
-    if (authMatchesAccount(current, account.id)) return codexToken(current);
-    const homeAuth = await readCodexHomeAuth(account.id);
-    if (authMatchesAccount(homeAuth, account.id)) return codexToken(homeAuth);
-    return codexToken(await readCodexStoredAuth(account.id));
-  }
-  const currentToken = codexToken(current);
-  if (currentToken) return currentToken;
-  const path = join(app.getPath("home"), ".codex", "auth.json");
-  if (!existsSync(path)) return null;
+async function writeCodexHomeAuth(accountId: string, auth: CodexAuthJson, onlyIfPresent = false): Promise<void> {
+  const home = codexAccountHomePath(accountId);
+  const path = join(home, "auth.json");
+  if (onlyIfPresent && !existsSync(path)) return;
+  await mkdir(home, { recursive: true });
+  await writeFile(path, JSON.stringify(auth), { encoding: "utf8", mode: 0o600 });
+}
+
+async function writeCodexStoredAuth(auth: CodexAuthJson, account?: ProviderAccount): Promise<void> {
+  const subject = codexAuthSubject(auth);
+  const id = account?.id ?? subject?.id;
+  if (!id) return;
+  await writeJsonSecret("codex", id, "oauth", auth);
+  await upsertStoredAccount({
+    id,
+    provider: "codex",
+    label: subject?.label || account?.label || "Codex 계정",
+    email: subject?.email ?? account?.email,
+    userId: subject?.userId ?? account?.userId,
+    credentialSource: "keychain",
+    credentialKind: "oauth",
+  });
+}
+
+function jwtPayload(token: string | undefined): Record<string, unknown> | null {
+  const part = token?.split(".")[1];
+  if (!part) return null;
   try {
-    return codexToken(JSON.parse(await readFile(path, "utf8")) as CodexAuthJson);
+    const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="), "base64").toString("utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
 }
 
+function codexTokenNeedsRefresh(auth: CodexAuthJson): boolean {
+  const payload = jwtPayload(auth.tokens?.access_token);
+  const exp = payload?.exp;
+  return typeof exp === "number" && exp * 1000 <= Date.now() + CODEX_ACCESS_TOKEN_REFRESH_WINDOW_MS;
+}
+
+async function codexAuthSources(account?: ProviderAccount): Promise<CodexAuthSource[]> {
+  const sources: CodexAuthSource[] = [];
+  const seen = new Set<string>();
+  const add = (source: CodexAuthSource | null): void => {
+    const token = codexToken(source?.auth ?? null);
+    const key = `${token ?? ""}:${source?.auth.tokens?.refresh_token ?? ""}`;
+    if (!source || !token || seen.has(key)) return;
+    seen.add(key);
+    sources.push(source);
+  };
+  const current = await readCurrentCodexAuth();
+  if (account?.id) {
+    if (authMatchesAccount(current, account.id)) {
+      add({
+        auth: current!,
+        save: async (fresh) => {
+          await writeCurrentCodexAuth(fresh);
+          await writeCodexStoredAuth(fresh, account);
+          await writeCodexHomeAuth(account.id, fresh, true);
+        },
+      });
+    }
+    const homeAuth = await readCodexHomeAuth(account.id);
+    if (authMatchesAccount(homeAuth, account.id)) {
+      add({
+        auth: homeAuth!,
+        save: async (fresh) => {
+          await writeCodexHomeAuth(account.id, fresh);
+          await writeCodexStoredAuth(fresh, account);
+        },
+      });
+    }
+    const stored = await readCodexStoredAuth(account.id);
+    if (authMatchesAccount(stored, account.id)) {
+      add({
+        auth: stored!,
+        save: async (fresh) => {
+          await writeCodexStoredAuth(fresh, account);
+          await writeCodexHomeAuth(account.id, fresh, true);
+        },
+      });
+    }
+    return sources;
+  }
+  if (current) {
+    add({
+      auth: current,
+      save: async (fresh) => {
+        await writeCurrentCodexAuth(fresh);
+        await writeCodexStoredAuth(fresh);
+      },
+    });
+  }
+  const stored = await readCodexStoredAuth();
+  if (stored) add({ auth: stored, save: (fresh) => writeCodexStoredAuth(fresh) });
+  return sources;
+}
+
+async function refreshCodexSource(source: CodexAuthSource, account?: ProviderAccount): Promise<CodexAuthSource | null> {
+  const fresh = await refreshCodexAuth(source.auth);
+  if (!fresh) return null;
+  if (account?.id && !authMatchesAccount(fresh, account.id)) {
+    throw new Error("Codex token refresh returned a different account");
+  }
+  await source.save(fresh);
+  return { auth: fresh, save: source.save };
+}
+
+async function codexAuthForUsage(account?: ProviderAccount): Promise<CodexAuthSource | null> {
+  let fallback: CodexAuthSource | null = null;
+  for (const source of await codexAuthSources(account)) {
+    if (!codexToken(source.auth)) continue;
+    if (!codexTokenNeedsRefresh(source.auth)) return source;
+    fallback ??= source;
+    try {
+      const fresh = await refreshCodexSource(source, account);
+      if (fresh && codexToken(fresh.auth)) return fresh;
+    } catch {
+      // Try the next stored copy. The account home and keychain can diverge
+      // when a refresh token has rotated in one store but not the other.
+    }
+  }
+  return fallback;
+}
+
+function codexRefreshFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/refresh_token_expired/i.test(raw)) return "Codex refresh token이 만료되었습니다. 다시 로그인해주세요.";
+  if (/refresh_token_reused|refresh_token_invalidated|different account/i.test(raw)) return "Codex 계정이 다른 곳에서 로그아웃되었거나 다른 계정으로 바뀌었습니다. 다시 로그인해주세요.";
+  return `Codex OAuth 토큰 갱신에 실패했습니다. 다시 로그인해주세요. (${raw})`;
+}
+
+function fetchCodexUsage(token: string): Promise<Response> {
+  return fetch(CODEX_USAGE_URL, {
+    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+function codexUsageEntry(data: Record<string, unknown>, connected: boolean, account: ProviderAccount | undefined, subject: string): ProviderUsageEntry {
+  const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
+  const rawLimits = [data, data.rate_limit, data.rate_limits, rateLimitsById?.codex]
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+  const windows = [
+    ...rawLimits.flatMap((value) => collectUsageWindows(value)),
+    ...Object.entries(rateLimitsById ?? {}).flatMap(([, value]) => value && typeof value === "object" ? collectUsageWindows(value as Record<string, unknown>) : []),
+  ];
+  const unique = [...new Map(windows.map((window) => [`${window.label}:${window.resetsAt ?? ""}`, window])).values()];
+  return remember({ provider: "codex", label: "Codex", connected, windows: unique, ...accountFields(account), unavailable: unique.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+}
+
 async function codexUsage(connected: boolean, account?: ProviderAccount): Promise<ProviderUsageEntry | null> {
   if (!connected) return null;
-  const token = await codexAccessToken(account);
+  let source = await codexAuthForUsage(account);
+  let token = codexToken(source?.auth ?? null);
   const subject = tokenSubject(token);
   const hit = cached("codex", subject);
-  if (hit) return hit;
+  if (hit && !hit.error && !hit.unavailable) return hit;
   if (!token) {
     return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable: "Codex 로그인 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
   }
   try {
-    const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
-    });
+    let activeSubject = subject;
+    let res = await fetchCodexUsage(token);
+    if ((res.status === 401 || res.status === 403) && source) {
+      try {
+        const fresh = await refreshCodexSource(source, account);
+        source = fresh ?? source;
+        const freshToken = codexToken(source.auth);
+        if (freshToken && freshToken !== token) {
+          token = freshToken;
+          activeSubject = tokenSubject(token);
+          res = await fetchCodexUsage(token);
+        }
+      } catch (error) {
+        return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable: codexRefreshFailureMessage(error), updatedAt: Date.now() }, subject);
+      }
+    }
     if (!res.ok) {
       const unavailable = res.status === 401 || res.status === 403
         ? `ChatGPT usage API가 Codex OAuth 토큰을 거부했습니다. (${res.status})`
         : undefined;
-      return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable, error: unavailable ? undefined : `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
+      return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), unavailable, error: unavailable ? undefined : `${res.status} ${await res.text()}`, updatedAt: Date.now() }, activeSubject);
     }
     const data = await res.json() as Record<string, unknown>;
-    const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
-    const rawLimits = [data, data.rate_limit, data.rate_limits, rateLimitsById?.codex]
-      .flatMap((value) => Array.isArray(value) ? value : [value])
-      .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
-    const windows = [
-      ...rawLimits.flatMap((value) => collectUsageWindows(value)),
-      ...Object.entries(rateLimitsById ?? {}).flatMap(([, value]) => value && typeof value === "object" ? collectUsageWindows(value as Record<string, unknown>) : []),
-    ];
-    const unique = [...new Map(windows.map((window) => [`${window.label}:${window.resetsAt ?? ""}`, window])).values()];
-    return remember({ provider: "codex", label: "Codex", connected, windows: unique, ...accountFields(account), unavailable: unique.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+    return codexUsageEntry(data, connected, account, activeSubject);
   } catch (error) {
     return remember({ provider: "codex", label: "Codex", connected, windows: [], ...accountFields(account), error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
   }
