@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
 
 type ProviderTurnMeta = {
@@ -30,6 +30,8 @@ type ClaudeJsonLine = {
   timestamp?: string;
   isSidechain?: boolean;
   version?: string;
+  content?: unknown;
+  attachment?: { content?: unknown; stdout?: unknown; command?: unknown };
   message?: { role?: string; content?: unknown };
 };
 
@@ -83,7 +85,40 @@ function hasClaudeImportNoise(items: ThreadHistoryItem[]): boolean {
 }
 
 function claudeLineTime(line: ClaudeJsonLine): number {
-  return toUnixSeconds(Date.parse(String(line.timestamp ?? "")));
+  const parsed = Date.parse(String(line.timestamp ?? ""));
+  return Number.isFinite(parsed) ? toUnixSeconds(parsed) : 0;
+}
+
+function claudeLineText(line: ClaudeJsonLine): string {
+  const messageText = claudeTextContent(line.message?.content);
+  if (messageText) return messageText;
+  if (typeof line.content === "string") return line.content.trim();
+  const attachment = line.attachment;
+  const attachmentText = typeof attachment?.content === "string" ? attachment.content : typeof attachment?.stdout === "string" ? attachment.stdout : "";
+  return attachmentText.trim();
+}
+
+function claudeSessionFallbackText(lines: ClaudeJsonLine[]): string {
+  const leafUuid = String((lines.find((line) => line.type === "last-prompt") as Record<string, unknown> | undefined)?.leafUuid ?? "");
+  const leafText = leafUuid ? claudeLineText(lines.find((line) => line.uuid === leafUuid) ?? {}) : "";
+  if (leafText && !isClaudeLocalCommandText(leafText)) return leafText;
+  for (const line of lines) {
+    const text = claudeLineText(line);
+    if (!text) continue;
+    if (/resume cancelled/i.test(text)) continue;
+    if (/^(Kept model as|Set model to)/i.test(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim())) continue;
+    if (isClaudeLocalCommandText(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+function cwdFromClaudeProjectPath(path: string): string {
+  const projectKey = basename(dirname(path));
+  const windows = /^([A-Za-z])--(.+)$/.exec(projectKey);
+  if (windows) return `${windows[1]}:\\${windows[2]!.split("-").filter(Boolean).join("\\")}`;
+  if (projectKey.startsWith("-")) return `/${projectKey.slice(1).split("-").filter(Boolean).join("/")}`;
+  return "";
 }
 
 function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -390,13 +425,16 @@ export class ProviderTranscriptStore {
         try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
       }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
       const history = this.historyFromClaudeLines(lines, threadId);
-      if (!history.length) continue;
-      const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? "";
-      const firstUser = history.find((item) => item.kind === "user")?.text ?? "새 Claude Code 채팅";
-      const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text ?? firstUser;
-      const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0);
+      if (!history.length && all.deleted?.[threadId]) continue;
+      const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? cwdFromClaudeProjectPath(path);
+      if (!cwd) continue;
+      const fallbackText = claudeSessionFallbackText(lines);
+      const firstUser = history.find((item) => item.kind === "user")?.text || fallbackText || "새 Claude Code 채팅";
+      const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text || fallbackText || firstUser;
+      const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0) || nowSeconds();
       const existing = all.items[threadId] ?? [];
-      if (history.length >= existing.length || hasClaudeImportNoise(existing)) all.items[threadId] = history;
+      if (history.length && (history.length >= existing.length || hasClaudeImportNoise(existing))) all.items[threadId] = history;
+      else all.items[threadId] ??= [];
       all.meta[threadId] = {
         ...all.meta[threadId],
         id: threadId,

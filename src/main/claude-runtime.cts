@@ -279,6 +279,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
         cwd: input.cwd,
         model: input.model,
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
         abortController,
         includePartialMessages: true,
         permissionMode: mode,

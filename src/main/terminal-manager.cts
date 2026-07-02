@@ -35,7 +35,11 @@ export class TerminalManager {
       const native = pty.spawn(shell, [], { name: "xterm-256color", cwd: terminalCwd, cols, rows, env: process.env as Record<string, string> });
       native.onData(append);
       native.onExit(() => this.deleteSession(id));
-      processRef = native;
+      processRef = {
+        write: (data) => native.write(data),
+        resize: (nextCols, nextRows) => native.resize(Math.max(2, nextCols), Math.max(2, nextRows)),
+        kill: () => native.kill(),
+      };
     } catch {
       fallback = true;
       const child = spawn(shell, ["-i"], { cwd: terminalCwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
