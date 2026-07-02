@@ -15,6 +15,7 @@ Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
+- v0.1.4 composer isolation fix: composer model/provider/account/reasoning/speed now persist by `runtime:thread:<id>`; thread drafts also key by runtime+thread id; stop/send busy state only follows active thread id, so running state no longer leaks across threads/runtime modes.
 - v0.1.3 release prep: Provider quota UI now displays remaining percent like stock Codex; usage parser treats `remaining_percent` as remaining, supports 0..1 ratios, and recognizes Claude Fable labels from model/limit/tier fields. Work-duration timer now ticks while any activity entry is in progress, not only when parent turn status is inProgress.
 - v0.1.2 release prep: `package.json`/lock bumped to 0.1.2 for tag-triggered GitHub release action.
 - v0.1.1 release prep and stock restart continuation fixes are on origin/main.
@@ -26,4 +27,4 @@ History: worklog. Resume risks: 04-handoff.md.
 - Claude approval bridge: SDK `canUseTool` → existing renderer approval dialog; acceptEdits/default modes; accept/decline verified live.
 
 ## Verify
-- `npm run build` passes under `devil-codex@0.1.3`.
+- `npm run build` passes under `devil-codex@0.1.4`.

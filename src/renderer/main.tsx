@@ -98,6 +98,7 @@ const AGENT_RUNTIME_KEY = "devil-codex:agent-runtime";
 const CLAUDE_PROVIDER_KEY = "devil-codex:claude-provider";
 const CLAUDE_ACCOUNT_KEY = "devil-codex:claude-account";
 const CLAUDE_MODEL_KEY = "devil-codex:claude-model";
+const COMPOSER_CONFIGS_KEY = "devil-codex:composer-configs";
 const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
 const ENVIRONMENT_SOURCE_LIMIT = 8;
 const ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT = 4;
@@ -269,6 +270,34 @@ function storedClaudeProvider(): ProviderId {
 
 function storedClaudeAccount(): string | undefined {
   return localStorage.getItem(CLAUDE_ACCOUNT_KEY) || undefined;
+}
+
+type ComposerConfigSnapshot = {
+  runtime?: AgentRuntimeId;
+  provider?: ProviderId;
+  accountId?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  responseSpeed?: ResponseSpeed;
+  updatedAt: number;
+};
+
+function readComposerConfigs(): Record<string, ComposerConfigSnapshot> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COMPOSER_CONFIGS_KEY) ?? "{}") as Record<string, ComposerConfigSnapshot>;
+    return Object.fromEntries(Object.entries(raw).filter(([key, value]) => key && typeof value?.model === "string"));
+  } catch {
+    return {};
+  }
+}
+
+function writeComposerConfigs(input: Record<string, ComposerConfigSnapshot>): void {
+  try {
+    const compact = Object.fromEntries(Object.entries(input).sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, 160));
+    localStorage.setItem(COMPOSER_CONFIGS_KEY, JSON.stringify(compact));
+  } catch {
+    // Composer config persistence is best-effort. Losing it should not block chat.
+  }
 }
 
 function transferContextFromHistory(items: ThreadHistoryItem[]): string {
@@ -556,17 +585,34 @@ function App(): React.JSX.Element {
   const [claudeModel, setClaudeModelState] = useState(() => storedClaudeModel());
   const [claudeProviderId, setClaudeProviderIdState] = useState<ProviderId>(() => storedClaudeProvider());
   const [claudeAccountId, setClaudeAccountIdState] = useState<string | undefined>(() => storedClaudeAccount());
+  const [composerConfigs, setComposerConfigs] = useState<Record<string, ComposerConfigSnapshot>>(readComposerConfigs);
   const claudeModeProviders = providers.settings?.providers.filter((provider) => provider.id !== "codex") ?? [];
   const claudeModeProvider = claudeModeProviders.find((provider) => provider.id === claudeProviderId) ?? claudeModeProviders.find((provider) => provider.id === "claude-code") ?? null;
   const resolvedClaudeProviderId: ProviderId = claudeModeProvider?.id ?? "claude-code";
   const resolvedClaudeAccountId = claudeAccountId && claudeModeProvider?.accounts.some((account) => account.id === claudeAccountId)
     ? claudeAccountId
     : claudeModeProvider?.accounts[0]?.id;
-  const composerProviderId: ProviderId = agentRuntime === "claude-code" ? resolvedClaudeProviderId : providers.settings?.provider ?? "codex";
-  const composerModel = agentRuntime === "claude-code" ? claudeModel : model;
-  const composerAccountId = agentRuntime === "claude-code" ? resolvedClaudeAccountId : accountId;
-  const composerProviders = agentRuntime === "claude-code" ? claudeModeProviders : providers.settings?.providers ?? [];
-  const activeProvider = agentRuntime === "claude-code" ? claudeModeProvider : providers.settings?.providers.find((provider) => provider.id === providers.settings?.provider) ?? null;
+  const composerRuntime = thread?.runtime ?? agentRuntime;
+  const composerConfigKey = thread?.id ? `${composerRuntime}:thread:${thread.id}` : null;
+  const composerConfig = composerConfigKey ? composerConfigs[composerConfigKey] : undefined;
+  const composerProviders = composerRuntime === "claude-code" ? claudeModeProviders : providers.settings?.providers ?? [];
+  const defaultComposerProviderId: ProviderId = composerRuntime === "claude-code" ? resolvedClaudeProviderId : providers.settings?.provider ?? "codex";
+  const composerProviderId: ProviderId = composerConfig?.provider ?? thread?.provider ?? defaultComposerProviderId;
+  const composerProvider = composerProviders.find((provider) => provider.id === composerProviderId) ?? null;
+  const defaultComposerModel = composerRuntime === "claude-code" ? claudeModel : model;
+  const composerModel = composerConfig?.model ?? thread?.model ?? defaultComposerModel;
+  const composerAccountId = composerConfig?.accountId
+    ?? thread?.accountId
+    ?? (composerRuntime === "claude-code" ? resolvedClaudeAccountId : accountId);
+  const activeProvider = composerProvider;
+  const rememberComposerConfig = (key: string | null, patch: Omit<Partial<ComposerConfigSnapshot>, "updatedAt">): void => {
+    if (!key) return;
+    setComposerConfigs((current) => {
+      const next = { ...current, [key]: { ...(current[key] ?? {}), ...patch, updatedAt: Date.now() } };
+      writeComposerConfigs(next);
+      return next;
+    });
+  };
   const setAgentRuntime = (next: AgentRuntimeId): void => {
     setAgentRuntimeState(next);
     localStorage.setItem(AGENT_RUNTIME_KEY, next);
@@ -581,7 +627,12 @@ function App(): React.JSX.Element {
     codexSettings.save(next);
   };
   const setModel = (next: { provider: ProviderId; accountId?: string; model: string }): void => {
-    if (agentRuntime === "claude-code") {
+    if (composerConfigKey) {
+      rememberComposerConfig(composerConfigKey, { runtime: composerRuntime, provider: next.provider, accountId: next.accountId, model: next.model });
+      setThread((current) => current ? { ...current, runtime: composerRuntime, provider: next.provider, accountId: next.accountId, model: next.model } : current);
+      return;
+    }
+    if (composerRuntime === "claude-code") {
       setClaudeProviderIdState(next.provider);
       localStorage.setItem(CLAUDE_PROVIDER_KEY, next.provider);
       setClaudeAccountIdState(next.accountId);
@@ -595,11 +646,19 @@ function App(): React.JSX.Element {
     if (next.provider === "codex") syncStockCodexDefaults({ model: next.model });
   };
   const setReasoningEffort = (value: ReasoningEffort): void => {
+    if (composerConfigKey) {
+      rememberComposerConfig(composerConfigKey, { runtime: composerRuntime, reasoningEffort: value });
+      return;
+    }
     setReasoningEffortState(value);
     localStorage.setItem("devil-codex:reasoning-effort", value);
     syncStockCodexDefaults({ reasoningEffort: value });
   };
   const setResponseSpeed = (value: ResponseSpeed): void => {
+    if (composerConfigKey) {
+      rememberComposerConfig(composerConfigKey, { runtime: composerRuntime, responseSpeed: value });
+      return;
+    }
     setResponseSpeedState(value);
     localStorage.setItem("devil-codex:response-speed", value);
     syncStockCodexDefaults({ responseSpeed: value });
@@ -845,7 +904,7 @@ function App(): React.JSX.Element {
     return () => { active = false; };
   }, [workspace, runtime.state]);
 
-  const composerSkillOptions = agentRuntime === "claude-code" ? CLAUDE_RUNTIME_SKILLS : availableSkills;
+  const composerSkillOptions = composerRuntime === "claude-code" ? CLAUDE_RUNTIME_SKILLS : availableSkills;
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
   function scheduleThreadScrollPersist(): void {
     if (scrollPersistFrame.current != null) return;
@@ -950,12 +1009,14 @@ function App(): React.JSX.Element {
   const isGeneralChatWorkspace = basenamePath(workspace) === "new-chat";
   const hasStartedThread = Boolean(activeSummary && items.length > 0);
   const canUseThreadMenu = view === "thread" && hasStartedThread;
-  const composerDraftKey = thread?.id ?? `${agentRuntime}:${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
-  const runtimeLabel = agentRuntime === "claude-code" ? "Claude Code" : "Codex";
+  const composerDraftKey = thread?.id ? `${composerRuntime}:thread:${thread.id}` : `${agentRuntime}:${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
+  const composerReasoningEffort = composerConfig?.reasoningEffort ?? reasoningEffort;
+  const composerResponseSpeed = composerConfig?.responseSpeed ?? responseSpeed;
+  const runtimeLabel = composerRuntime === "claude-code" ? "Claude Code" : "Codex";
   const runtimeBrandLabel = agentRuntime === "claude-code" ? "Claude" : "Codex";
   const runtimeBrandIcon = agentRuntime === "claude-code" ? claudeRuntimeIcon : codexRuntimeIcon;
   const canOpenWorkspace = Boolean(workspace && !isGeneralChatWorkspace && openTargets.length > 0);
-  const activeThreadBusy = Boolean(thread?.id ? runningTurns[thread.id] : busy);
+  const activeThreadBusy = Boolean(thread?.id && runningTurns[thread.id]);
   const runningThreadIds = useMemo(() => new Set(Object.keys(runningTurns)), [runningTurns]);
   // Codex sometimes emits the same answer as several agentMessages, so the final
   // text echoes inside the work tab as "작업 메모" and as extra standalone copies.
@@ -2015,15 +2076,15 @@ function App(): React.JSX.Element {
     const handoffPrefix = handoffContext
       ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
       : "";
-    const runtimeSkillPrefix = agentRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills) : "";
+    const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills) : "";
     const text = `${runtimeSkillPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
-    const provider = agentRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? providers.settings?.provider ?? "codex";
-    const selectedAccountId = agentRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
+    const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;
+    const selectedAccountId = composerRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === composerProviderId ? composerAccountId : undefined);
     const sendAccountId = provider === "codex" ? undefined : selectedAccountId;
-    const sendModel = agentRuntime === "claude-code" ? options.model ?? composerModel : options.model ?? model;
-    if (!text || !workspace || (agentRuntime === "codex" && provider === "codex" && runtime.state !== "connected")) return;
+    const sendModel = options.model ?? composerModel;
+    if (!text || !workspace || (composerRuntime === "codex" && provider === "codex" && runtime.state !== "connected")) return;
     const permissions = input.approvalMode === "full"
       ? { approvalPolicy: "never" as const, sandboxMode: "danger-full-access" as const }
       : input.approvalMode === "ask"
@@ -2044,7 +2105,7 @@ function App(): React.JSX.Element {
     }
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -2057,14 +2118,15 @@ function App(): React.JSX.Element {
     setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, ...visibleTurnItems]));
     setBusy(true);
     try {
-      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
-      const visibleThread: ThreadRef = { ...activeThread, runtime: agentRuntime, provider, model: sendModel, accountId: sendAccountId };
+      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
+      const visibleThread: ThreadRef = { ...activeThread, runtime: composerRuntime, provider, model: sendModel, accountId: sendAccountId };
       threadRef.current = visibleThread;
       setThread(visibleThread);
+      rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
-        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
+        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id && summary.id !== replacedThread?.id)]);
       }
@@ -2073,7 +2135,7 @@ function App(): React.JSX.Element {
         hideThreadIdLocally(replacedThread.id);
       }
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       pendingTurn.current = pending;
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
@@ -2827,7 +2889,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (agentRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={agentRuntime} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
