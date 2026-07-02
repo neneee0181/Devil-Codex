@@ -10,11 +10,12 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-02T14:20:00+09:00
+Last: 2026-07-02T14:35:00+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
+- v0.1.2 release prep: `package.json`/lock bumped to 0.1.2 for tag-triggered GitHub release action.
 - v0.1.1 release prep and stock restart continuation fixes are on origin/main.
 - Claude Code runtime hardened: probe now detects the SDK's bundled platform `claude` binary (no external CLI needed), tool_result events from user messages resolve tool rows (was dead path), tool calls show in-progress via `item/started`, thinking streams as reasoning, text blocks separated, result usage attached to `turn/completed`.
 - Session id is auto-generated and saved early via `onSessionId`, so a failed first turn can resume; user stop resolves quietly (no spurious 요청 실패 row).
@@ -24,4 +25,4 @@ History: worklog. Resume risks: 04-handoff.md.
 - Claude approval bridge: SDK `canUseTool` → existing renderer approval dialog; acceptEdits/default modes; accept/decline verified live.
 
 ## Verify
-- `npm run build`; fakehome 3-cycle config smoke all-preserved + idempotent; live Write-tool approval E2E accept/decline.
+- `npm run build` passes under `devil-codex@0.1.2`.
