@@ -161,6 +161,7 @@ export function Composer({
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
   const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }, mcpServers) : [], [trigger, skillOptions, mcpServers, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
+  const composerEmpty = draft.trim().length === 0 && skills.length === 0;
   const setApprovalMode = (value: ApprovalMode): void => {
     setApprovalModeState(value);
     localStorage.setItem(APPROVAL_MODE_KEY, value);
@@ -441,7 +442,7 @@ export function Composer({
           contentEditable={connected}
           role="textbox"
           aria-multiline="true"
-          data-empty={draft.trim() ? "false" : "true"}
+          data-empty={composerEmpty ? "true" : "false"}
           data-placeholder={busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
           onInput={(event) => { setDraft(editorText(event.currentTarget)); setSkills(editorSkills(event.currentTarget)); updateTrigger(event.currentTarget); }}
           onClick={(event) => updateTrigger(event.currentTarget)}

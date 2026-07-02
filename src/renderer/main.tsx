@@ -410,11 +410,26 @@ function timelineItemKey(item: ThreadHistoryItem): string {
   return `${item.kind}:${item.turnId ?? ""}:${item.text ?? ""}`;
 }
 
+function normalizedUserText(text: string): string {
+  let value = text.trim();
+  const marker = "[수정된 사용자 메시지]";
+  if (value.includes(marker)) value = value.slice(value.lastIndexOf(marker) + marker.length).trim();
+  const newRequest = "[새 요청]";
+  if (value.includes(newRequest)) value = value.slice(value.lastIndexOf(newRequest) + newRequest.length).trim();
+  value = value.replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "");
+  value = value.replace(/^\[플러그인 스킬\][\s\S]*?\n\n/, "");
+  value = value.replace(/^\[연결된 플러그인\/MCP 언급\][\s\S]*?\n\n/, "");
+  value = value.replace(/^\[이전 런타임에서 전달된 대화\][\s\S]*?\[새 요청\]\s*/, "");
+  value = value.replace(/\n+\[첨부 파일 컨텍스트\][\s\S]*$/m, "");
+  value = value.replace(/^(?:\$[^\s]+|\/[^\s]+)(?:[ \t]+(?:\$[^\s]+|\/[^\s]+))*\s*\n+/, "");
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function userTimelineKey(item: ThreadHistoryItem): string {
   const attachments = (item.attachments ?? [])
     .map((attachment) => `${attachment.kind}:${attachment.name}:${attachment.path ?? attachment.url ?? ""}:${attachment.size ?? ""}`)
     .join("|");
-  return `user:${item.text.trim()}:${attachments}`;
+  return `user:${normalizedUserText(item.text)}:${attachments}`;
 }
 
 function dedupePreAnswerUserItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
