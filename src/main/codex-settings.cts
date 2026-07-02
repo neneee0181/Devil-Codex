@@ -5,7 +5,15 @@ import { codexHome } from "./codex-home.cjs";
 import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
 const defaultConfigPath = join(codexHome(), "config.toml");
-const defaults: CodexSettings = { model: "gpt-5.4", approvalPolicy: "on-request", sandboxMode: "workspace-write", devilMcpEnabled: false, englishOutput: false };
+const defaults: CodexSettings = {
+  model: "gpt-5.4",
+  approvalPolicy: "on-request",
+  sandboxMode: "workspace-write",
+  reasoningEffort: "medium",
+  responseSpeed: "standard",
+  devilMcpEnabled: false,
+  englishOutput: false,
+};
 const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
 // NOTE: stock Codex owns `service_tier` (response speed) and
 // `model_reasoning_effort`; Devil must never strip or rewrite them. An earlier
@@ -55,6 +63,8 @@ export class CodexSettingsStore {
         model: readValue(source, keys.model) ?? defaults.model,
         approvalPolicy: readValue(source, keys.approvalPolicy) ?? defaults.approvalPolicy,
         sandboxMode: readValue(source, keys.sandboxMode) ?? defaults.sandboxMode,
+        reasoningEffort: defaults.reasoningEffort,
+        responseSpeed: defaults.responseSpeed,
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
