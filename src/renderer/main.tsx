@@ -374,11 +374,37 @@ function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: T
 }
 
 function timelineItemKey(item: ThreadHistoryItem): string {
+  if (item.kind === "user") return userTimelineKey(item);
   if (item.id) return item.id;
   if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;
   if (item.kind === "agent" && item.turnId) return `agent:${item.turnId}:${item.text}`;
-  if (item.kind === "user") return `user:${item.text}:${item.attachments?.length ?? 0}`;
   return `${item.kind}:${item.turnId ?? ""}:${item.text ?? ""}`;
+}
+
+function userTimelineKey(item: ThreadHistoryItem): string {
+  const attachments = (item.attachments ?? [])
+    .map((attachment) => `${attachment.kind}:${attachment.name}:${attachment.path ?? attachment.url ?? ""}:${attachment.size ?? ""}`)
+    .join("|");
+  return `user:${item.text.trim()}:${attachments}`;
+}
+
+function dedupePreAnswerUserItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const seen = new Map<string, number>();
+  const remove = new Set<number>();
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]!;
+    if (item.kind !== "user") continue;
+    const key = userTimelineKey(item);
+    const previous = seen.get(key);
+    if (previous == null) {
+      seen.set(key, index);
+      continue;
+    }
+    const answeredBetween = items.slice(previous + 1, index).some((candidate) => candidate.kind === "agent");
+    if (!answeredBetween) remove.add(index);
+    else seen.set(key, index);
+  }
+  return remove.size ? items.filter((_, index) => !remove.has(index)) : items;
 }
 
 function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadActivityEntry[] = []): ThreadActivityEntry[] {
@@ -409,7 +435,7 @@ function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadA
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
-  const result = [...base];
+  const result = dedupePreAnswerUserItems(base);
   const indexes = new Map(result.map((item, index) => [timelineItemKey(item), index]));
   for (const item of overlay) {
     const key = timelineItemKey(item);
@@ -425,7 +451,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       };
     } else { result[index] = item; }
   }
-  return result;
+  return dedupePreAnswerUserItems(result);
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
@@ -649,6 +675,7 @@ function App(): React.JSX.Element {
   const [selectedDiff, setSelectedDiff] = useState<WorkspaceDiff | null>(null);
   const [fileTarget, setFileTarget] = useState<string | null>(null);
   const [diffBusy, setDiffBusy] = useState(false);
+  const selectedDiffRef = useRef<WorkspaceDiff | null>(null);
   const providers = useProviders();
   const codexSettings = useCodexSettings();
   const englishOutput = Boolean(codexSettings.settings?.englishOutput);
@@ -896,16 +923,18 @@ function App(): React.JSX.Element {
   useDismissShellPopovers(closePopovers);
   const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
-  function notifyInBackground(kind: keyof Omit<NotificationSettings, "notificationsEnabled">, title: string, body?: string, urgency?: "normal" | "critical"): void {
+  useEffect(() => { selectedDiffRef.current = selectedDiff; }, [selectedDiff]);
+
+  function notifyInBackground(kind: keyof Omit<NotificationSettings, "notificationsEnabled">, title: string, body?: string, urgency?: "normal" | "critical", force = false): void {
     const settings = readNotificationSettings();
     if (!settings.notificationsEnabled || !settings[kind]) return;
-    void window.devilCodex.showNotification({ title, body, urgency }).catch(() => undefined);
+    void window.devilCodex.showNotification({ title, body, urgency, force }).catch(() => undefined);
   }
 
   useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => window.devilCodex.onAsk((request) => {
     const first = request.questions[0];
-    notifyInBackground("notifyOnAsk", "Devil Codex 질문", first?.question ?? "AI가 사용자 입력을 기다리고 있습니다.", "critical");
+    notifyInBackground("notifyOnAsk", "Devil Codex 질문", first?.question ?? "AI가 사용자 입력을 기다리고 있습니다.", "critical", true);
   }), []);
   function runtimeSnapshotFor(runtimeId: AgentRuntimeId): RuntimeThreadSnapshot {
     return {
@@ -1804,7 +1833,7 @@ function App(): React.JSX.Element {
   function receiveEvent(event: AppServerEvent): void {
     const approval = approvalPromptFromEvent(event);
     if (approval) {
-      notifyInBackground("notifyOnApproval", approval.kind === "command" ? "명령 실행 승인 필요" : "파일 변경 승인 필요", approval.command || approval.reason || "AI 작업을 계속하려면 승인이 필요합니다.", "critical");
+      notifyInBackground("notifyOnApproval", approval.kind === "command" ? "명령 실행 승인 필요" : "파일 변경 승인 필요", approval.command || approval.reason || "AI 작업을 계속하려면 승인이 필요합니다.", "critical", true);
       setApprovalQueue((current) => current.some((prompt) => prompt.requestId === approval.requestId) ? current : [...current, approval]);
       return;
     }
@@ -1908,7 +1937,7 @@ function App(): React.JSX.Element {
       const hasQueuedFollowUp = Boolean(threadId && (queuedTurns.current.get(threadId)?.length ?? 0) > 0);
       if (!hasQueuedFollowUp) {
         const failed = turnStatus === "failed";
-        notifyInBackground("notifyOnTurnComplete", failed ? "AI 작업 실패" : "AI 작업 완료", failed ? "작업이 실패했습니다. Devil Codex에서 진단을 확인하세요." : "요청한 작업이 끝났습니다.", failed ? "critical" : "normal");
+        notifyInBackground("notifyOnTurnComplete", failed ? "AI 작업 실패" : "AI 작업 완료", failed ? "작업이 실패했습니다. Devil Codex에서 진단을 확인하세요." : "요청한 작업이 끝났습니다.", failed ? "critical" : "normal", true);
       }
       if (threadId) startQueuedTurn(threadId);
       if (steeringInterrupted) {
@@ -2176,14 +2205,14 @@ function App(): React.JSX.Element {
     }
   }
 
-  async function selectDiff(file: WorkspaceChange): Promise<void> {
-    setDiffBusy(true);
+  async function selectDiff(file: WorkspaceChange, options: { quiet?: boolean } = {}): Promise<void> {
+    if (!options.quiet) setDiffBusy(true);
     try {
       setSelectedDiff(await window.devilCodex.getWorkspaceDiff({ cwd: workspace, path: file.path }));
     } catch (error) {
       setSelectedDiff({ path: file.path, status: file.status, additions: file.additions, deletions: file.deletions, text: String(error), binary: false });
     } finally {
-      setDiffBusy(false);
+      if (!options.quiet) setDiffBusy(false);
     }
   }
 
@@ -2192,6 +2221,39 @@ function App(): React.JSX.Element {
     if (next?.files[0]) await selectDiff(next.files[0]);
     else setSelectedDiff(null);
   }
+
+  const reviewPanelVisible = view === "thread" && Boolean(workspace)
+    && ((utilityPanelOpen && utilityActive === "review") || (terminalOpen && bottomActive === "review"));
+  useEffect(() => {
+    if (!reviewPanelVisible) return undefined;
+    let live = true;
+    let timer: number | null = null;
+    let running = false;
+    const schedule = (delay: number): void => {
+      if (!live) return;
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(tick, delay);
+    };
+    const tick = async (): Promise<void> => {
+      if (running || !workspace) return;
+      running = true;
+      try {
+        const next = await refreshChanges(workspace);
+        const selected = selectedDiffRef.current;
+        const file = selected ? next.files.find((item) => item.path === selected.path) : next.files[0];
+        if (file) await selectDiff(file, { quiet: true });
+        else setSelectedDiff(null);
+      } finally {
+        running = false;
+        schedule(activeThreadBusy ? 900 : 1800);
+      }
+    };
+    schedule(200);
+    return () => {
+      live = false;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [activeThreadBusy, reviewPanelVisible, workspace]);
 
   function sendInlineReviewComment(input: { path: string; line: number; side: "old" | "new"; text: string }): void {
     if (activeThreadBusy) {

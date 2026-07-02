@@ -249,7 +249,7 @@ export interface AppInfo {
 }
 
 export type WindowControlAction = "close" | "minimize" | "maximize" | "quit";
-export interface AppNotificationInput { title: string; body?: string; urgency?: "normal" | "critical"; }
+export interface AppNotificationInput { title: string; body?: string; urgency?: "normal" | "critical"; force?: boolean; }
 
 export interface BrowserState { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; }
 

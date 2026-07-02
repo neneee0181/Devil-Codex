@@ -104,6 +104,7 @@ import { ThreadHistoryCache, mergeCachedActivities } from "./history-cache.cjs";
 
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
+if (process.platform === "win32") app.setAppUserModelId("dev.devilcodex.app");
 
 const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
 
@@ -695,9 +696,9 @@ function showMainWindow(): void {
   windowRef.focus();
 }
 
-function showBackgroundNotification(input: { title: string; body?: string; urgency?: "normal" | "critical" }): { shown: boolean } {
+function showBackgroundNotification(input: { title: string; body?: string; urgency?: "normal" | "critical"; force?: boolean }): { shown: boolean } {
   const win = windowRef;
-  if (win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused()) return { shown: false };
+  if (!input.force && win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused()) return { shown: false };
   if (!Notification.isSupported()) return { shown: false };
   const title = String(input.title ?? "").trim() || "Devil Codex";
   const body = String(input.body ?? "").trim();
@@ -1243,7 +1244,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   })().catch((error) => console.warn("[devil-codex reconcile]", error instanceof Error ? error.message : error));
 
   ipcMain.handle("app:info", () => ({ version: app.getVersion(), platform: process.platform }));
-  ipcMain.handle("app:notify", (_event, input: { title: string; body?: string; urgency?: "normal" | "critical" }) => showBackgroundNotification(input));
+  ipcMain.handle("app:notify", (_event, input: { title: string; body?: string; urgency?: "normal" | "critical"; force?: boolean }) => showBackgroundNotification(input));
   // Open the relevant macOS privacy pane (or browser-extension help) so the user
   // can grant Computer Use / browser control permissions, like stock Codex does.
   ipcMain.handle("app:open-permission", (_event, input: { kind: "accessibility" | "screen-recording" | "automation" | "browser-extension" }) => {

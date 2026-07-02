@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
+import { homedir } from "node:os";
 import { EventEmitter } from "node:events";
 import type { AppServerEvent, ApprovalDecision, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
 
@@ -63,6 +65,40 @@ function claudeCodeExecutable(): string | undefined {
   const override = process.env.DEVIL_CLAUDE_BIN;
   if (override && existsSync(override)) return override;
   return sdkBundledExecutable();
+}
+
+function claudeProjectKey(cwd: string): string {
+  const normalized = cwd.replace(/[\\/]+$/, "");
+  const windows = /^([A-Za-z]):[\\/](.*)$/.exec(normalized);
+  if (windows) return `${windows[1]}--${windows[2]!.split(/[\\/]+/).filter(Boolean).join("-")}`;
+  return `-${normalized.replace(/^\/+/, "").split(/[\\/]+/).filter(Boolean).join("-")}`;
+}
+
+async function normalizeClaudeSessionEntrypoint(cwd: string, sessionId: string | undefined): Promise<void> {
+  if (!sessionId || !cwd) return;
+  const path = join(homedir(), ".claude", "projects", claudeProjectKey(cwd), `${sessionId}.jsonl`);
+  let source = "";
+  try { source = await readFile(path, "utf8"); } catch { return; }
+  if (!source.includes('"entrypoint":"sdk-cli"')) return;
+  const next = source.split(/\r?\n/).map((line) => {
+    if (!line.trim()) return line;
+    try {
+      const parsed = JSON.parse(line) as { entrypoint?: unknown };
+      if (parsed.entrypoint === "sdk-cli") parsed.entrypoint = "cli";
+      return JSON.stringify(parsed);
+    } catch {
+      return line;
+    }
+  }).join("\n");
+  if (next !== source) await writeFile(path, next, "utf8");
+}
+
+function normalizeClaudeSessionEntrypointSoon(cwd: string, sessionId: string | undefined): void {
+  for (const delayMs of [0, 150, 600, 1500]) {
+    setTimeout(() => {
+      void normalizeClaudeSessionEntrypoint(cwd, sessionId).catch(() => undefined);
+    }, delayMs);
+  }
 }
 
 // The SDK's `exports` map hides its package.json from require(), so read it
@@ -265,6 +301,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       itemId,
       onDelta: (delta) => { text += delta; },
       onSessionId: (sessionId) => {
+        normalizeClaudeSessionEntrypointSoon(input.cwd, sessionId);
         if (sessionId === nativeSessionId) return;
         nativeSessionId = sessionId;
         input.onSessionId?.(sessionId);
@@ -297,6 +334,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     })();
 
     const result = await run.then(async () => {
+      await normalizeClaudeSessionEntrypoint(input.cwd, nativeSessionId);
       await Promise.resolve(input.onCompleted?.(text)).catch(() => undefined);
       this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text } } });
       this.emitEvent({
@@ -314,6 +352,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       });
       return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot) };
     }).catch(async (error) => {
+      await normalizeClaudeSessionEntrypoint(input.cwd, nativeSessionId);
       // interruptTurn() removes the controller before aborting, so a missing
       // entry means this rejection came from a user stop, not a failure.
       const interrupted = !this.active.has(input.threadId);

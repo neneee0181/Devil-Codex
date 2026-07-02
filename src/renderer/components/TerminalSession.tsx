@@ -33,10 +33,21 @@ const TERMINAL_BUFFER_LIMIT = 120_000;
 const terminalStates = new Map<string, TerminalViewState>();
 
 function stripAnsi(text: string): string {
-  return text
+  const withoutAnsi = text
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r/g, "");
+    .replace(/\r\n/g, "\n")
+    .replace(/\n\r/g, "\n")
+    .replace(/\r/g, "\n");
+  let normalized = "";
+  for (const char of withoutAnsi) {
+    if (char === "\b" || char === "\u007f") {
+      normalized = normalized.slice(0, -1);
+      continue;
+    }
+    normalized += char;
+  }
+  return normalized.replace(/[ \t]+\n/g, "\n");
 }
 
 function compactOutput(text: string, limit = OUTPUT_LIMIT): string {
