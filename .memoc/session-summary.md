@@ -36,6 +36,9 @@ History: worklog. Resume risks: 04-handoff.md.
 - Post-v0.1.9 local hotfix: right-panel expanded mode no longer hides the bottom dock content while leaving its height as a black area.
 - Browser profile follow-up: embedded browser defaults to `persist:devil-browser`; Settings -> 구성 has a toggle to switch between persisted and guest browser sessions.
 - Release prep for `v0.1.10`: package version bumped to `0.1.10`; validation passes; commit/tag/push in progress.
+- Browser loading UX follow-up: embedded browser shows a thin animated load bar over the page while Chromium reports navigation loading.
+- Browser per-thread URL follow-up: browser tab URLs are saved/restored per `runtime:threadId` for both right and bottom docks.
+- Release prep for `v0.1.11`: package version bumped to `0.1.11`; validation passes; commit/tag/push in progress.
 
 ## Verify
-- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.10`.
+- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.11`.

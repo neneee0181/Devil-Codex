@@ -198,6 +198,9 @@ button:active:not(:disabled) { transform: scale(.96); }
 .browser-annotate-bar input { flex: 1; height: 30px; padding: 0 12px; border: 1px solid #e0294f55; border-radius: 8px; background: #ffffff0a; color: #eee; outline: none; }
 .browser-annotate-bar button { width: 28px; height: 28px; border: 0; border-radius: 7px; background: #ffffff10; color: #ddd; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .browser-host { position: relative; flex: 1; min-height: 0; background: #171717; }
+.browser-load-bar { position: absolute; z-index: 7; top: 0; left: 0; right: 0; height: 2px; overflow: hidden; background: #2d2d2d; pointer-events: none; }
+.browser-load-bar::before { content: ""; display: block; width: 36%; height: 100%; border-radius: 999px; background: #e0294f; animation: browser-load-bar 1s ease-in-out infinite; }
+@keyframes browser-load-bar { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 .browser-context-backdrop { position: absolute; z-index: 20; inset: 0; display: grid; place-items: center; padding: 18px; background: #0009; backdrop-filter: blur(4px); }
 .browser-context-backdrop.compact { align-items: start; justify-items: start; padding-top: 52px; background: #0005; }
 .browser-assistant-modal { display: grid; width: min(360px, calc(100% - 24px)); gap: 7px; overflow: hidden; border: 1px solid #454545; border-radius: 16px; background: #282828f8; box-shadow: 0 22px 70px #000c; color: #ededed; padding: 8px; }

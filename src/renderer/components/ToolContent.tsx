@@ -24,6 +24,26 @@ function readBrowserPersistentSession(): boolean {
   }
 }
 
+const BROWSER_SESSION_URLS_KEY = "devil-codex:browser-session-urls";
+
+function readBrowserSessionUrls(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BROWSER_SESSION_URLS_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string")) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function rememberBrowserSessionUrl(key: string, url: string): void {
+  if (!url || url === "about:blank") return;
+  localStorage.setItem(BROWSER_SESSION_URLS_KEY, JSON.stringify({ ...readBrowserSessionUrls(), [key]: url }));
+}
+
+function browserInitialUrl(key: string): string {
+  return readBrowserSessionUrls()[key] || "about:blank";
+}
+
 // Runs inside the guest page: hover-highlight elements, click to pick. Resolves
 // with the clicked element's rect/selector (or null on ESC/cancel). Exposes
 // window.__devilCancelPick so the host button can cancel.
@@ -249,13 +269,13 @@ function SideChatModelPicker({ value, providers, onChange }: { value: SideChatPi
   </div>;
 }
 
-export function ToolContent({ active, workspace, fileTarget, changes, selectedDiff, diffBusy, onBrowserAsk, subagents, onOpenSubagent, onNewSideChat, sideChatCreating, onSelectDiff, onSendReviewComment, onApplyHunk }: { active: ContentTool; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; selectedDiff: WorkspaceDiff | null; diffBusy: boolean; onBrowserAsk?: (attachment: import("../../shared/contracts").ThreadAttachment, text?: string) => void; subagents?: Array<{ id: string; label: string }>; onOpenSubagent?: (id: string, label: string) => void; onNewSideChat?: () => void; sideChatCreating?: boolean; onSelectDiff: (file: WorkspaceChange) => void; onSendReviewComment: (input: { path: string; line: number; side: "old" | "new"; text: string }) => void; onApplyHunk: (input: { path: string; hunk: string; action: "stage" | "revert" }) => Promise<void> }): React.JSX.Element {
+export function ToolContent({ active, workspace, fileTarget, changes, selectedDiff, diffBusy, browserSessionKey = "__global__", onBrowserAsk, subagents, onOpenSubagent, onNewSideChat, sideChatCreating, onSelectDiff, onSendReviewComment, onApplyHunk }: { active: ContentTool; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; selectedDiff: WorkspaceDiff | null; diffBusy: boolean; browserSessionKey?: string; onBrowserAsk?: (attachment: import("../../shared/contracts").ThreadAttachment, text?: string) => void; subagents?: Array<{ id: string; label: string }>; onOpenSubagent?: (id: string, label: string) => void; onNewSideChat?: () => void; sideChatCreating?: boolean; onSelectDiff: (file: WorkspaceChange) => void; onSendReviewComment: (input: { path: string; line: number; side: "old" | "new"; text: string }) => void; onApplyHunk: (input: { path: string; hunk: string; action: "stage" | "revert" }) => Promise<void> }): React.JSX.Element {
   if (active === "review") return <div className="utility-review"><div className="review-summary"><h2>변경 사항</h2><p><i>+{changes.additions}</i> <b>-{changes.deletions}</b> · {changes.files.length}개 파일</p></div><div className="review-files">{changes.files.map((file) => <button className={selectedDiff?.path === file.path ? "active" : ""} key={`${file.status}:${file.path}`} onClick={() => onSelectDiff(file)}><span>{file.status === "??" ? "새 파일" : file.status}</span><strong>{file.path}</strong><em><i>+{file.additions}</i> <b>-{file.deletions}</b></em></button>)}</div><DiffPreview diff={selectedDiff} loading={diffBusy} onSend={onSendReviewComment} onApplyHunk={onApplyHunk} /></div>;
   if (active === "files") return <WorkspaceFilesPanel workspace={workspace} target={fileTarget} />;
   if (active === "side-chat") return <div className="side-chat-launcher">
     <button type="button" className="side-chat-new" disabled={sideChatCreating} onClick={() => onNewSideChat?.()}>{sideChatCreating ? <span className="side-chat-spinner" /> : <Plus size={15} />}{sideChatCreating ? "사이드 채팅 만드는 중…" : "새 사이드 채팅"}</button>
   </div>;
-  if (active === "browser") return <BrowserPanel workspace={workspace} fileTarget={fileTarget} changes={changes} onAsk={onBrowserAsk} />;
+  if (active === "browser") return <BrowserPanel key={browserSessionKey} browserSessionKey={browserSessionKey} workspace={workspace} fileTarget={fileTarget} changes={changes} onAsk={onBrowserAsk} />;
   const label = { files: "파일" }[active] ?? active;
   return <div className="utility-empty"><Folder /><strong>{label}</strong><small>실제 Codex backend 연결 예정</small></div>;
 }
@@ -264,7 +284,7 @@ export function ToolContent({ active, workspace, fileTarget, changes, selectedDi
 // <webview> (so modals/popovers layer above it via z-index). The guest's
 // WebContents is captured in the main process so user + AI control share one
 // path; this component owns the address bar + nav + page tools.
-function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: string; fileTarget: string | null; changes: WorkspaceChanges; onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
+function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk }: { browserSessionKey: string; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>({ url: "", title: "", loading: false, canGoBack: false, canGoForward: false });
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
@@ -285,9 +305,9 @@ function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: st
   const [contextNotice, setContextNotice] = useState("");
   const [browserPersistentSession, setBrowserPersistentSession] = useState(readBrowserPersistentSession);
   const browserPartition = browserPersistentSession ? "persist:devil-browser" : "devil-browser-guest";
+  const initialBrowserUrl = useRef(browserInitialUrl(browserSessionKey));
 
   useEffect(() => {
-    void window.devilCodex.browserState().then(setState).catch(() => undefined);
     const off = window.devilCodex.onBrowserState(setState);
     return off;
   }, []);
@@ -299,6 +319,7 @@ function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: st
     window.addEventListener("devil-codex:settings-changed", onSettingsChanged);
     return () => window.removeEventListener("devil-codex:settings-changed", onSettingsChanged);
   }, []);
+  useEffect(() => { rememberBrowserSessionUrl(browserSessionKey, state.url); }, [browserSessionKey, state.url]);
   useEffect(() => { if (!editing) setDraft(state.url === "about:blank" ? "" : state.url); }, [state.url, editing]);
 
   const go = (): void => { void window.devilCodex.browserNavigate({ url: draft }); setEditing(false); };
@@ -484,8 +505,9 @@ function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: st
       <button onClick={() => { void window.devilCodex.browserStopFind(); setFindOpen(false); setFindText(""); }}><X size={14} /></button>
     </div>}
     <div className="browser-host">
+      {state.loading && <span className="browser-load-bar" aria-label="페이지 불러오는 중" />}
       {/* @ts-expect-error webview is an Electron intrinsic element */}
-      <webview key={browserPartition} ref={webviewRef} src="about:blank" partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
+      <webview key={browserPartition} ref={webviewRef} src={initialBrowserUrl.current} partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
       {isBrowserEmpty && <div className="browser-host-empty">
         <Globe2 />
         <strong>브라우징 시작</strong>
