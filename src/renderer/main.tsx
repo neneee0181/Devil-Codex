@@ -151,34 +151,6 @@ function writeThreadScrollPositions(input: Record<string, ThreadScrollPosition>)
   }
 }
 
-function changesFromTurn(items: ThreadHistoryItem[], turnId: string | undefined, branch: string): WorkspaceChanges {
-  if (!turnId) return { ...defaultChanges, branch };
-  const byPath = new Map<string, WorkspaceChange>();
-  for (const activity of items) {
-    if (activity.kind !== "activity" || activity.turnId !== turnId) continue;
-    for (const entry of activity.activities ?? []) {
-      if (entry.kind !== "fileChange") continue;
-      for (const file of entry.files ?? []) {
-        const previous = byPath.get(file.path);
-        byPath.set(file.path, {
-          path: file.path,
-          status: previous?.status ?? "modified",
-          additions: (previous?.additions ?? 0) + file.additions,
-          deletions: (previous?.deletions ?? 0) + file.deletions,
-        });
-      }
-    }
-  }
-  const files = [...byPath.values()];
-  return {
-    available: true,
-    branch,
-    files,
-    additions: files.reduce((sum, file) => sum + file.additions, 0),
-    deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-  };
-}
-
 function readSidecarSettings(): SidecarSettings {
   try {
     const raw = JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") as Record<string, unknown>;
@@ -915,6 +887,8 @@ function App(): React.JSX.Element {
   const activeTurn = useRef<{ threadId: string; turnId: string } | null>(null);
   const activeTurnsByThread = useRef(new Map<string, string>());
   const steeringInterruptedTurns = useRef(new Set<string>());
+  const visibleTimelineQueue = useRef<Array<{ threadId: string; event: AppServerEvent; turnId: string; pending?: PendingTurnState }>>([]);
+  const visibleTimelineFrame = useRef<number | null>(null);
   const runningTurnsRef = useRef<Record<string, { turnId?: string; startedAt: number }>>({});
   const runtimeSnapshots = useRef<Partial<Record<AgentRuntimeId, RuntimeThreadSnapshot>>>({});
   const navigationBack = useRef<NavigationEntry[]>([]);
@@ -1006,6 +980,7 @@ function App(): React.JSX.Element {
     saveCurrentThreadScrollPosition();
     if (scrollPersistFrame.current != null) cancelAnimationFrame(scrollPersistFrame.current);
     if (loadingThreadTimer.current != null) window.clearTimeout(loadingThreadTimer.current);
+    if (visibleTimelineFrame.current != null) cancelAnimationFrame(visibleTimelineFrame.current);
     writeThreadScrollPositions(threadScrollPositions.current);
   }, []);
 
@@ -1377,6 +1352,44 @@ function App(): React.JSX.Element {
     }));
   }, [thread?.id, queuedView, threadFindQuery]);
   const timelineItems = useMemo(() => [...visibleItems, ...queuedTimelineItems], [visibleItems, queuedTimelineItems]);
+  const runningTurnIds = useMemo(() => new Set(Object.values(runningTurns).map((turn) => turn.turnId).filter((turnId): turnId is string => Boolean(turnId))), [runningTurns]);
+  const turnChangeMeta = useMemo(() => {
+    const byTurn = new Map<string, Map<string, WorkspaceChange>>();
+    const rollbackTurns = new Set<string>();
+    for (const activity of items) {
+      if (activity.kind !== "activity" || !activity.turnId) continue;
+      for (const entry of activity.activities ?? []) {
+        if (entry.kind !== "fileChange") continue;
+        for (const file of entry.files ?? []) {
+          const files = byTurn.get(activity.turnId) ?? new Map<string, WorkspaceChange>();
+          byTurn.set(activity.turnId, files);
+          const previous = files.get(file.path);
+          files.set(file.path, {
+            path: file.path,
+            status: previous?.status ?? "modified",
+            additions: (previous?.additions ?? 0) + file.additions,
+            deletions: (previous?.deletions ?? 0) + file.deletions,
+          });
+          if (file.diff) rollbackTurns.add(activity.turnId);
+        }
+      }
+    }
+    const result = new Map<string, { changes: WorkspaceChanges; canRollback: boolean }>();
+    for (const [turnId, fileMap] of byTurn) {
+      const files = [...fileMap.values()];
+      result.set(turnId, {
+        changes: {
+          available: true,
+          branch: changes.branch,
+          files,
+          additions: files.reduce((sum, file) => sum + file.additions, 0),
+          deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+        },
+        canRollback: rollbackTurns.has(turnId),
+      });
+    }
+    return result;
+  }, [items, changes.branch]);
   const visibleSearchResults = useMemo(() => searchResults.filter((summary) => !hiddenThreadIds.includes(summary.id) && !sideThreadSet.has(summary.id)), [searchResults, hiddenThreadIds, sideThreadSet]);
   // Subagents spawned in this thread, for the environment "하위 에이전트" list.
   const subagents = useMemo(() => {
@@ -1762,6 +1775,32 @@ function App(): React.JSX.Element {
     if (computerUse) setPermissionHint("computer-use");
   }
 
+  function queueVisibleTimelineEvent(threadId: string, event: AppServerEvent, turnId: string, pending: PendingTurnState | undefined): void {
+    visibleTimelineQueue.current.push({ threadId, event, turnId, pending });
+    if (visibleTimelineFrame.current != null) return;
+    visibleTimelineFrame.current = requestAnimationFrame(() => {
+      visibleTimelineFrame.current = null;
+      const queued = visibleTimelineQueue.current;
+      visibleTimelineQueue.current = [];
+      if (!queued.length) return;
+      setItems((current) => {
+        let next = current;
+        const visibleThreadId = threadRef.current?.id ?? "";
+        for (const entry of queued) {
+          if (entry.threadId && entry.threadId !== visibleThreadId) {
+            const cached = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(entry.threadId) ?? [], entry.event), entry.turnId, entry.pending);
+            threadHistoryCache.current.set(entry.threadId, cached);
+            continue;
+          }
+          next = annotateAgentMessages(applyTimelineEvent(next, entry.event), entry.turnId, entry.pending);
+        }
+        itemsRef.current = next;
+        if (visibleThreadId) threadHistoryCache.current.set(visibleThreadId, next);
+        return next;
+      });
+    });
+  }
+
   function receiveEvent(event: AppServerEvent): void {
     const approval = approvalPromptFromEvent(event);
     if (approval) {
@@ -1824,12 +1863,7 @@ function App(): React.JSX.Element {
       const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], timelineEvent), eventTurnId, pendingForEvent ?? undefined);
       threadHistoryCache.current.set(eventThreadId, next);
     } else {
-      setItems((current) => {
-        const next = annotateAgentMessages(applyTimelineEvent(current, timelineEvent), eventTurnId, pendingForEvent ?? undefined);
-        itemsRef.current = next;
-        if (eventThreadId) threadHistoryCache.current.set(eventThreadId, next);
-        return next;
-      });
+      queueVisibleTimelineEvent(eventThreadId, timelineEvent, eventTurnId, pendingForEvent ?? undefined);
     }
     if (event.method === "thread/compacted") {
       const params = (event.params ?? {}) as Record<string, unknown>;
@@ -2207,9 +2241,10 @@ function App(): React.JSX.Element {
   async function resumeThread(summary: ThreadSummary): Promise<void> {
     activeResume.current = summary.id;
     const cachedHistory = threadHistoryCache.current.get(summary.id);
-    setLoadingThreadId(cachedHistory ? null : summary.id);
-    setInitializingThreadId(cachedHistory ? summary.id : null);
+    const needsHistoryLoad = !cachedHistory;
+    setLoadingThreadId(needsHistoryLoad ? summary.id : null);
     navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
+    setInitializingThreadId(needsHistoryLoad ? null : summary.id);
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running && hasConversationItems(cachedHistory)
       ? Promise.resolve(cachedHistory ?? [])
@@ -3292,9 +3327,11 @@ function App(): React.JSX.Element {
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
               {loadingThreadId === thread?.id && <span className="thread-load-bar" aria-label="대화 불러오는 중" />}
               {loadingThreadId === thread?.id ? <div className="thread-loading-state"><span><Loader2 size={18} /></span><strong>대화 불러오는 중</strong><p>이전 메시지를 정리해서 표시하고 있습니다.</p></div> : timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
-                const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
-                const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));
-                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
+                const changeMeta = item.turnId ? turnChangeMeta.get(item.turnId) : undefined;
+                const itemChanges = changeMeta?.changes ?? { ...defaultChanges, branch: changes.branch };
+                const canRollbackTurn = changeMeta?.canRollback ?? false;
+                const streaming = item.kind === "agent" && Boolean(item.turnId && runningTurnIds.has(item.turnId));
+                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>

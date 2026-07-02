@@ -43,7 +43,11 @@ function imagePathAttachments(paths: string[]): ThreadAttachment[] {
   return paths.map((path) => ({ kind: "image", path, name: path.split("/").at(-1) ?? "image" }));
 }
 
-export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
+function StreamingText({ text }: { text: string }): React.JSX.Element {
+  return <div className="streaming-text">{text}</div>;
+}
+
+export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, streaming, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; streaming?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
@@ -85,7 +89,8 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     window.setTimeout(() => setCopied(false), 1200);
   };
 
-  return <motion.article layout="position" className={`timeline-item ${item.kind}${item.status === "inProgress" ? " pending" : ""}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
+  const renderedText = item.kind === "agent" && showTranslation && translation ? translation : userMessage.text;
+  return <motion.article layout={streaming ? false : "position"} className={`timeline-item ${item.kind}${item.status === "inProgress" ? " pending" : ""}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
     <div className="item-label-row">
       <span className="item-label">{label}</span>
       {item.kind === "agent" && translatable && <button type="button" className={`translate-toggle ${showTranslation ? "on" : ""}`} disabled={translating} title={showTranslation ? "원문 보기" : "한글로 번역"} onClick={() => void toggleTranslate(userMessage.text)}><Languages size={13} />{translating ? "번역 중…" : showTranslation ? "원문" : "한글"}</button>}
@@ -94,7 +99,7 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     {attachments.length > 0 && <AttachmentGallery attachments={attachments} align="end" />}
     <div className={item.kind === "user" ? "timeline-user-bubble" : undefined}>
       <SkillTokens skills={userMessage.skills} />
-      <MarkdownContent text={item.kind === "agent" && showTranslation && translation ? translation : userMessage.text} onOpenFile={onOpenFile} />
+      {streaming && item.kind === "agent" && !showTranslation ? <StreamingText text={renderedText} /> : <MarkdownContent text={renderedText} onOpenFile={onOpenFile} />}
       {item.kind === "user" && item.status === "inProgress" && <small className="timeline-pending-label">대기 중</small>}
     </div>
     {item.kind === "user" && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button></div>}

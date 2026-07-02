@@ -139,6 +139,8 @@ export function TerminalSession({
   const activeEntryId = useRef<string | null>(saved?.activeEntryId ?? null);
   const commandSeq = useRef(saved?.commandSeq ?? 0);
   const settleTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pendingOutput = useRef(new Map<string, string>());
+  const outputFrame = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [shell, setShell] = useState(saved?.shell ?? "연결 중...");
   const [historyOpen, setHistoryOpen] = useState(saved?.historyOpen ?? dock === "bottom");
@@ -226,9 +228,18 @@ export function TerminalSession({
   const appendOutput = (data: string): void => {
     const id = activeEntryId.current;
     if (!id) return;
-    setEntries((current) => current.map((entry) => (
-      entry.id === id ? { ...entry, output: compactOutput(`${entry.output}${data}`), status: "running" } : entry
-    )));
+    pendingOutput.current.set(id, `${pendingOutput.current.get(id) ?? ""}${data}`);
+    if (outputFrame.current == null) {
+      outputFrame.current = requestAnimationFrame(() => {
+        outputFrame.current = null;
+        const chunks = pendingOutput.current;
+        pendingOutput.current = new Map();
+        setEntries((current) => current.map((entry) => {
+          const chunk = chunks.get(entry.id);
+          return chunk ? { ...entry, output: compactOutput(`${entry.output}${chunk}`), status: "running" } : entry;
+        }));
+      });
+    }
     scheduleSettle(id);
   };
 
@@ -438,6 +449,9 @@ export function TerminalSession({
       if (sessionId.current && !terminalKey) void window.devilCodex.closeTerminal({ id: sessionId.current });
       settleTimers.current.forEach((timer) => clearTimeout(timer));
       settleTimers.current.clear();
+      if (outputFrame.current != null) cancelAnimationFrame(outputFrame.current);
+      outputFrame.current = null;
+      pendingOutput.current.clear();
       if (!terminalKey) {
         sessionId.current = null;
         inputBuffer.current = "";

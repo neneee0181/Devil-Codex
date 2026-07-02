@@ -167,8 +167,18 @@ export function Composer({
   };
 
   useLayoutEffect(() => {
-    if (editor.current) editor.current.innerText = draft;
-  }, []);
+    const next = readComposerDraft(draftKey);
+    latestDraft.current = next;
+    setDraft(next.draft);
+    setGoalMode(next.goalMode);
+    setAttachments(next.attachments);
+    setSkills(next.skills);
+    setTrigger(null);
+    if (editor.current) {
+      editor.current.replaceChildren();
+      if (next.draft) editor.current.append(document.createTextNode(next.draft));
+    }
+  }, [draftKey]);
 
   useEffect(() => {
     latestDraft.current = { draft, goalMode, attachments, skills };
@@ -357,7 +367,11 @@ export function Composer({
     setGoalMode(false);
     setTrigger(null);
     clearComposerDraft(draftKey);
-    if (editor.current) editor.current.innerHTML = "";
+    if (editor.current) {
+      editor.current.replaceChildren();
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+    }
   };
 
   const canSend = (draft.trim().length > 0 || attachments.length > 0) && attachmentsReady && connected;
@@ -427,6 +441,7 @@ export function Composer({
           contentEditable={connected}
           role="textbox"
           aria-multiline="true"
+          data-empty={draft.trim() ? "false" : "true"}
           data-placeholder={busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
           onInput={(event) => { setDraft(editorText(event.currentTarget)); setSkills(editorSkills(event.currentTarget)); updateTrigger(event.currentTarget); }}
           onClick={(event) => updateTrigger(event.currentTarget)}
