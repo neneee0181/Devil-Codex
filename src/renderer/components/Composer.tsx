@@ -2,7 +2,7 @@ import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEve
 import { AnimatePresence } from "motion/react";
 import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
-import type { ContextUsage, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
+import type { ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
 import { ComposerSuggestions, suggestionsFor, type ComposerSuggestion, type SlashCommandId } from "./ComposerSuggestions";
 import type { CaretPosition } from "./composerCaret";
@@ -108,6 +108,7 @@ export function Composer({
   responseSpeed,
   projectContext,
   skillOptions,
+  mcpServers,
   inject,
   onModelChange,
   onReasoningEffortChange,
@@ -135,6 +136,7 @@ export function Composer({
   responseSpeed: ResponseSpeed;
   projectContext?: { name: string; branch: string };
   skillOptions: Array<{ name: string; description: string }>;
+  mcpServers: McpServerInfo[];
   inject?: { attachments?: ComposerAttachment[]; text?: string; nonce: number } | null;
   onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void;
   onReasoningEffortChange: (value: ReasoningEffort) => void;
@@ -157,7 +159,7 @@ export function Composer({
   const editor = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
-  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }) : [], [trigger, skillOptions, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
+  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }, mcpServers) : [], [trigger, skillOptions, mcpServers, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const setApprovalMode = (value: ApprovalMode): void => {
     setApprovalModeState(value);
@@ -327,6 +329,9 @@ export function Composer({
         setSkills(editorSkills(editor.current));
       }
       runCommand(name as SlashCommandId);
+    } else if (item.kind === "mcp" && editor.current && insertInlineSkill(editor.current, item.token ?? `mcp:${name}`, trigger.tokenLength, item.label.replace(/^\//, ""))) {
+      setSkills(editorSkills(editor.current));
+      setDraft(editorText(editor.current));
     } else if (editor.current && insertInlineSkill(editor.current, name, trigger.tokenLength, skillOptions.find((skill) => skill.name === name)?.name)) {
       setSkills(editorSkills(editor.current));
       setDraft(editorText(editor.current));

@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import type { CaretPosition } from "./composerCaret";
 import type { ApprovalMode } from "./ApprovalPicker";
-import type { ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
+import type { McpServerInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 
 export type SlashCommandId =
   | "mcp"
@@ -62,8 +62,9 @@ export type ComposerSuggestion = {
   id: string;
   label: string;
   detail: string;
-  kind: "skill" | "command";
+  kind: "skill" | "command" | "mcp";
   command?: SlashCommandId;
+  token?: string;
 };
 
 const reasoningLabels: Record<ReasoningEffort, string> = {
@@ -92,10 +93,22 @@ const commands: SlashCommand[] = [
   { id: "feedback", label: "피드백", detail: "이 채팅에 대한 피드백 보내기", aliases: ["bug"] },
 ];
 
-export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ name: string; description: string }>, context: SlashCommandContext): ComposerSuggestion[] {
+export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ name: string; description: string }>, context: SlashCommandContext, mcpServers: McpServerInfo[] = []): ComposerSuggestion[] {
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
+  const mcpItems = mcpServers
+    .filter((server) => {
+      if (!normalized) return true;
+      return [server.name, server.authStatus, ...server.tools.flatMap((tool) => [tool.name, tool.title, tool.description])].some((part) => part.toLowerCase().includes(normalized));
+    })
+    .map((server) => ({
+      id: `mcp:${server.name}`,
+      label: `/${server.name}`,
+      detail: `${server.tools.length}개 도구 · ${server.authStatus === "authenticated" || server.authStatus === "unsupported" ? "연결됨" : server.authStatus || "연결됨"}`,
+      kind: "mcp" as const,
+      token: `mcp:${server.name}`,
+    }));
   // Claude Code turns skip Codex-only controls (fast/reasoning/compact/fork/
   // side/mcp/feedback); prompt-based and runtime-agnostic commands stay.
   const commandSource = context.runtime === "claude-code"
@@ -113,7 +126,7 @@ export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ 
       kind: "command" as const,
       command: command.id,
     }));
-  return [...commandItems, ...skillItems];
+  return [...commandItems, ...mcpItems, ...skillItems];
 }
 
 export function ComposerSuggestions({ items, activeIndex, position, onSelect }: { items: ComposerSuggestion[]; activeIndex: number; position: CaretPosition; onSelect: (item: ComposerSuggestion) => void }): React.JSX.Element {
@@ -124,6 +137,7 @@ export function ComposerSuggestions({ items, activeIndex, position, onSelect }: 
 
 function iconFor(item: ComposerSuggestion): React.JSX.Element {
   if (item.kind === "skill") return <Cuboid size={16} />;
+  if (item.kind === "mcp") return <PlugIcon />;
   switch (item.command) {
     case "mcp": return <Package size={16} />;
     case "fast": return <FastForward size={16} />;
@@ -143,4 +157,8 @@ function iconFor(item: ComposerSuggestion): React.JSX.Element {
     case "feedback": return <Heart size={16} />;
     default: return <Command size={16} />;
   }
+}
+
+function PlugIcon(): React.JSX.Element {
+  return <Package size={16} />;
 }

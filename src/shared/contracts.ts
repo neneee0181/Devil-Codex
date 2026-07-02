@@ -341,6 +341,7 @@ export interface DevilCodexApi {
   installUpdate: () => Promise<void>;
   getSubagentInfo: (input: { id: string }) => Promise<{ nickname: string | null; model: string | null }>;
   onUpdateState: (listener: (state: UpdateState) => void) => () => void;
+  listClaudeSkills: () => Promise<CodexSkillInfo[]>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
   translate: (input: { text: string; to?: string; from?: string }) => Promise<string>;

@@ -39,6 +39,8 @@ History: worklog. Resume risks: 04-handoff.md.
 - Browser loading UX follow-up: embedded browser shows a thin animated load bar over the page while Chromium reports navigation loading.
 - Browser per-thread URL follow-up: browser tab URLs are saved/restored per `runtime:threadId` for both right and bottom docks.
 - Release prep for `v0.1.11`: package version bumped to `0.1.11`; validation passes; commit/tag/push in progress.
+- MCP slash follow-up: composer `/` suggestions now include connected MCP servers from `mcpServerStatus/list`; selecting one inserts an inline `/server` token and prefixes the turn with an instruction to use that MCP.
+- Claude skills follow-up: main now scans `~/.claude/skills/*/SKILL.md`; Claude Code composer merges those dynamic skills with built-ins and prompts Claude to read selected skill files.
 
 ## Verify
 - `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.11`.

@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, 
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { access, mkdir as fsMkdir } from "node:fs/promises";
+import { access, mkdir as fsMkdir, readdir, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
@@ -35,7 +35,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, CodexSkillInfo, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -76,6 +76,27 @@ async function uniqueProjectDir(base: string, name: string): Promise<string> {
     catch { return dir; }
   }
   return join(base, `${name} ${Date.now()}`);
+}
+
+function frontmatterValue(markdown: string, key: string): string {
+  const match = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return "";
+  const line = match[1].split(/\r?\n/).find((entry) => entry.trim().startsWith(`${key}:`));
+  return line ? line.slice(line.indexOf(":") + 1).trim().replace(/^['"]|['"]$/g, "") : "";
+}
+
+async function listClaudeSkills(): Promise<CodexSkillInfo[]> {
+  const root = join(app.getPath("home"), ".claude", "skills");
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const skills = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry): Promise<CodexSkillInfo | null> => {
+    const skillPath = join(root, entry.name, "SKILL.md");
+    const markdown = await readFile(skillPath, "utf8").catch(() => "");
+    if (!markdown) return null;
+    const name = frontmatterValue(markdown, "name") || entry.name;
+    const description = frontmatterValue(markdown, "description") || markdown.split(/\r?\n/).find((line) => line.trim() && !line.startsWith("---"))?.trim() || "";
+    return { name, description, path: skillPath, scope: "claude", enabled: true };
+  }));
+  return skills.filter((skill): skill is CodexSkillInfo => Boolean(skill?.name && skill.path)).sort((a, b) => a.name.localeCompare(b.name));
 }
 import { createGitWorktree, listGitWorktrees } from "./worktree-service.cjs";
 import { BrowserViewManager } from "./browser-view.cjs";
@@ -1285,6 +1306,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("update:check", () => checkForUpdatesNow(() => windowRef));
   ipcMain.handle("update:install", () => installUpdate(() => windowRef));
   ipcMain.handle("subagent:info", (_event, input) => providerReconciler.getSubagentInfo(input.id));
+  ipcMain.handle("claude:skills", () => listClaudeSkills());
   ipcMain.handle("workspace:choose", async () => {
     const result = await dialog.showOpenDialog(windowRef!, { properties: ["openDirectory", "createDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;

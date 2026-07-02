@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -80,7 +80,7 @@ const CLAUDE_RUNTIME_SKILLS: CodexSkillInfo[] = [
   },
 ];
 
-function claudeRuntimeSkillPrompt(skillNames: string[]): string {
+function claudeRuntimeSkillPrompt(skillNames: string[], skillOptions: CodexSkillInfo[] = []): string {
   const names = new Set(skillNames);
   const lines: string[] = [];
   if (names.has("browser-use")) {
@@ -88,6 +88,11 @@ function claudeRuntimeSkillPrompt(skillNames: string[]): string {
   }
   if (names.has("computer-use")) {
     lines.push("사용자가 /computer-use를 선택했습니다. OS 화면 확인이나 마우스/키보드 조작이 필요하면 Devil MCP 서버 `devil_computer`의 도구를 사용하세요. 사용 가능한 도구는 `computer_screenshot`, `computer_click`, `computer_move`, `computer_type`, `computer_key`, `computer_scroll`, `computer_list_windows`이며, 사용자의 명시 요청 범위 안에서만 조작하세요.");
+  }
+  for (const skillName of skillNames) {
+    if (skillName === "browser-use" || skillName === "computer-use" || skillName.startsWith("mcp:")) continue;
+    const skill = skillOptions.find((item) => item.name === skillName);
+    if (skill?.path) lines.push(`사용자가 $${skill.name} 스킬을 선택했습니다. 필요하면 이 스킬 지침 파일을 먼저 읽고 따르세요: ${skill.path}`);
   }
   return lines.length ? `[Devil Claude Code runtime tool instructions]\n${lines.join("\n")}\n\n` : "";
 }
@@ -864,6 +869,8 @@ function App(): React.JSX.Element {
   const [searchResults, setSearchResults] = useState<ThreadSummary[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<CodexSkillInfo[]>([]);
+  const [availableClaudeSkills, setAvailableClaudeSkills] = useState<CodexSkillInfo[]>([]);
+  const [availableMcpServers, setAvailableMcpServers] = useState<McpServerInfo[]>([]);
   const [settingsSection, setSettingsSection] = useState("구성");
   const [items, setItems] = useState<ThreadHistoryItem[]>([]);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalPrompt[]>([]);
@@ -1089,7 +1096,29 @@ function App(): React.JSX.Element {
     return () => { active = false; };
   }, [workspace, runtime.state]);
 
-  const composerSkillOptions = composerRuntime === "claude-code" ? CLAUDE_RUNTIME_SKILLS : availableSkills;
+  useEffect(() => {
+    let active = true;
+    void window.devilCodex.listClaudeSkills()
+      .then((skills) => { if (active) setAvailableClaudeSkills(skills.filter((skill) => skill.enabled)); })
+      .catch((error) => { if (active) setExternalError(`Claude 스킬 목록 실패: ${String(error)}`); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (runtime.state !== "connected") { setAvailableMcpServers([]); return; }
+    let active = true;
+    void window.devilCodex.listMcpServers({ ...(thread?.id ? { threadId: thread.id } : {}) })
+      .then((servers) => {
+        if (!active) return;
+        setAvailableMcpServers(servers.filter((server) => server.name && server.authStatus !== "disabled"));
+      })
+      .catch(() => { if (active) setAvailableMcpServers([]); });
+    return () => { active = false; };
+  }, [thread?.id, runtime.state]);
+
+  const composerSkillOptions = composerRuntime === "claude-code"
+    ? [...CLAUDE_RUNTIME_SKILLS, ...availableClaudeSkills.filter((skill) => !CLAUDE_RUNTIME_SKILLS.some((builtIn) => builtIn.name === skill.name))]
+    : availableSkills;
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
   function scheduleThreadScrollPersist(): void {
     if (scrollPersistFrame.current != null) return;
@@ -2406,10 +2435,18 @@ function App(): React.JSX.Element {
       return target ? [target] : [];
     });
     const attachmentDetails = displayAttachments(input.attachments);
+    const selectedMcpServers = input.skills
+      .filter((name) => name.startsWith("mcp:"))
+      .map((name) => name.slice("mcp:".length))
+      .filter(Boolean);
     const selectedSkills = input.skills.flatMap((name) => {
+      if (name.startsWith("mcp:")) return [];
       const skill = composerSkillOptions.find((item) => item.name === name);
       return skill?.path ? [{ name: skill.name, path: skill.path }] : [];
     });
+    const mcpPrefix = selectedMcpServers.length
+      ? `[연결된 플러그인/MCP 언급]\n이번 요청에서는 사용자가 ${selectedMcpServers.map((name) => `/${name}`).join(", ")} 플러그인을 명시했습니다. 관련 정보 조회나 작업이 필요하면 해당 MCP 서버의 사용 가능한 도구를 우선 사용하세요.\n\n`
+      : "";
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
     const visiblePrompt = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const handoffIndex = itemsRef.current.findIndex((item) => item.kind === "system" && item.title === "런타임 공유 컨텍스트");
@@ -2419,10 +2456,10 @@ function App(): React.JSX.Element {
     const handoffPrefix = handoffContext
       ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
       : "";
-    const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills) : "";
-    const text = `${runtimeSkillPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
+    const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills.filter((name) => !name.startsWith("mcp:")), composerSkillOptions) : "";
+    const text = `${runtimeSkillPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
-    const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
+    const displayText = `${input.skills.map((skill) => skill.startsWith("mcp:") ? `/${skill.slice("mcp:".length)}` : `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;
     const selectedAccountId = composerRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === composerProviderId ? composerAccountId : undefined);
     const sendAccountId = provider === "codex" ? undefined : selectedAccountId;
@@ -3259,7 +3296,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
