@@ -15,6 +15,15 @@ export type ContentTool = Exclude<ToolKind, "terminal">;
 
 type ElectronWebview = HTMLElement & { executeJavaScript: (code: string) => Promise<unknown> };
 
+function readBrowserPersistentSession(): boolean {
+  try {
+    const settings = JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") as { browserPersistentSession?: unknown };
+    return settings.browserPersistentSession !== false;
+  } catch {
+    return true;
+  }
+}
+
 // Runs inside the guest page: hover-highlight elements, click to pick. Resolves
 // with the clicked element's rect/selector (or null on ESC/cancel). Exposes
 // window.__devilCancelPick so the host button can cancel.
@@ -274,11 +283,21 @@ function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: st
   const [contextQuestion, setContextQuestion] = useState("");
   const [contextUploadPaths, setContextUploadPaths] = useState<string[]>([]);
   const [contextNotice, setContextNotice] = useState("");
+  const [browserPersistentSession, setBrowserPersistentSession] = useState(readBrowserPersistentSession);
+  const browserPartition = browserPersistentSession ? "persist:devil-browser" : "devil-browser-guest";
 
   useEffect(() => {
     void window.devilCodex.browserState().then(setState).catch(() => undefined);
     const off = window.devilCodex.onBrowserState(setState);
     return off;
+  }, []);
+  useEffect(() => {
+    const onSettingsChanged = (event: Event): void => {
+      const detail = (event as CustomEvent<{ key?: string; value?: unknown }>).detail;
+      if (detail?.key === "browserPersistentSession") setBrowserPersistentSession(detail.value !== false);
+    };
+    window.addEventListener("devil-codex:settings-changed", onSettingsChanged);
+    return () => window.removeEventListener("devil-codex:settings-changed", onSettingsChanged);
   }, []);
   useEffect(() => { if (!editing) setDraft(state.url === "about:blank" ? "" : state.url); }, [state.url, editing]);
 
@@ -466,7 +485,7 @@ function BrowserPanel({ workspace, fileTarget, changes, onAsk }: { workspace: st
     </div>}
     <div className="browser-host">
       {/* @ts-expect-error webview is an Electron intrinsic element */}
-      <webview ref={webviewRef} src="about:blank" partition="devil-browser" allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
+      <webview key={browserPartition} ref={webviewRef} src="about:blank" partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
       {isBrowserEmpty && <div className="browser-host-empty">
         <Globe2 />
         <strong>브라우징 시작</strong>

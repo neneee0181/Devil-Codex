@@ -846,7 +846,6 @@ button:active:not(:disabled) { transform: scale(.96); }
 .main-stage.utility-expanded .utility-panel.expanded.open { position: absolute; z-index: 25; inset: 0; max-width: 100%; flex-basis: auto; width: 100%; border-left-width: 0; box-shadow: -22px 0 60px #0009; }
 .main-stage.utility-expanded .utility-panel.expanded .utility-resize { display: none; }
 .main-stage.utility-expanded .content-col { opacity: .18; pointer-events: none; }
-.main-stage.utility-expanded .bottom-dock { opacity: 0; pointer-events: none; }
 .main-stage.resizing .utility-panel, .main-stage.resizing .bottom-dock, .main-stage.resizing .thread-view, .main-stage.resizing .composer-wrap, .main-stage.resizing .timeline, .main-stage.resizing .composer { transition: none; }
 .utility-resize { position: absolute; z-index: 3; top: 0; bottom: 0; left: 0; width: 7px; cursor: ew-resize; }
 .utility-resize:hover::after, .utility-resize:active::after { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: #6c6c6c; content: ""; }

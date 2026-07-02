@@ -33,6 +33,9 @@ History: worklog. Resume risks: 04-handoff.md.
 - Bottom-dock follow-up: bottom tabs now store `tabs/active/open/height` per `runtime:threadId`, matching right-panel behavior across thread/runtime/settings navigation.
 - Notification follow-up: Settings has an `알림` page; background OS notifications fire for final turn completion/failure, approval prompts, and ask-user questions when the app is hidden/unfocused.
 - Release prep for `v0.1.9`: README updated, stray untracked `test.*` files removed, package version bumped to `0.1.9`; validation passes; commit/tag/push in progress.
+- Post-v0.1.9 local hotfix: right-panel expanded mode no longer hides the bottom dock content while leaving its height as a black area.
+- Browser profile follow-up: embedded browser defaults to `persist:devil-browser`; Settings -> 구성 has a toggle to switch between persisted and guest browser sessions.
+- Release prep for `v0.1.10`: package version bumped to `0.1.10`; validation passes; commit/tag/push in progress.
 
 ## Verify
-- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.9`.
+- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.10`.
