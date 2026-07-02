@@ -4,6 +4,7 @@ import type { AppCommand, DevilCodexApi } from "./contracts.cjs";
 const api: DevilCodexApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
   windowControl: (input) => ipcRenderer.invoke("app:window-control", input),
+  showNotification: (input) => ipcRenderer.invoke("app:notify", input),
   openPermission: (input) => ipcRenderer.invoke("app:open-permission", input),
   browserNavigate: (input) => ipcRenderer.invoke("browser:navigate", input),
   browserBack: () => ipcRenderer.invoke("browser:back"),

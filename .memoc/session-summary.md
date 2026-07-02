@@ -30,6 +30,9 @@ History: worklog. Resume risks: 04-handoff.md.
 - Steering follow-up: forced queued steering now prefixes the next turn with an explicit "continue the work, do not just answer" directive, marks the interrupted turn, skips its post-completion history sync/final-answer recovery, and keeps busy state on when the queued turn starts.
 - Activity status follow-up: a failed sub-command no longer marks the whole turn card as "작업 실패" when the turn itself completed; merge now lets newer turn status replace stale failed state.
 - Release prep for `v0.1.8`: package version bumped to `0.1.8`; validation passes; commit/tag/push in progress. Untracked `test.md`, `test.txt`, `test2.md` intentionally excluded.
+- Bottom-dock follow-up: bottom tabs now store `tabs/active/open/height` per `runtime:threadId`, matching right-panel behavior across thread/runtime/settings navigation.
+- Notification follow-up: Settings has an `알림` page; background OS notifications fire for final turn completion/failure, approval prompts, and ask-user questions when the app is hidden/unfocused.
+- Release prep for `v0.1.9`: README updated, stray untracked `test.*` files removed, package version bumped to `0.1.9`; validation passes; commit/tag/push in progress.
 
 ## Verify
-- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.8`.
+- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.9`.

@@ -45,6 +45,23 @@ type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
 type EnvironmentSource = { url: string; label: string };
 type ShellMenuKey = "file" | "edit" | "view" | "help";
 type SentModelState = { provider: ProviderId; accountId?: string; model: string };
+type NotificationSettings = { notificationsEnabled: boolean; notifyOnTurnComplete: boolean; notifyOnApproval: boolean; notifyOnAsk: boolean };
+
+const NOTIFICATION_DEFAULTS: NotificationSettings = {
+  notificationsEnabled: true,
+  notifyOnTurnComplete: true,
+  notifyOnApproval: true,
+  notifyOnAsk: true,
+};
+
+function readNotificationSettings(): NotificationSettings {
+  try {
+    const saved = JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") as Partial<NotificationSettings>;
+    return { ...NOTIFICATION_DEFAULTS, ...saved };
+  } catch {
+    return NOTIFICATION_DEFAULTS;
+  }
+}
 
 const CLAUDE_RUNTIME_SKILLS: CodexSkillInfo[] = [
   {
@@ -489,6 +506,7 @@ type RuntimeThreadSnapshot = {
 };
 
 type UtilityPanelState = { tabs: string[]; active: string | null; open: boolean; expanded: boolean };
+type BottomDockState = { tabs: string[]; active: string | null; open: boolean; height: number };
 
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem; steering?: boolean };
 type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
@@ -695,7 +713,9 @@ function App(): React.JSX.Element {
       runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
       const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
       panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
+      bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
       skipNextPanelSave.current = true;
+      skipNextBottomSave.current = true;
       setUtilityTabs([]);
       setUtilityActive(null);
       setUtilityPanelOpen(false);
@@ -826,7 +846,9 @@ function App(): React.JSX.Element {
   const [utilityActive, setUtilityActive] = useState<string | null>(null);
   // Per-main-thread right-panel tab state so returning restores open subagents.
   const panelByThread = useRef<Record<string, UtilityPanelState>>({});
+  const bottomByThread = useRef<Record<string, BottomDockState>>({});
   const skipNextPanelSave = useRef(false);
+  const skipNextBottomSave = useRef(false);
   const [externalError, setExternalError] = useState("");
   const [runtimeShareBusy, setRuntimeShareBusy] = useState<string | null>(null);
   const [petVisible, setPetVisible] = useState(storedPetVisible);
@@ -893,7 +915,17 @@ function App(): React.JSX.Element {
   useDismissShellPopovers(closePopovers);
   const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
+  function notifyInBackground(kind: keyof Omit<NotificationSettings, "notificationsEnabled">, title: string, body?: string, urgency?: "normal" | "critical"): void {
+    const settings = readNotificationSettings();
+    if (!settings.notificationsEnabled || !settings[kind]) return;
+    void window.devilCodex.showNotification({ title, body, urgency }).catch(() => undefined);
+  }
+
   useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => window.devilCodex.onAsk((request) => {
+    const first = request.questions[0];
+    notifyInBackground("notifyOnAsk", "Devil Codex 질문", first?.question ?? "AI가 사용자 입력을 기다리고 있습니다.", "critical");
+  }), []);
   function runtimeSnapshotFor(runtimeId: AgentRuntimeId): RuntimeThreadSnapshot {
     return {
       thread: threadRef.current,
@@ -925,6 +957,11 @@ function App(): React.JSX.Element {
     setUtilityActive(panel.active);
     setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
     setUtilityPanelExpanded(panel.open && panel.expanded);
+    const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal"], active: "terminal", open: false, height: terminalHeight };
+    setBottomTabs(bottom.tabs);
+    setBottomActive(bottom.active);
+    setTerminalOpen(bottom.open && bottom.tabs.length > 0);
+    setTerminalHeight(bottom.height);
     return true;
   }
 
@@ -1347,6 +1384,14 @@ function App(): React.JSX.Element {
     panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
   }, [utilityTabs, utilityActive, utilityPanelOpen, utilityPanelExpanded, thread, agentRuntime]);
   useEffect(() => {
+    if (skipNextBottomSave.current) {
+      skipNextBottomSave.current = false;
+      return;
+    }
+    const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+    bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
+  }, [bottomTabs, bottomActive, terminalOpen, terminalHeight, thread, agentRuntime]);
+  useEffect(() => {
     if (view !== "search" || !search.trim()) { setSearchResults([]); setSearchBusy(false); return; }
     const timer = window.setTimeout(() => {
       setSearchBusy(true);
@@ -1691,6 +1736,7 @@ function App(): React.JSX.Element {
   function receiveEvent(event: AppServerEvent): void {
     const approval = approvalPromptFromEvent(event);
     if (approval) {
+      notifyInBackground("notifyOnApproval", approval.kind === "command" ? "명령 실행 승인 필요" : "파일 변경 승인 필요", approval.command || approval.reason || "AI 작업을 계속하려면 승인이 필요합니다.", "critical");
       setApprovalQueue((current) => current.some((prompt) => prompt.requestId === approval.requestId) ? current : [...current, approval]);
       return;
     }
@@ -1796,6 +1842,11 @@ function App(): React.JSX.Element {
       if (threadId) compactionRetries.current.delete(threadId);
       clearThreadRunning(threadId);
       setBusy(false);
+      const hasQueuedFollowUp = Boolean(threadId && (queuedTurns.current.get(threadId)?.length ?? 0) > 0);
+      if (!hasQueuedFollowUp) {
+        const failed = turnStatus === "failed";
+        notifyInBackground("notifyOnTurnComplete", failed ? "AI 작업 실패" : "AI 작업 완료", failed ? "작업이 실패했습니다. Devil Codex에서 진단을 확인하세요." : "요청한 작업이 끝났습니다.", failed ? "critical" : "normal");
+      }
       if (threadId) startQueuedTurn(threadId);
       if (steeringInterrupted) {
         void Promise.all([refreshThreads(), refreshChanges()]);
@@ -1916,6 +1967,11 @@ function App(): React.JSX.Element {
       setUtilityActive(panel.active);
       setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
       setUtilityPanelExpanded(panel.open && panel.expanded);
+      const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal"], active: "terminal", open: false, height: terminalHeight };
+      setBottomTabs(bottom.tabs);
+      setBottomActive(bottom.active);
+      setTerminalOpen(bottom.open && bottom.tabs.length > 0);
+      setTerminalHeight(bottom.height);
     }
     if (entry.workspace) void refreshChanges(entry.workspace);
   }
@@ -2568,6 +2624,9 @@ function App(): React.JSX.Element {
     if (panelByThread.current[fromThreadId] && !panelByThread.current[toThreadId]) {
       panelByThread.current[toThreadId] = panelByThread.current[fromThreadId];
     }
+    if (bottomByThread.current[fromThreadId] && !bottomByThread.current[toThreadId]) {
+      bottomByThread.current[toThreadId] = bottomByThread.current[fromThreadId];
+    }
     const scrollState = threadScrollPositions.current[fromThreadId];
     if (scrollState && !threadScrollPositions.current[toThreadId]) {
       threadScrollPositions.current = { ...threadScrollPositions.current, [toThreadId]: scrollState };
@@ -2774,7 +2833,16 @@ function App(): React.JSX.Element {
 
   function openView(next: AppView): void {
     closePopovers();
-    if (next === "settings") { setTerminalOpen(false); setUtilityPanelOpen(false); setEnvironmentOpen(false); }
+    if (next === "settings") {
+      const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+      panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
+      bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
+      skipNextPanelSave.current = true;
+      skipNextBottomSave.current = true;
+      setTerminalOpen(false);
+      setUtilityPanelOpen(false);
+      setEnvironmentOpen(false);
+    }
     navigate({ view: next, search: next === "search" ? "" : search });
   }
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray } from "electron";
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -674,6 +674,23 @@ function showMainWindow(): void {
   windowRef.focus();
 }
 
+function showBackgroundNotification(input: { title: string; body?: string; urgency?: "normal" | "critical" }): { shown: boolean } {
+  const win = windowRef;
+  if (win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused()) return { shown: false };
+  if (!Notification.isSupported()) return { shown: false };
+  const title = String(input.title ?? "").trim() || "Devil Codex";
+  const body = String(input.body ?? "").trim();
+  const notification = new Notification({
+    title,
+    body,
+    urgency: input.urgency === "critical" ? "critical" : "normal",
+    icon: appIconPath(),
+  });
+  notification.on("click", showMainWindow);
+  notification.show();
+  return { shown: true };
+}
+
 function createBackgroundTray(): void {
   if (trayRef) return;
   trayRef = new Tray(trayIconImage());
@@ -1205,6 +1222,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   })().catch((error) => console.warn("[devil-codex reconcile]", error instanceof Error ? error.message : error));
 
   ipcMain.handle("app:info", () => ({ version: app.getVersion(), platform: process.platform }));
+  ipcMain.handle("app:notify", (_event, input: { title: string; body?: string; urgency?: "normal" | "critical" }) => showBackgroundNotification(input));
   // Open the relevant macOS privacy pane (or browser-extension help) so the user
   // can grant Computer Use / browser control permissions, like stock Codex does.
   ipcMain.handle("app:open-permission", (_event, input: { kind: "accessibility" | "screen-recording" | "automation" | "browser-extension" }) => {

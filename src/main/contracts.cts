@@ -249,6 +249,7 @@ export interface AppInfo {
 }
 
 export type WindowControlAction = "close" | "minimize" | "maximize" | "quit";
+export interface AppNotificationInput { title: string; body?: string; urgency?: "normal" | "critical"; }
 
 export interface BrowserState { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; }
 
@@ -260,6 +261,7 @@ export interface AskAnswer { question: string; header?: string; answers: string[
 export interface DevilCodexApi {
   appInfo: () => Promise<AppInfo>;
   windowControl: (input: { action: WindowControlAction }) => Promise<void>;
+  showNotification: (input: AppNotificationInput) => Promise<{ shown: boolean }>;
   openPermission: (input: { kind: "accessibility" | "screen-recording" | "automation" | "browser-extension" }) => Promise<void>;
   browserNavigate: (input: { url: string }) => Promise<void>;
   browserBack: () => Promise<void>;
