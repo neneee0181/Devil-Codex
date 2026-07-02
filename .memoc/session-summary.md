@@ -10,7 +10,7 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-02T17:34:00+09:00
+Last: 2026-07-02T18:17:00+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
@@ -26,6 +26,10 @@ History: worklog. Resume risks: 04-handoff.md.
 - Post-v0.1.6 local scroll polish: thread initial scroll now applies synchronously in `useLayoutEffect` before paint, then stabilizes on the next frame, so opening a thread starts at bottom instead of visibly scrolling down.
 - Loading UX follow-up: uncached thread opens show a dedicated conversation loading state instead of looking empty; side-chat creation uses a small toast, and side-chat history loading now shows a skeleton panel instead of plain text.
 - Release prep for `v0.1.7`: package version bumped to `0.1.7`; validation passes; commit/tag/push in progress. Untracked `test.md`, `test.txt`, `test2.md` intentionally excluded.
+- Post-v0.1.7 local scroll fix: removed smooth scrolling from `.thread-view`; cached thread opens hide the view until initial scroll is applied in layout effect, while uncached opens keep a visible loading bar until history arrives.
+- Steering follow-up: forced queued steering now prefixes the next turn with an explicit "continue the work, do not just answer" directive, marks the interrupted turn, skips its post-completion history sync/final-answer recovery, and keeps busy state on when the queued turn starts.
+- Activity status follow-up: a failed sub-command no longer marks the whole turn card as "작업 실패" when the turn itself completed; merge now lets newer turn status replace stale failed state.
+- Release prep for `v0.1.8`: package version bumped to `0.1.8`; validation passes; commit/tag/push in progress. Untracked `test.md`, `test.txt`, `test2.md` intentionally excluded.
 
 ## Verify
-- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.7`.
+- `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.8`.

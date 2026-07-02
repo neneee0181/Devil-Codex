@@ -95,6 +95,14 @@ const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
 const THREAD_SCROLL_POSITIONS_KEY = "devil-codex:thread-scroll-positions";
 const PET_VISIBLE_KEY = "devil-codex:pet-visible";
 const AGENT_RUNTIME_KEY = "devil-codex:agent-runtime";
+const STEERING_PREFIX = [
+  "[스티어링 지시]",
+  "이 메시지는 진행 중이던 작업을 중간에 끊고 사용자가 새로 준 방향입니다.",
+  "단순 질의응답으로 끝내지 말고, 바로 이전에 진행 중이던 작업의 목표를 계속 수행하면서 아래 지시를 반영하세요.",
+  "필요한 파일 수정, 도구 실행, 검증까지 이어서 진행하세요.",
+  "",
+  "[사용자 스티어링]",
+].join("\n");
 const CLAUDE_PROVIDER_KEY = "devil-codex:claude-provider";
 const CLAUDE_ACCOUNT_KEY = "devil-codex:claude-account";
 const CLAUDE_MODEL_KEY = "devil-codex:claude-model";
@@ -419,7 +427,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
         ...current,
         ...item,
         activities: mergeActivityEntries(current.activities, item.activities),
-        status: current.status === "failed" || item.status === "failed" ? "failed" : item.status ?? current.status,
+      status: item.status ?? current.status,
       };
     } else { result[index] = item; }
   }
@@ -482,7 +490,7 @@ type RuntimeThreadSnapshot = {
 
 type UtilityPanelState = { tabs: string[]; active: string | null; open: boolean; expanded: boolean };
 
-type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
+type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem; steering?: boolean };
 type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
 type ThreadUsageModel = {
   key: string;
@@ -843,6 +851,7 @@ function App(): React.JSX.Element {
   const [worktreeDialogCwd, setWorktreeDialogCwd] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
+  const [initializingThreadId, setInitializingThreadId] = useState<string | null>(null);
   const [threadFindOpen, setThreadFindOpen] = useState(false);
   const [threadFindQuery, setThreadFindQuery] = useState("");
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
@@ -863,6 +872,7 @@ function App(): React.JSX.Element {
   const threadHistoryCache = useRef(new Map<string, ThreadHistoryItem[]>());
   const prefetchingThreadHistory = useRef(new Set<string>());
   const activeResume = useRef<string | null>(null);
+  const loadingThreadTimer = useRef<number | null>(null);
   const pendingThreads = useRef(new Map<string, ThreadSummary>());
   const pendingTurn = useRef<PendingTurnState | null>(null);
   const pendingTurns = useRef(new Map<string, PendingTurnState>());
@@ -875,6 +885,7 @@ function App(): React.JSX.Element {
   const compactedTurns = useRef(new Set<string>());
   const activeTurn = useRef<{ threadId: string; turnId: string } | null>(null);
   const activeTurnsByThread = useRef(new Map<string, string>());
+  const steeringInterruptedTurns = useRef(new Set<string>());
   const runningTurnsRef = useRef<Record<string, { turnId?: string; startedAt: number }>>({});
   const runtimeSnapshots = useRef<Partial<Record<AgentRuntimeId, RuntimeThreadSnapshot>>>({});
   const navigationBack = useRef<NavigationEntry[]>([]);
@@ -896,6 +907,7 @@ function App(): React.JSX.Element {
   function restoreRuntimeSnapshot(snapshot: RuntimeThreadSnapshot | undefined): boolean {
     if (!snapshot?.thread) return false;
     setLoadingThreadId(null);
+    setInitializingThreadId(snapshot.thread.id);
     setView(snapshot.view === "settings" ? "thread" : snapshot.view);
     setWorkspace(snapshot.workspace || workspace);
     setThread(snapshot.thread);
@@ -926,6 +938,7 @@ function App(): React.JSX.Element {
     if (!restored) {
       activeResume.current = null;
       setLoadingThreadId(null);
+      setInitializingThreadId(null);
       setThread(null);
       threadRef.current = null;
       setItems([]);
@@ -948,6 +961,7 @@ function App(): React.JSX.Element {
   useEffect(() => () => {
     saveCurrentThreadScrollPosition();
     if (scrollPersistFrame.current != null) cancelAnimationFrame(scrollPersistFrame.current);
+    if (loadingThreadTimer.current != null) window.clearTimeout(loadingThreadTimer.current);
     writeThreadScrollPositions(threadScrollPositions.current);
   }, []);
 
@@ -1201,6 +1215,7 @@ function App(): React.JSX.Element {
       } else {
         syncThreadScrollState(node);
       }
+      if (initializingThreadId === thread.id) setInitializingThreadId(null);
     };
     applyInitialScroll();
     const frame = requestAnimationFrame(applyInitialScroll);
@@ -1209,7 +1224,7 @@ function App(): React.JSX.Element {
     // timeline items, so length alone misses the most common growth path.
     // queuedHere: when the waiting-message panel grows/shrinks the composer gets
     // taller, so re-pin to bottom to keep the latest message above it.
-  }, [thread?.id, items, view, queuedHere]);
+  }, [thread?.id, items, view, queuedHere, initializingThreadId]);
 
   // Re-read codex settings whenever the user leaves the Settings view (via back
   // button, palette, anywhere). SettingsView owns a separate settings hook, so
@@ -1589,6 +1604,11 @@ function App(): React.JSX.Element {
     syncQueuedView(threadId);
   }
 
+  function steeringPending(pending: PendingTurnState): PendingTurnState {
+    if (pending.text.startsWith(STEERING_PREFIX)) return pending;
+    return { ...pending, text: `${STEERING_PREFIX}\n${pending.text}` };
+  }
+
   // Steer a specific queued message: move it to the front, then interrupt the
   // running turn so it sends next (model keeps history → redirects to this).
   function steerQueuedTurn(threadId: string, id: string): void {
@@ -1597,6 +1617,8 @@ function App(): React.JSX.Element {
     const index = queue.findIndex((item) => item.id === id);
     if (index < 0) return;
     const [entry] = queue.splice(index, 1);
+    entry.pending = steeringPending(entry.pending);
+    entry.steering = true;
     queue.unshift(entry);
     queuedTurns.current.set(threadId, queue);
     syncQueuedView(threadId);
@@ -1621,6 +1643,7 @@ function App(): React.JSX.Element {
     pendingTurn.current = next.pending;
     pendingTurns.current.set(threadId, next.pending);
     markThreadRunning(threadId);
+    if (threadRef.current?.id === threadId) setBusy(true);
     void window.devilCodex.sendTurn(next.pending).catch((error) => {
       appendItemToThread(threadId, { id: crypto.randomUUID(), kind: "system", title: "대기 요청 전송 실패", text: String(error) });
       pendingTurn.current = null;
@@ -1635,14 +1658,17 @@ function App(): React.JSX.Element {
   // sends it first — same thread, so the model keeps full history and redirects.
   function interruptForSteer(threadId: string): void {
     const turnId = activeTurnsByThread.current.get(threadId);
+    if (turnId) steeringInterruptedTurns.current.add(turnId);
     void window.devilCodex.interruptTurn({ threadId, runtime: pendingForThread(threadId)?.runtime ?? threadRef.current?.runtime ?? agentRuntime, turnId }).catch((error) => {
       if (/no active turn to interrupt/i.test(String(error))) {
+        if (turnId) steeringInterruptedTurns.current.delete(turnId);
         activeTurnsByThread.current.delete(threadId);
         if (activeTurn.current?.threadId === threadId) activeTurn.current = null;
         clearThreadRunning(threadId);
         startQueuedTurn(threadId);
         return;
       }
+      if (turnId) steeringInterruptedTurns.current.delete(turnId);
       setExternalError(`스티어링 실패: ${String(error)}`);
     });
   }
@@ -1761,6 +1787,7 @@ function App(): React.JSX.Element {
         if (threadId && activeTurnsByThread.current.get(threadId) === turnId) activeTurnsByThread.current.delete(threadId);
         return;
       }
+      const steeringInterrupted = turnId ? steeringInterruptedTurns.current.delete(turnId) : false;
       const completedPending = pendingForThread(threadId);
       if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
       if (threadId) activeTurnsByThread.current.delete(threadId);
@@ -1770,6 +1797,10 @@ function App(): React.JSX.Element {
       clearThreadRunning(threadId);
       setBusy(false);
       if (threadId) startQueuedTurn(threadId);
+      if (steeringInterrupted) {
+        void Promise.all([refreshThreads(), refreshChanges()]);
+        return;
+      }
       if (threadId) window.setTimeout(() => {
         void (async () => {
           const localHistory = threadHistoryCache.current.get(threadId) ?? itemsRef.current;
@@ -1856,8 +1887,8 @@ function App(): React.JSX.Element {
   }
 
   function restoreNavigation(entry: NavigationEntry): void {
-    setLoadingThreadId(null);
     activeResume.current = entry.thread?.id ?? null;
+    if (entry.thread?.id) setInitializingThreadId(entry.thread.id);
     threadRef.current = entry.thread;
     const restoredItems = entry.thread?.id ? threadHistoryCache.current.get(entry.thread.id) ?? entry.items : entry.items;
     setView(entry.view);
@@ -2092,6 +2123,7 @@ function App(): React.JSX.Element {
     activeResume.current = summary.id;
     const cachedHistory = threadHistoryCache.current.get(summary.id);
     setLoadingThreadId(cachedHistory ? null : summary.id);
+    setInitializingThreadId(cachedHistory ? summary.id : null);
     navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running && hasConversationItems(cachedHistory)
@@ -2109,6 +2141,7 @@ function App(): React.JSX.Element {
         const merged = running ? mergeTimelineItems(history, liveHistory) : history;
         threadHistoryCache.current.set(summary.id, merged);
         if (activeResume.current === summary.id) {
+          setInitializingThreadId(summary.id);
           setItems((current) => {
             const nextItems = running ? mergeTimelineItems(merged, current) : merged;
             itemsRef.current = nextItems;
@@ -3146,9 +3179,10 @@ function App(): React.JSX.Element {
         <div className={`content-col${environmentOpen && view === "thread" ? " env-open" : ""}`}>
         {view === "thread" ? (
           <>
-            <div className="thread-view" ref={threadViewRef} style={{ "--composer-clearance": `${composerClearance}px` } as CSSProperties} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
+            <div className={`thread-view${initializingThreadId === thread?.id ? " initializing" : ""}`} ref={threadViewRef} style={{ "--composer-clearance": `${composerClearance}px` } as CSSProperties} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
               {agentRuntime === "codex" && runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
+              {loadingThreadId === thread?.id && <span className="thread-load-bar" aria-label="대화 불러오는 중" />}
               {loadingThreadId === thread?.id ? <div className="thread-loading-state"><span><Loader2 size={18} /></span><strong>대화 불러오는 중</strong><p>이전 메시지를 정리해서 표시하고 있습니다.</p></div> : timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
                 const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));

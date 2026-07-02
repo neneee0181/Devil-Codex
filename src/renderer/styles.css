@@ -298,7 +298,8 @@ button:active:not(:disabled) { transform: scale(.96); }
 .desktop-pet span { font-size: 12px; font-weight: 650; line-height: 1.15; }
 .desktop-pet small { color: #9d9d9d; font-size: 11px; line-height: 1.15; }
 
-.thread-view { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 42px clamp(20px, 6vw, 120px) var(--composer-clearance, 240px); transition: padding var(--chat-layout-duration) var(--chat-layout-ease); scroll-behavior: smooth; }
+.thread-view { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 42px clamp(20px, 6vw, 120px) var(--composer-clearance, 240px); transition: padding var(--chat-layout-duration) var(--chat-layout-ease); scroll-behavior: auto; }
+.thread-view.initializing { visibility: hidden; }
 .thread-view { scrollbar-width: thin; scrollbar-color: #595959 transparent; }
 .thread-view::-webkit-scrollbar { width: 10px; }
 .thread-view::-webkit-scrollbar-track { background: transparent; }
@@ -311,6 +312,9 @@ button:active:not(:disabled) { transform: scale(.96); }
 /* keep timeline clear of the floating environment card (top-right) */
 .content-col.env-open .thread-view { padding-right: max(clamp(20px, 6vw, 120px), 348px); }
 .runtime-banner { display: block; max-width: 850px; margin: 0 auto 22px; border: 1px solid #684f31; border-radius: 8px; background: #242424; color: #e7b978; padding: 9px 12px; font-size: 12px; }
+.thread-load-bar { position: sticky; z-index: 8; top: -42px; display: block; height: 2px; margin: -42px calc(-1 * clamp(20px, 6vw, 120px)) 40px; overflow: hidden; background: #2b2b2b; }
+.thread-load-bar::before { content: ""; display: block; width: 38%; height: 100%; border-radius: 999px; background: #e0294f; animation: thread-load-bar 1s ease-in-out infinite; }
+@keyframes thread-load-bar { 0% { transform: translateX(-110%); } 100% { transform: translateX(280%); } }
 .thread-loading-state { display: grid; min-height: 320px; place-items: center; place-content: center; gap: 8px; color: #9b9b9b; text-align: center; }
 .thread-loading-state span { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid #363636; border-radius: 12px; background: #242424; color: #d8d8d8; }
 .thread-loading-state svg, .side-chat-create-loading svg { animation: side-chat-spin .8s linear infinite; }

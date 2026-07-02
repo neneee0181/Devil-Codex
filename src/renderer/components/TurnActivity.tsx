@@ -334,7 +334,7 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
   const entries = visibleActivityEntries(item.activities ?? []);
   const hasRunningEntry = entries.some((entry) => entry.status === "inProgress");
   const running = item.status === "inProgress" || hasRunningEntry;
-  const failed = !running && (item.status === "failed" || entries.some((entry) => entry.status === "failed"));
+  const failed = !running && item.status === "failed";
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(running);
   const [tick, setTick] = useState(0);
