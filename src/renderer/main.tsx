@@ -199,7 +199,7 @@ function cwdKey(value: string | undefined): string {
 function modelContextWindow(model: string): number {
   const lower = model.toLowerCase();
   if (lower.includes("gpt-5") || lower.includes("5.5") || lower.includes("5.4")) return 258_400;
-  if (lower.includes("claude")) return 200_000;
+  if (lower.includes("claude") || /\b(sonnet|opus|haiku|fable)\b/.test(lower)) return 200_000;
   if (lower.includes("gemini")) return 1_000_000;
   return 128_000;
 }
@@ -986,7 +986,7 @@ function App(): React.JSX.Element {
       return [item];
     });
   }, [items]);
-  const contextUsage = useMemo(() => estimateContextUsage(items, model), [items, model]);
+  const contextUsage = useMemo(() => estimateContextUsage(items, composerModel), [items, composerModel]);
   const threadUsage = useMemo(() => summarizeThreadUsage({
     threadId: thread?.id,
     contextUsage,
@@ -2827,7 +2827,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (agentRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={agentRuntime === "codex" ? contextUsage : undefined} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={agentRuntime} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (agentRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={agentRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>

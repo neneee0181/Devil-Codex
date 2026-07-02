@@ -441,7 +441,7 @@ export function Composer({
             <button type="button" className={goalMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setGoalMode((active) => !active); }}><Target size={14} />목표</button>
           </div>
           <div className="composer-spacer" />
-          <ModelPicker model={model} providerId={providerId} accountId={accountId} providers={providers} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />
+          <ModelPicker model={model} providerId={providerId} accountId={accountId} providers={providers} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} runtime={agentRuntime} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />
           {busy && !canSend
             ? <button type="button" className="send-button stop-button" aria-label="작업 중지" title="작업 중지" onClick={onStop}><Square size={14} fill="currentColor" /></button>
             : <button type="submit" className="send-button" disabled={!canSend} title={busy ? "대기열에 추가" : "보내기"}><ArrowRight size={18} /></button>}

@@ -1674,26 +1674,48 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model, accountId: input.accountId });
         return;
       }
-      const result = await claudeRuntime.sendTurn({
-        threadId: input.threadId,
-        cwd: input.cwd,
-        text: turnInput.text,
+      const requestLogId = crypto.randomUUID();
+      const requestStartedAt = Date.now();
+      await codexProxy.recordRuntimeRequest({
+        id: requestLogId,
+        provider,
         model: input.model || "sonnet",
-        resume: resumeClaudeCode,
-        nativeSessionId,
-        mcpConfig: await claudeMcpConfig({
-          browser: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
-          computer: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
-        }),
-        approvalPolicy: input.approvalPolicy,
-        sandboxMode: input.sandboxMode,
-        // Save the native session id as soon as it is known so a turn that
-        // fails midway can still resume the same Claude session on retry.
-        onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
-        onCompleted: (text) => providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId }),
+        accountId: input.accountId,
+        accountLabel,
+        threadId: input.threadId,
+        route: "claude-agent-sdk",
+        status: "started",
+        startedAt: requestStartedAt,
+        ...(input.attachments?.length ? { images: input.attachments.length } : {}),
       });
-      await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
-      if (result.sessionId) await providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: result.sessionId });
+      try {
+        const result = await claudeRuntime.sendTurn({
+          threadId: input.threadId,
+          cwd: input.cwd,
+          text: turnInput.text,
+          model: input.model || "sonnet",
+          resume: resumeClaudeCode,
+          nativeSessionId,
+          attachments: input.attachments,
+          mcpConfig: await claudeMcpConfig({
+            browser: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
+            computer: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
+          }),
+          approvalPolicy: input.approvalPolicy,
+          sandboxMode: input.sandboxMode,
+          // Save the native session id as soon as it is known so a turn that
+          // fails midway can still resume the same Claude session on retry.
+          onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
+          onCompleted: (text) => providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId }),
+        });
+        await codexProxy.finishRuntimeRequest(requestLogId, { status: "completed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, ...(result.usage ? { usage: result.usage } : {}) });
+        await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
+        if (result.sessionId) await providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: result.sessionId });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await codexProxy.finishRuntimeRequest(requestLogId, { status: "failed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, error: detail });
+        throw error;
+      }
       return;
     }
     if (usesCodexProxy(input.provider)) {

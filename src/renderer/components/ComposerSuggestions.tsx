@@ -96,8 +96,10 @@ export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ 
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
+  // Claude Code turns skip Codex-only controls (fast/reasoning/compact/fork/
+  // side/mcp/feedback); prompt-based and runtime-agnostic commands stay.
   const commandSource = context.runtime === "claude-code"
-    ? commands.filter((command) => ["goal", "plan", "status", "model", "settings"].includes(command.id))
+    ? commands.filter((command) => ["goal", "plan", "status", "model", "settings", "memory", "init", "review", "pet"].includes(command.id))
     : commands;
   const commandItems = commandSource
     .filter((command) => {

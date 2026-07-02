@@ -476,6 +476,18 @@ export class CodexProxyServer {
     return requestLog.map((entry) => ({ ...entry, sidecar: entry.sidecar ? { ...entry.sidecar, failures: [...entry.sidecar.failures] } : undefined }));
   }
 
+  // Non-proxy runtimes (Claude Code SDK turns) share the same request log so
+  // Settings → 연결 and the environment usage card cover every route.
+  async recordRuntimeRequest(entry: ProviderRequestLogEntry): Promise<void> {
+    await loadRequestLog();
+    startRequestLog(entry);
+  }
+
+  async finishRuntimeRequest(id: string, patch: Partial<ProviderRequestLogEntry>): Promise<void> {
+    await loadRequestLog();
+    finishRequestLog(id, patch);
+  }
+
   async start(): Promise<number> {
     if (this.server) return this.port;
     await loadRequestLog();

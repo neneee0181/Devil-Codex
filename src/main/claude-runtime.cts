@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { AppServerEvent, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
 
 type ClaudeSdkMessage = Record<string, unknown>;
 type ClaudeSdkOptions = Record<string, unknown>;
-type ClaudeSdkUserMessage = { type: "user"; message: { role: "user"; content: string }; parent_tool_use_id: null };
+type ClaudeSdkContentBlock = Record<string, unknown>;
+type ClaudeSdkUserMessage = { type: "user"; message: { role: "user"; content: string | ClaudeSdkContentBlock[] }; parent_tool_use_id: null };
 type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; modelContextWindow?: number };
+export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; totalTokens: number };
 
 type TurnContext = {
   threadId: string;
@@ -74,7 +76,9 @@ function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: Thr
 }
 
 async function claudeSdk(): Promise<{ query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage> }> {
-  return import("@anthropic-ai/claude-agent-sdk");
+  // Cast: Devil builds content blocks as plain records instead of importing
+  // the SDK's parameter types, keeping this module free of type-only deps.
+  return import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<{ query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage> }>;
 }
 
 function cleanErrorMessage(value: unknown): string {
@@ -129,6 +133,40 @@ function parseMcpServers(config: string | undefined): Record<string, unknown> | 
   }
 }
 
+const IMAGE_MEDIA_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+// Composer image attachments arrive as data URLs (paste) or file paths
+// (drag/select). Convert each into an Anthropic image content block; anything
+// unreadable or in an unsupported format is skipped rather than failing the turn.
+function imageBlock(source: string): ClaudeSdkContentBlock | undefined {
+  const dataUrl = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(source);
+  if (dataUrl) return { type: "image", source: { type: "base64", media_type: dataUrl[1]!.toLowerCase(), data: dataUrl[2]! } };
+  if (/^https?:\/\//i.test(source)) return { type: "image", source: { type: "url", url: source } };
+  const mediaType = IMAGE_MEDIA_TYPES[extname(source).toLowerCase().replace(".", "")];
+  if (!mediaType) return undefined;
+  try {
+    return { type: "image", source: { type: "base64", media_type: mediaType, data: readFileSync(source).toString("base64") } };
+  } catch {
+    return undefined;
+  }
+}
+
+function userMessageContent(text: string, attachments: string[] | undefined): string | ClaudeSdkContentBlock[] {
+  const images = (attachments ?? []).map(imageBlock).filter((block): block is ClaudeSdkContentBlock => Boolean(block));
+  if (!images.length) return text;
+  return [{ type: "text", text }, ...images];
+}
+
+function turnUsageResult(snapshot: TurnUsageSnapshot | undefined): ClaudeTurnUsage | undefined {
+  if (!snapshot) return undefined;
+  return {
+    inputTokens: snapshot.usage.input_tokens,
+    outputTokens: snapshot.usage.output_tokens,
+    ...(snapshot.usage.cached_input_tokens ? { cachedInputTokens: snapshot.usage.cached_input_tokens } : {}),
+    totalTokens: snapshot.usage.total_tokens,
+  };
+}
+
 function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   const raw = message.usage;
   if (!raw || typeof raw !== "object") return undefined;
@@ -172,7 +210,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     return { id: input.id, cwd: input.cwd ?? this.cwd, model: input.model, runtime: "claude-code", provider: "claude-code" };
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -184,8 +222,9 @@ export class ClaudeCodeRuntime extends EventEmitter {
     const mode = permissionMode(input.approvalPolicy, input.sandboxMode);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
 
+    const content = userMessageContent(input.text, input.attachments);
     const messages = (async function* (): AsyncGenerator<ClaudeSdkUserMessage> {
-      yield { type: "user", message: { role: "user", content: input.text }, parent_tool_use_id: null };
+      yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
     })();
     const context: TurnContext = {
       threadId: input.threadId,
@@ -210,7 +249,6 @@ export class ClaudeCodeRuntime extends EventEmitter {
         permissionMode: mode,
         allowDangerouslySkipPermissions: mode === "bypassPermissions",
         mcpServers: parseMcpServers(input.mcpConfig),
-        maxTurns: 100,
         // Resume the previous native session when Devil knows it. New sessions
         // keep the SDK's auto-generated id: forcing sessionId=threadId breaks a
         // retry after a failed first turn ("session id already in use").
@@ -237,7 +275,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
           },
         },
       });
-      return { sessionId: nativeSessionId, turnId };
+      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot) };
     }).catch(async (error) => {
       // interruptTurn() removes the controller before aborting, so a missing
       // entry means this rejection came from a user stop, not a failure.
@@ -254,7 +292,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       if (!interrupted) throw error;
       // A stop is a normal outcome (Codex parity): resolve so the renderer
       // does not render a spurious "요청 실패" system row.
-      return { sessionId: nativeSessionId, turnId };
+      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot) };
     }).finally(() => {
       this.active.delete(input.threadId);
       this.streamedAgentText.delete(`${input.threadId}:${turnId}`);

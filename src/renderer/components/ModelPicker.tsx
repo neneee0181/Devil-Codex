@@ -63,7 +63,7 @@ function accountLabel(account: ProviderAccount): string {
   return account.email || account.label || account.id;
 }
 
-export function ModelPicker({ model, providerId, accountId, providers, contextUsage, reasoningEffort, responseSpeed, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
+export function ModelPicker({ model, providerId, accountId, providers, contextUsage, reasoningEffort, responseSpeed, runtime, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; runtime?: "codex" | "claude-code"; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
   const speedButtonRef = useRef<HTMLButtonElement>(null);
   const speedSubmenuRef = useRef<HTMLDivElement>(null);
@@ -213,7 +213,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
       )}
       <button type="button" className="model-trigger" onClick={() => { setOpen((value) => !value); setSubmenu(null); }}>
         <span className="model-trigger-name">{selected?.label ?? model}</span>
-        <span className="model-trigger-meta">{effortLabel}</span>
+        {runtime !== "claude-code" && <span className="model-trigger-meta">{effortLabel}</span>}
         <ChevronDown size={14} />
       </button>
       <AnimatePresence>{open && (
@@ -293,14 +293,18 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
               </div>
             );
           })}
-          <div className="menu-divider" />
-          <div className="model-section-label">추론</div>
-          {efforts.map((item) => <button type="button" className="model-option" key={item.value} onClick={() => onReasoningEffortChange(item.value)}><span>{item.label}</span>{item.value === reasoningEffort && <Check size={15} />}</button>)}
-          <button ref={speedButtonRef} type="button" className={submenu === "speed" ? "model-option sub active" : "model-option sub"} onClick={() => {
-            if (submenu === "speed") { setSubmenu(null); return; }
-            updateSpeedSubmenuPosition();
-            setSubmenu("speed");
-          }}><span>속도 · {speedLabel}</span><ChevronRight size={14} /></button>
+          {runtime !== "claude-code" && <>
+            {/* 추론/속도 map to Codex app-server turn params; Claude Code turns
+                ignore them, so the menu hides them there to avoid dead controls. */}
+            <div className="menu-divider" />
+            <div className="model-section-label">추론</div>
+            {efforts.map((item) => <button type="button" className="model-option" key={item.value} onClick={() => onReasoningEffortChange(item.value)}><span>{item.label}</span>{item.value === reasoningEffort && <Check size={15} />}</button>)}
+            <button ref={speedButtonRef} type="button" className={submenu === "speed" ? "model-option sub active" : "model-option sub"} onClick={() => {
+              if (submenu === "speed") { setSubmenu(null); return; }
+              updateSpeedSubmenuPosition();
+              setSubmenu("speed");
+            }}><span>속도 · {speedLabel}</span><ChevronRight size={14} /></button>
+          </>}
         </motion.div>
       )}</AnimatePresence>
       {submenu === "speed" && createPortal(
