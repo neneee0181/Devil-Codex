@@ -70,6 +70,13 @@ function isClaudeLocalCommandText(text: string): boolean {
     || normalized.startsWith("<local-command-stderr>");
 }
 
+function isClaudeHookNoiseText(text: string): boolean {
+  const normalized = text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim();
+  return normalized.startsWith("CAVEMAN MODE ACTIVE")
+    || normalized.startsWith("STATUSLINE SETUP NEEDED:")
+    || /Loading caveman mode/i.test(normalized);
+}
+
 function isClaudeToolResultOnly(content: unknown): boolean {
   return Array.isArray(content)
     && content.length > 0
@@ -101,16 +108,33 @@ function claudeLineText(line: ClaudeJsonLine): string {
 function claudeSessionFallbackText(lines: ClaudeJsonLine[]): string {
   const leafUuid = String((lines.find((line) => line.type === "last-prompt") as Record<string, unknown> | undefined)?.leafUuid ?? "");
   const leafText = leafUuid ? claudeLineText(lines.find((line) => line.uuid === leafUuid) ?? {}) : "";
-  if (leafText && !isClaudeLocalCommandText(leafText)) return leafText;
+  if (leafText && !isClaudeLocalCommandText(leafText) && !isClaudeHookNoiseText(leafText)) return leafText;
   for (const line of lines) {
     const text = claudeLineText(line);
     if (!text) continue;
     if (/resume cancelled/i.test(text)) continue;
     if (/^(Kept model as|Set model to)/i.test(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim())) continue;
     if (isClaudeLocalCommandText(text)) continue;
+    if (isClaudeHookNoiseText(text)) continue;
     return text;
   }
   return "";
+}
+
+async function normalizeClaudeEntrypointFile(path: string, source: string): Promise<string> {
+  if (!source.includes('"entrypoint":"sdk-cli"')) return source;
+  const next = source.split(/\r?\n/).map((line) => {
+    if (!line.trim()) return line;
+    try {
+      const parsed = JSON.parse(line) as { entrypoint?: unknown };
+      if (parsed.entrypoint === "sdk-cli") parsed.entrypoint = "cli";
+      return JSON.stringify(parsed);
+    } catch {
+      return line;
+    }
+  }).join("\n");
+  if (next !== source) await writeFile(path, next, "utf8").catch(() => undefined);
+  return next;
 }
 
 function cwdFromClaudeProjectPath(path: string): string {
@@ -420,6 +444,7 @@ export class ProviderTranscriptStore {
       if (all.deleted?.[threadId]) continue;
       let source = "";
       try { source = await readFile(path, "utf8"); } catch { continue; }
+      source = await normalizeClaudeEntrypointFile(path, source);
       const lines = source.split(/\r?\n/).flatMap((line) => {
         if (!line.trim()) return [];
         try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
@@ -443,7 +468,7 @@ export class ProviderTranscriptStore {
         runtime: "claude-code",
         provider: "claude-code",
         claudeSessionId: sessionId,
-        title: all.meta[threadId]?.title && all.meta[threadId]?.title !== "새 Claude Code 채팅" ? all.meta[threadId]!.title : compactText(firstUser, "새 Claude Code 채팅", 60),
+        title: all.meta[threadId]?.title && all.meta[threadId]?.title !== "새 Claude Code 채팅" && !isClaudeHookNoiseText(all.meta[threadId]!.title) ? all.meta[threadId]!.title : compactText(firstUser, "새 Claude Code 채팅", 60),
         preview: compactText(lastUser, "", 80),
         updatedAt,
         archived: all.meta[threadId]?.archived ?? false,
@@ -460,12 +485,12 @@ export class ProviderTranscriptStore {
       const turnId = `${threadId}-claude-turn-${index}`;
       if (role === "user") {
         const text = claudeTextContent(content);
-        if (!text || isClaudeLocalCommandText(text) || isClaudeToolResultOnly(content)) return [];
+        if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return [];
         return [{ id, kind: "user", text, turnId }];
       }
       if (role !== "assistant") return [];
       const text = claudeTextContent(content);
-      return text ? [{ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" }] : [];
+      return text && !isClaudeHookNoiseText(text) ? [{ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" }] : [];
     });
   }
 

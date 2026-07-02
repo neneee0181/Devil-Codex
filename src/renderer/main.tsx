@@ -129,6 +129,7 @@ const CLAUDE_PROVIDER_KEY = "devil-codex:claude-provider";
 const CLAUDE_ACCOUNT_KEY = "devil-codex:claude-account";
 const CLAUDE_MODEL_KEY = "devil-codex:claude-model";
 const COMPOSER_CONFIGS_KEY = "devil-codex:composer-configs";
+const RUNNING_TURNS_KEY = "devil-codex:running-turns";
 const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
 const ENVIRONMENT_SOURCE_LIMIT = 8;
 const ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT = 4;
@@ -149,6 +150,28 @@ function writeThreadScrollPositions(input: Record<string, ThreadScrollPosition>)
   } catch {
     // Losing scroll persistence is better than breaking chat navigation.
   }
+}
+
+function readPersistedRunningTurns(): Record<string, { turnId?: string; startedAt: number }> {
+  try {
+    // Main-process turns only survive a renderer reload (Ctrl+R). After a full
+    // app restart the persisted entries are dead turns, so drop them.
+    const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    if (navigation?.type !== "reload") {
+      localStorage.removeItem(RUNNING_TURNS_KEY);
+      return {};
+    }
+    const raw = JSON.parse(localStorage.getItem(RUNNING_TURNS_KEY) ?? "{}") as Record<string, { turnId?: string; startedAt: number }>;
+    const cutoff = Date.now() - 1000 * 60 * 60 * 6;
+    return Object.fromEntries(Object.entries(raw).filter(([, value]) => Number(value?.startedAt) > cutoff));
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedRunningTurns(input: Record<string, { turnId?: string; startedAt: number }>): void {
+  try { localStorage.setItem(RUNNING_TURNS_KEY, JSON.stringify(input)); }
+  catch { /* Losing running-state restore is acceptable. */ }
 }
 
 function readSidecarSettings(): SidecarSettings {
@@ -371,6 +394,12 @@ function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: T
   const seen = new Set(local.filter((item) => item.kind === "agent").map(agentMessageKey));
   const missing = synced.filter((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim() && !seen.has(agentMessageKey(item)));
   return missing.length ? [...local, ...missing] : local;
+}
+
+function removeAgentMessagesForTurn(items: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
+  if (!turnId) return items;
+  const next = items.filter((item) => !(item.kind === "agent" && item.turnId === turnId));
+  return next.length === items.length ? items : next;
 }
 
 function timelineItemKey(item: ThreadHistoryItem): string {
@@ -779,7 +808,7 @@ function App(): React.JSX.Element {
     syncStockCodexDefaults({ responseSpeed: value });
   };
   const [busy, setBusy] = useState(false);
-  const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>({});
+  const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>(() => readPersistedRunningTurns());
   const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string; attachments?: ThreadAttachment[] }>>>({});
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal"]);
@@ -996,7 +1025,10 @@ function App(): React.JSX.Element {
     if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
   }, [agentRuntime]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
-  useEffect(() => { runningTurnsRef.current = runningTurns; }, [runningTurns]);
+  useEffect(() => {
+    runningTurnsRef.current = runningTurns;
+    writePersistedRunningTurns(runningTurns);
+  }, [runningTurns]);
   useEffect(() => {
     if (!codexSettings.settings || !providers.settings) return;
     syncStockCodexDefaults({
@@ -1252,7 +1284,16 @@ function App(): React.JSX.Element {
     const observer = new ResizeObserver(applyComposerClearance);
     observer.observe(composerNode);
     return () => { observer.disconnect(); if (frame != null) cancelAnimationFrame(frame); };
-  }, [view, thread?.id, composerRuntime, queuedHere, runningTurns]);
+  }, [view, thread?.id, composerRuntime, queuedHere, runningTurns, terminalOpen, terminalHeight]);
+
+  useLayoutEffect(() => {
+    if (view !== "thread" || !thread?.id || !terminalOpen) return;
+    if (!stickToThreadBottom.current) return;
+    const node = threadViewRef.current;
+    if (!node) return;
+    setThreadNodeToBottom(node);
+    stabilizeThreadBottom(thread.id, 4);
+  }, [view, thread?.id, terminalOpen, terminalHeight]);
 
   useLayoutEffect(() => {
     if (view !== "thread" || !thread?.id) return;
@@ -1887,6 +1928,12 @@ function App(): React.JSX.Element {
     const timelineEvent = eventTurnId && !eventParams.turnId
       ? { ...event, params: { ...eventParams, turnId: eventTurnId } }
       : event;
+    const suppressInterruptedTurnEvent = Boolean(
+      eventTurnId
+      && steeringInterruptedTurns.current.has(eventTurnId)
+      && (event.method.startsWith("item/") || event.method === "response.failed")
+    );
+    if (suppressInterruptedTurnEvent) return;
     const pendingForEvent = pendingForThread(eventThreadId);
     if (eventThreadId && eventThreadId !== visibleThreadId) {
       const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], timelineEvent), eventTurnId, pendingForEvent ?? undefined);
@@ -1938,6 +1985,18 @@ function App(): React.JSX.Element {
       if (!hasQueuedFollowUp) {
         const failed = turnStatus === "failed";
         notifyInBackground("notifyOnTurnComplete", failed ? "AI 작업 실패" : "AI 작업 완료", failed ? "작업이 실패했습니다. Devil Codex에서 진단을 확인하세요." : "요청한 작업이 끝났습니다.", failed ? "critical" : "normal", true);
+      }
+      if (steeringInterrupted && threadId && turnId) {
+        const cached = threadHistoryCache.current.get(threadId);
+        if (cached) threadHistoryCache.current.set(threadId, removeAgentMessagesForTurn(cached, turnId));
+        if (threadRef.current?.id === threadId) {
+          setItems((current) => {
+            const next = removeAgentMessagesForTurn(current, turnId);
+            itemsRef.current = next;
+            threadHistoryCache.current.set(threadId, next);
+            return next;
+          });
+        }
       }
       if (threadId) startQueuedTurn(threadId);
       if (steeringInterrupted) {
@@ -2653,8 +2712,16 @@ function App(): React.JSX.Element {
       initialValue: projectName,
       confirmLabel: "변경",
     }).then((value) => {
+      if (value === null) return;
       const next = value?.trim();
-      if (next) setProjectAlias(next);
+      setProjectAlias(next || "");
+      if (!workspace) return;
+      setProjectAliases((prev) => {
+        const map = { ...prev };
+        if (next) map[workspace] = next; else delete map[workspace];
+        localStorage.setItem("devil-codex:project-aliases", JSON.stringify(map));
+        return map;
+      });
     });
   }
 
@@ -2810,13 +2877,19 @@ function App(): React.JSX.Element {
     if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next), refreshProjects()]);
   }
 
-  async function createLocalProject(): Promise<void> {
+  async function createLocalProject(name: string): Promise<void> {
     setProjectCreateOpen(false);
     try {
-      const cwd = await window.devilCodex.createProjectFolder({ name: "새 프로젝트" });
+      const projectName = name.trim() || "새 프로젝트";
+      const cwd = await window.devilCodex.createProjectFolder({ name: projectName });
       rememberProject(cwd);
       navigate({ view: "thread", workspace: cwd, thread: null, items: [], projectDraft: true, environmentOpen: false });
-      setProjectAlias("");
+      setProjectAlias(projectName);
+      setProjectAliases((prev) => {
+        const next = { ...prev, [cwd]: projectName };
+        localStorage.setItem("devil-codex:project-aliases", JSON.stringify(next));
+        return next;
+      });
       setExpandedProjects((prev) => ({ ...prev, [cwd]: true }));
       if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
     } catch (error) {
@@ -3298,6 +3371,7 @@ function App(): React.JSX.Element {
                   pinnedThreadIds={pinnedThreads}
                   onThreadContextMenu={openThreadContextMenu}
                   onPin={() => pinProjectCwd(group.cwd)}
+                  onRename={() => renameProjectCwd(group.cwd)}
                   onFinder={() => { setOpenProjectMenu(null); void window.devilCodex.openWorkspace({ cwd: group.cwd, target: "finder" }); }}
                   onRemove={() => hideProject(group.cwd)}
                 />
@@ -3422,7 +3496,7 @@ function App(): React.JSX.Element {
       </section>
       {gitDialogOpen && <GitWorkflowDialog cwd={workspace} changes={changes} onClose={() => setGitDialogOpen(false)} onRefresh={() => refreshChanges()} onError={setExternalError} />}
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}
-      {projectCreateOpen && <ProjectCreateDialog onClose={() => setProjectCreateOpen(false)} onExisting={() => void openExistingProject()} onCreate={() => void createLocalProject()} />}
+      {projectCreateOpen && <ProjectCreateDialog onClose={() => setProjectCreateOpen(false)} onExisting={() => void openExistingProject()} onCreate={(name) => void createLocalProject(name)} />}
       {renameThreadTarget && <RenameThreadDialog value={renameThreadDraft} busy={renameThreadBusy} onValue={setRenameThreadDraft} onSubmit={() => void submitRenameThread()} onClose={() => { if (!renameThreadBusy) setRenameThreadTarget(null); }} />}
       {textPrompt && <TextPromptDialog state={textPrompt} onClose={() => setTextPrompt(null)} />}
       {approvalQueue[0] && <ApprovalRequestDialog prompt={approvalQueue[0]} responding={approvalResponding} onDecision={(decision) => void respondToApproval(decision)} />}
@@ -3574,14 +3648,19 @@ function WindowControls({ onAction }: { onAction: (action: WindowControlAction) 
   );
 }
 
-function ProjectCreateDialog({ onClose, onExisting, onCreate }: { onClose: () => void; onExisting: () => void; onCreate: () => void }): React.JSX.Element {
+function ProjectCreateDialog({ onClose, onExisting, onCreate }: { onClose: () => void; onExisting: () => void; onCreate: (name: string) => void }): React.JSX.Element {
+  const [name, setName] = useState("새 프로젝트");
   return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <motion.div className="project-create-dialog" initial={{ opacity: 0, scale: .97, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: 6 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }}>
+      <motion.form className="project-create-dialog" initial={{ opacity: 0, scale: .97, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: 6 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }} onSubmit={(event) => { event.preventDefault(); onCreate(name); }}>
         <header>
           <h2>프로젝트 만들기</h2>
           <button type="button" onClick={onClose} aria-label="닫기"><X size={24} /></button>
         </header>
+        <label className="project-name-field">
+          <span>이름</span>
+          <input autoFocus value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
         <section>
           <h3>프로젝트 유형</h3>
           <button type="button" className="project-type-card active">
@@ -3595,9 +3674,9 @@ function ProjectCreateDialog({ onClose, onExisting, onCreate }: { onClose: () =>
         </section>
         <footer>
           <button type="button" className="secondary" onClick={onExisting}>기존 폴더 사용</button>
-          <button type="button" className="primary" onClick={onCreate}>다음</button>
+          <button type="submit" className="primary" disabled={!name.trim()}>생성</button>
         </footer>
-      </motion.div>
+      </motion.form>
     </div>,
     document.body,
   );
@@ -3751,7 +3830,7 @@ function ThreadContextMenu({ state, pinned, onToggleMarker, onRename, onHide }: 
   );
 }
 
-function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runningThreadIds, pinnedThreadIds, onToggle, onMenu, onNewThread, onOpen, onPrefetch, onThreadContextMenu, onPin, onFinder, onRemove }: {
+function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runningThreadIds, pinnedThreadIds, onToggle, onMenu, onNewThread, onOpen, onPrefetch, onThreadContextMenu, onPin, onRename, onFinder, onRemove }: {
   group: ProjectGroupData;
   expanded: boolean;
   menuOpen: boolean;
@@ -3766,6 +3845,7 @@ function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runni
   onPrefetch: (summary: ThreadSummary) => void;
   onThreadContextMenu: (event: ReactMouseEvent, summary: ThreadSummary) => void;
   onPin: () => void;
+  onRename: () => void;
   onFinder: () => void;
   onRemove: () => void;
 }): React.JSX.Element {
@@ -3816,6 +3896,7 @@ function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runni
           {menuOpen && (
             <motion.div className="project-menu" data-shell-popover-root style={{ position: "fixed", left: pos.left, top: pos.top }} initial={{ opacity: 0, scale: .97, y: -4 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: -3 }} transition={{ duration: .13 }}>
               <button onClick={onPin}>{pinned ? <PinOff /> : <Pin />}{pinned ? "프로젝트 고정 해제" : "프로젝트 고정"}</button>
+              <button onClick={onRename}><Pencil />이름 변경</button>
               <button onClick={onFinder}><FolderOpen />Finder에서 보기</button>
               <div className="menu-divider" />
               <button className="danger" onClick={onRemove}><Trash2 />제거하기</button>

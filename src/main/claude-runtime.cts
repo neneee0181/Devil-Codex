@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 import { EventEmitter } from "node:events";
@@ -76,7 +76,8 @@ function claudeProjectKey(cwd: string): string {
 
 async function normalizeClaudeSessionEntrypoint(cwd: string, sessionId: string | undefined): Promise<void> {
   if (!sessionId || !cwd) return;
-  const path = join(homedir(), ".claude", "projects", claudeProjectKey(cwd), `${sessionId}.jsonl`);
+  const path = await claudeSessionPath(cwd, sessionId);
+  if (!path) return;
   let source = "";
   try { source = await readFile(path, "utf8"); } catch { return; }
   if (!source.includes('"entrypoint":"sdk-cli"')) return;
@@ -91,6 +92,36 @@ async function normalizeClaudeSessionEntrypoint(cwd: string, sessionId: string |
     }
   }).join("\n");
   if (next !== source) await writeFile(path, next, "utf8");
+}
+
+const claudeSessionPathCache = new Map<string, string>();
+
+async function claudeSessionPath(cwd: string, sessionId: string): Promise<string | undefined> {
+  const cached = claudeSessionPathCache.get(sessionId);
+  if (cached && existsSync(cached)) return cached;
+  const direct = join(homedir(), ".claude", "projects", claudeProjectKey(cwd), `${sessionId}.jsonl`);
+  if (existsSync(direct)) {
+    claudeSessionPathCache.set(sessionId, direct);
+    return direct;
+  }
+  const root = join(homedir(), ".claude", "projects");
+  const target = `${sessionId}.jsonl`;
+  const scan = async (dir: string, depth = 0): Promise<string | undefined> => {
+    if (depth > 5) return undefined;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isFile() && entry.name === target) return path;
+      if (entry.isDirectory()) {
+        const found = await scan(path, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+  const found = await scan(root);
+  if (found) claudeSessionPathCache.set(sessionId, found);
+  return found;
 }
 
 function normalizeClaudeSessionEntrypointSoon(cwd: string, sessionId: string | undefined): void {
