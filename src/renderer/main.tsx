@@ -472,6 +472,16 @@ type PendingTurnState = {
   retriedAfterCompaction: boolean;
 };
 
+type RuntimeThreadSnapshot = {
+  thread: ThreadRef | null;
+  workspace: string;
+  items: ThreadHistoryItem[];
+  projectDraft: boolean;
+  view: AppView;
+};
+
+type UtilityPanelState = { tabs: string[]; active: string | null; open: boolean; expanded: boolean };
+
 type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem };
 type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
 type ThreadUsageModel = {
@@ -673,6 +683,20 @@ function App(): React.JSX.Element {
     });
   };
   const setAgentRuntime = (next: AgentRuntimeId): void => {
+    if (next !== agentRuntime) {
+      runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
+      const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+      panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
+      skipNextPanelSave.current = true;
+      setUtilityTabs([]);
+      setUtilityActive(null);
+      setUtilityPanelOpen(false);
+      setUtilityPanelExpanded(false);
+      setBottomTabs(["terminal"]);
+      setBottomActive("terminal");
+      setTerminalOpen(false);
+      setEnvironmentOpen(false);
+    }
     setAgentRuntimeState(next);
     localStorage.setItem(AGENT_RUNTIME_KEY, next);
   };
@@ -750,7 +774,7 @@ function App(): React.JSX.Element {
   // Hide all side conversations from the main sidebar (spawned subagents are
   // already excluded from thread/list by the app-server's subAgent source).
   const sideThreadSet = useMemo(() => new Set(Object.values(sideChatsByThread).flat().map((c) => c.id)), [sideChatsByThread]);
-  const sideChatKey = thread?.id ?? "__none__";
+  const sideChatKey = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
   const sideChats = sideChatsByThread[sideChatKey] ?? [];
   const setSideChats = (updater: (prev: Array<{ id: string; label: string }>) => Array<{ id: string; label: string }>): void =>
     setSideChatsByThread((prev) => ({ ...prev, [sideChatKey]: updater(prev[sideChatKey] ?? []) }));
@@ -793,7 +817,8 @@ function App(): React.JSX.Element {
   const [utilityTabs, setUtilityTabs] = useState<string[]>([]);
   const [utilityActive, setUtilityActive] = useState<string | null>(null);
   // Per-main-thread right-panel tab state so returning restores open subagents.
-  const panelByThread = useRef<Record<string, { tabs: string[]; active: string | null }>>({});
+  const panelByThread = useRef<Record<string, UtilityPanelState>>({});
+  const skipNextPanelSave = useRef(false);
   const [externalError, setExternalError] = useState("");
   const [runtimeShareBusy, setRuntimeShareBusy] = useState<string | null>(null);
   const [petVisible, setPetVisible] = useState(storedPetVisible);
@@ -827,6 +852,8 @@ function App(): React.JSX.Element {
   const stickToThreadBottom = useRef(true);
   const scrolledThreadId = useRef<string | null>(null);
   const pendingScrollRestoreThread = useRef<string | null>(null);
+  const utilityScrollRestore = useRef<{ threadId: string; top: number; atBottom: boolean } | null>(null);
+  const utilityScrollLockUntil = useRef(0);
   const threadScrollPositions = useRef<Record<string, ThreadScrollPosition>>(readThreadScrollPositions());
   const scrollPersistFrame = useRef<number | null>(null);
   const projectHeaderMenuRef = useRef<HTMLButtonElement>(null);
@@ -848,23 +875,60 @@ function App(): React.JSX.Element {
   const activeTurn = useRef<{ threadId: string; turnId: string } | null>(null);
   const activeTurnsByThread = useRef(new Map<string, string>());
   const runningTurnsRef = useRef<Record<string, { turnId?: string; startedAt: number }>>({});
+  const runtimeSnapshots = useRef<Partial<Record<AgentRuntimeId, RuntimeThreadSnapshot>>>({});
   const navigationBack = useRef<NavigationEntry[]>([]);
   const navigationForward = useRef<NavigationEntry[]>([]);
   useDismissShellPopovers(closePopovers);
   const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
   useEffect(() => { itemsRef.current = items; }, [items]);
+  function runtimeSnapshotFor(runtimeId: AgentRuntimeId): RuntimeThreadSnapshot {
+    return {
+      thread: threadRef.current,
+      workspace,
+      items: itemsRef.current,
+      projectDraft,
+      view,
+    };
+  }
+
+  function restoreRuntimeSnapshot(snapshot: RuntimeThreadSnapshot | undefined): boolean {
+    if (!snapshot?.thread) return false;
+    setView(snapshot.view === "settings" ? "thread" : snapshot.view);
+    setWorkspace(snapshot.workspace || workspace);
+    setThread(snapshot.thread);
+    threadRef.current = snapshot.thread;
+    const cached = threadHistoryCache.current.get(snapshot.thread.id);
+    const nextItems = cached ? mergeTimelineItems(snapshot.items, cached) : snapshot.items;
+    setItems(nextItems);
+    itemsRef.current = nextItems;
+    threadHistoryCache.current.set(snapshot.thread.id, nextItems);
+    setProjectDraft(snapshot.projectDraft);
+    activeResume.current = snapshot.thread.id;
+    const panelKey = `${snapshot.thread.runtime ?? agentRuntime}:${snapshot.thread.id}`;
+    const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
+    setUtilityTabs(panel.tabs);
+    setUtilityActive(panel.active);
+    setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
+    setUtilityPanelExpanded(panel.open && panel.expanded);
+    return true;
+  }
+
   useEffect(() => {
     if (keepThreadOnRuntimeSwitch.current) {
       keepThreadOnRuntimeSwitch.current = false;
       if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
       return;
     }
-    setThread(null);
-    threadRef.current = null;
-    setItems([]);
-    itemsRef.current = [];
-    threadHistoryCache.current.clear();
+    const restored = restoreRuntimeSnapshot(runtimeSnapshots.current[agentRuntime]);
+    if (!restored) {
+      activeResume.current = null;
+      setThread(null);
+      threadRef.current = null;
+      setItems([]);
+      itemsRef.current = [];
+      setProjectDraft(false);
+    }
     pendingThreads.current.clear();
     if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
   }, [agentRuntime]);
@@ -1011,13 +1075,72 @@ function App(): React.JSX.Element {
     if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, node.scrollTop, atBottom);
   }
 
-  function scrollThreadToBottom(): void {
-    const node = threadViewRef.current;
+  function setThreadNodeToBottom(node = threadViewRef.current, force = false): void {
     if (!node) return;
+    if (!force && Date.now() < utilityScrollLockUntil.current) return;
+    const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    node.scrollTop = maxTop;
     stickToThreadBottom.current = true;
     setShowScrollToBottom(false);
-    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-    if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, node.scrollHeight, true);
+    if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, maxTop, true);
+  }
+
+  function stabilizeThreadBottom(threadId: string, attempts = 5): void {
+    if (!threadId || !stickToThreadBottom.current) return;
+    if (Date.now() < utilityScrollLockUntil.current) return;
+    let remaining = attempts;
+    const tick = (): void => {
+      if (threadRef.current?.id !== threadId || !stickToThreadBottom.current) return;
+      setThreadNodeToBottom();
+      remaining -= 1;
+      if (remaining > 0) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    window.setTimeout(() => {
+      if (threadRef.current?.id === threadId && stickToThreadBottom.current) setThreadNodeToBottom();
+    }, 80);
+    window.setTimeout(() => {
+      if (threadRef.current?.id === threadId && stickToThreadBottom.current) setThreadNodeToBottom();
+    }, 220);
+  }
+
+  function captureUtilityScrollPosition(): void {
+    const node = threadViewRef.current;
+    const threadId = threadRef.current?.id;
+    if (!node || !threadId) return;
+    const hiddenBelow = node.scrollHeight - node.scrollTop - node.clientHeight;
+    utilityScrollRestore.current = { threadId, top: node.scrollTop, atBottom: hiddenBelow <= 140 };
+    utilityScrollLockUntil.current = Date.now() + 560;
+  }
+
+  function restoreUtilityScrollPosition(): void {
+    const restore = utilityScrollRestore.current;
+    if (!restore) return;
+    const apply = (): void => {
+      const node = threadViewRef.current;
+      if (!node || threadRef.current?.id !== restore.threadId) return;
+      const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.scrollTop = Math.min(restore.top, maxTop);
+      setShowScrollToBottom(!restore.atBottom && itemsRef.current.length > 0);
+      rememberThreadScrollPosition(restore.threadId, node.scrollTop, restore.atBottom);
+    };
+    requestAnimationFrame(() => {
+      apply();
+      requestAnimationFrame(apply);
+    });
+    window.setTimeout(apply, 120);
+    window.setTimeout(apply, 280);
+    window.setTimeout(() => {
+      apply();
+      stickToThreadBottom.current = restore.atBottom;
+      utilityScrollRestore.current = null;
+    }, 520);
+  }
+
+  function scrollThreadToBottom(): void {
+    const threadId = threadRef.current?.id;
+    setThreadNodeToBottom(undefined, true);
+    if (threadId) stabilizeThreadBottom(threadId);
   }
 
   useLayoutEffect(() => {
@@ -1033,8 +1156,8 @@ function App(): React.JSX.Element {
         setComposerClearance((current) => Math.abs(current - next) > 1 ? next : current);
         const threadNode = threadViewRef.current;
         if (threadNode && stickToThreadBottom.current) {
-          threadNode.scrollTop = threadNode.scrollHeight;
-          if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, threadNode.scrollTop, true);
+          setThreadNodeToBottom(threadNode);
+          if (threadRef.current?.id) stabilizeThreadBottom(threadRef.current.id, 3);
         }
       });
     };
@@ -1070,9 +1193,8 @@ function App(): React.JSX.Element {
         return;
       }
       if (stickToThreadBottom.current) {
-        node.scrollTop = node.scrollHeight;
-        setShowScrollToBottom(false);
-        rememberThreadScrollPosition(thread.id, node.scrollTop, true);
+        setThreadNodeToBottom(node);
+        stabilizeThreadBottom(thread.id);
       } else {
         syncThreadScrollState(node);
       }
@@ -1193,21 +1315,17 @@ function App(): React.JSX.Element {
     }
   }, [subagents, subagentNames]);
   const namedSubagents = useMemo(() => subagents.map((agent) => ({ ...agent, label: subagentNames[agent.id] || agent.label })), [subagents, subagentNames]);
-  // Side-chat launcher list = spawned subagents (from this thread) + created
-  // side-chats that already have a conversation (don't list empty ones).
-  const sideChatList = useMemo(() => {
-    const out = [...namedSubagents];
-    const seen = new Set(out.map((a) => a.id));
-    for (const chat of sideChats) {
-      if (seen.has(chat.id)) continue;
-      out.push({ id: chat.id, label: subagentNames[chat.id] || chat.label });
-      seen.add(chat.id);
-    }
-    return out;
-  }, [namedSubagents, sideChats, subagentNames]);
+  const sideChatList = namedSubagents;
   const environmentSources = useMemo(() => collectEnvironmentSources(items), [items]);
   // Persist right-panel tabs per main thread so returning restores open tabs.
-  useEffect(() => { panelByThread.current[thread?.id ?? "__none__"] = { tabs: utilityTabs, active: utilityActive }; }, [utilityTabs, utilityActive, thread]);
+  useEffect(() => {
+    if (skipNextPanelSave.current) {
+      skipNextPanelSave.current = false;
+      return;
+    }
+    const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+    panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
+  }, [utilityTabs, utilityActive, utilityPanelOpen, utilityPanelExpanded, thread, agentRuntime]);
   useEffect(() => {
     if (view !== "search" || !search.trim()) { setSearchResults([]); setSearchBusy(false); return; }
     const timer = window.setTimeout(() => {
@@ -1755,10 +1873,12 @@ function App(): React.JSX.Element {
       setUtilityPanelOpen(false);
       setUtilityPanelExpanded(false);
     } else {
-      const panel = panelByThread.current[entry.thread?.id ?? "__none__"] ?? { tabs: [], active: null };
+      const panelKey = `${entry.thread?.runtime ?? agentRuntime}:${entry.thread?.id ?? "__none__"}`;
+      const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
       setUtilityTabs(panel.tabs);
       setUtilityActive(panel.active);
-      setUtilityPanelOpen(panel.tabs.length > 0);
+      setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
+      setUtilityPanelExpanded(panel.open && panel.expanded);
     }
     if (entry.workspace) void refreshChanges(entry.workspace);
   }
@@ -2736,10 +2856,12 @@ function App(): React.JSX.Element {
   }
 
   function openUtility(tool: string): void {
+    captureUtilityScrollPosition();
     setUtilityTabs((current) => current.includes(tool) ? current : [...current, tool]);
     setUtilityActive(tool);
     setUtilityPanelOpen(true);
     setEnvironmentOpen(false);
+    restoreUtilityScrollPosition();
     if (tool === "review") {
       void prepareReview();
     }
@@ -2765,8 +2887,6 @@ function App(): React.JSX.Element {
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
     if (sideChatCreatingDock) return;
     setSideChatCreatingDock(dock);
-    if (dock === "bottom") openBottomTool("side-chat");
-    else openUtility("side-chat");
     try {
       const created = await window.devilCodex.createThread({
         cwd: workspace,

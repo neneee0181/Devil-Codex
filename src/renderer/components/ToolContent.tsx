@@ -245,9 +245,6 @@ export function ToolContent({ active, workspace, fileTarget, changes, selectedDi
   if (active === "files") return <WorkspaceFilesPanel workspace={workspace} target={fileTarget} />;
   if (active === "side-chat") return <div className="side-chat-launcher">
     <button type="button" className="side-chat-new" disabled={sideChatCreating} onClick={() => onNewSideChat?.()}>{sideChatCreating ? <span className="side-chat-spinner" /> : <Plus size={15} />}{sideChatCreating ? "사이드 채팅 만드는 중…" : "새 사이드 채팅"}</button>
-    {(subagents ?? []).length > 0 && <div className="side-chat-launcher-caption">사이드 채팅 · 하위 에이전트</div>}
-    {(subagents ?? []).map((agent) => <button type="button" key={agent.id} className="side-chat-launcher-row" onClick={() => onOpenSubagent?.(agent.id, agent.label)}><Bot size={15} /><span>{agent.label}</span></button>)}
-    {(subagents ?? []).length === 0 && <p className="side-chat-launcher-empty">아직 대화가 없습니다. 새 사이드 채팅으로 시작하면 여기 목록에 추가됩니다.</p>}
   </div>;
   if (active === "browser") return <BrowserPanel workspace={workspace} fileTarget={fileTarget} changes={changes} onAsk={onBrowserAsk} />;
   const label = { files: "파일" }[active] ?? active;
