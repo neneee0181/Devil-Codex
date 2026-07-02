@@ -41,6 +41,10 @@ History: worklog. Resume risks: 04-handoff.md.
 - Release prep for `v0.1.11`: package version bumped to `0.1.11`; validation passes; commit/tag/push in progress.
 - MCP slash follow-up: composer `/` suggestions now include connected MCP servers from `mcpServerStatus/list`; selecting one inserts an inline `/server` token and prefixes the turn with an instruction to use that MCP.
 - Claude skills follow-up: main now scans `~/.claude/skills/*/SKILL.md`; Claude Code composer merges those dynamic skills with built-ins and prompts Claude to read selected skill files.
+- Claude sync follow-up: Devil imports `~/.claude/projects/**/*.jsonl` into Claude Code thread list/history and manual compact now persists a visible compaction marker.
+- Claude create parity follow-up: new Claude Code threads reserve `claudeSessionId = thread.id`; first send uses SDK `sessionId` until the native transcript exists, then resumes it.
+- Turn status follow-up: `turn/completed` now finalizes nested in-progress activity entries so completed turns stop showing "응답 작성 중".
+- Release prep for `v0.1.12`: package version bumped; Claude Code native transcript sync/create parity and stale turn-status fixes ready for commit/tag/push.
 
 ## Verify
 - `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.11`.

@@ -318,6 +318,17 @@ function normalizeFinalAnswerActivity(items: ThreadHistoryItem[], turnId: string
   return changed ? next : items;
 }
 
+function finalizeRunningActivityEntries(entries: ThreadActivityEntry[] | undefined): ThreadActivityEntry[] | undefined {
+  if (!entries?.length) return entries;
+  let changed = false;
+  const next = entries.map((entry) => {
+    if (entry.status !== "inProgress") return entry;
+    changed = true;
+    return { ...entry, status: "completed" as const };
+  });
+  return changed ? next : entries;
+}
+
 export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerEvent): ThreadHistoryItem[] {
   const params = (event.params ?? {}) as Record<string, unknown>;
   const explicitTurnId = String(params.turnId ?? (params.turn as RawItem | undefined)?.id ?? "");
@@ -346,6 +357,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     const completed = updateActivity(items, turnId, (activity) => ({
       ...activity,
       status,
+      activities: status === "completed" ? finalizeRunningActivityEntries(activity.activities) : activity.activities,
       durationMs: Number(turn.durationMs ?? (Date.now() - (activity.startedAt ?? Date.now()))),
       contextUsage: contextUsage ?? tokenUsage?.contextUsage ?? activity.contextUsage,
       ...(tokenUsage?.tokenUsage ? { tokenUsage: tokenUsage.tokenUsage } : {}),

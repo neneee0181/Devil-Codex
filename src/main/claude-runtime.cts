@@ -75,10 +75,15 @@ function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: Thr
   return "acceptEdits";
 }
 
-async function claudeSdk(): Promise<{ query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage> }> {
+type ClaudeSdkModule = {
+  query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage>;
+  getSessionInfo?: (sessionId: string, options?: { dir?: string }) => Promise<unknown>;
+};
+
+async function claudeSdk(): Promise<ClaudeSdkModule> {
   // Cast: Devil builds content blocks as plain records instead of importing
   // the SDK's parameter types, keeping this module free of type-only deps.
-  return import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<{ query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage> }>;
+  return import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeSdkModule>;
 }
 
 function cleanErrorMessage(value: unknown): string {
@@ -215,6 +220,17 @@ export class ClaudeCodeRuntime extends EventEmitter {
     return { id: input.id, cwd: input.cwd ?? this.cwd, model: input.model, runtime: "claude-code", provider: "claude-code" };
   }
 
+  async sessionExists(input: { sessionId?: string; cwd?: string }): Promise<boolean> {
+    if (!input.sessionId) return false;
+    try {
+      const { getSessionInfo } = await claudeSdk();
+      if (!getSessionInfo) return false;
+      return Boolean(await getSessionInfo(input.sessionId, { dir: input.cwd ?? this.cwd }));
+    } catch {
+      return false;
+    }
+  }
+
   async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
@@ -255,10 +271,10 @@ export class ClaudeCodeRuntime extends EventEmitter {
         allowDangerouslySkipPermissions: mode === "bypassPermissions",
         ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId) }),
         mcpServers: parseMcpServers(input.mcpConfig),
-        // Resume the previous native session when Devil knows it. New sessions
-        // keep the SDK's auto-generated id: forcing sessionId=threadId breaks a
-        // retry after a failed first turn ("session id already in use").
-        ...(input.resume && input.nativeSessionId ? { resume: input.nativeSessionId } : {}),
+        // Resume an existing native Claude session when it is already on disk.
+        // For a brand-new Devil thread, reserve the same UUID as Claude's
+        // sessionId so creation/sync behaves like Codex's native thread id.
+        ...(input.resume && input.nativeSessionId ? { resume: input.nativeSessionId } : input.nativeSessionId ? { sessionId: input.nativeSessionId } : {}),
       };
       for await (const message of query({ prompt: messages, options })) {
         this.handleSdkMessage(message, context);

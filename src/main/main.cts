@@ -1419,12 +1419,13 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         provider,
         accountId: input.accountId,
         accountLabel,
+        claudeSessionId: provider === "claude-code" ? thread.id : undefined,
         title: provider === "claude-code" ? "새 Claude Code 채팅" : "새 외부 모델 채팅",
         preview: "",
         updatedAt: Date.now(),
         archived: false,
       });
-      return thread;
+      return provider === "claude-code" ? { ...thread, claudeSessionId: thread.id } : thread;
     }
     const instance = createAppServer(false);
     let bound = false;
@@ -1689,7 +1690,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === input.threadId);
       const firstTurn = existingHistory.length === 0;
       const nativeSessionId = meta?.claudeSessionId;
-      const resumeClaudeCode = Boolean(nativeSessionId) || hasClaudeCodeConversation(existingHistory);
+      const nativeSessionExists = await claudeRuntime.sessionExists({ sessionId: nativeSessionId, cwd: input.cwd });
+      const resumeClaudeCode = nativeSessionExists || hasClaudeCodeConversation(existingHistory);
       const provider = input.provider && input.provider !== "codex" ? input.provider : "claude-code";
       const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, input.accountId) : undefined;
       await providerTranscripts.append(input.threadId, {

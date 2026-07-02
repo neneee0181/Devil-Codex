@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
 
 type ProviderTurnMeta = {
@@ -22,6 +22,16 @@ type StoredShape = {
   recovered?: boolean;
 };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
+type ClaudeJsonLine = {
+  type?: string;
+  uuid?: string;
+  sessionId?: string;
+  cwd?: string;
+  timestamp?: string;
+  isSidechain?: boolean;
+  version?: string;
+  message?: { role?: string; content?: unknown };
+};
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -31,6 +41,45 @@ function toUnixSeconds(value: unknown): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return nowSeconds();
   return numeric > 10_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
+}
+
+function compactText(text: string, fallback: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return (normalized || fallback).slice(0, maxLength);
+}
+
+function claudeTextContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object")
+    .filter((part) => String(part.type ?? "") === "text")
+    .map((part) => String(part.text ?? ""))
+    .join("")
+    .trim();
+}
+
+function claudeActivities(content: unknown, fallbackId: string): ThreadActivityEntry[] {
+  if (!Array.isArray(content)) return [];
+  const activities: ThreadActivityEntry[] = [];
+  for (const [index, raw] of content.entries()) {
+    if (!raw || typeof raw !== "object") continue;
+    const part = raw as Record<string, unknown>;
+    const type = String(part.type ?? "");
+    const id = String(part.id ?? `${fallbackId}-${index}`);
+    if (type === "thinking" && typeof part.thinking === "string" && part.thinking.trim()) {
+      activities.push({ id, kind: "reasoning", title: "추론", detail: part.thinking.trim(), status: "completed" });
+    } else if (type === "tool_use") {
+      const name = String(part.name ?? "Claude Code tool");
+      const input = part.input && typeof part.input === "object" ? JSON.stringify(part.input) : "";
+      activities.push({ id, kind: "mcp", title: `${name} 실행`, detail: input, status: "completed" });
+    }
+  }
+  return activities;
+}
+
+function claudeLineTime(line: ClaudeJsonLine): number {
+  return toUnixSeconds(Date.parse(String(line.timestamp ?? "")));
 }
 
 function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -117,6 +166,7 @@ export class ProviderTranscriptStore {
   private path(): string { return join(this.dir(), "transcripts.json"); }
 
   async read(threadId: string): Promise<ThreadHistoryItem[]> {
+    await this.importClaudeProjects();
     return (await this.load()).items[threadId] ?? [];
   }
 
@@ -237,7 +287,12 @@ export class ProviderTranscriptStore {
     // index was first created. Re-scan once per app launch, not once forever.
     this.recovery ??= this.mutate((all) => this.recoverDevilRollouts(all));
     await this.recovery;
+    await this.importClaudeProjects();
     return this.readLatest((all) => Object.values(all.meta).sort((a, b) => b.updatedAt - a.updatedAt));
+  }
+
+  private async importClaudeProjects(): Promise<void> {
+    await this.mutate((all) => this.recoverClaudeProjects(all));
   }
 
   private async mutate(change: (all: StoredShape) => void | Promise<void>): Promise<void> {
@@ -311,6 +366,81 @@ export class ProviderTranscriptStore {
     all.recovered = true;
   }
 
+  private async recoverClaudeProjects(all: StoredShape): Promise<void> {
+    const root = join(homedir(), ".claude", "projects");
+    let files: string[] = [];
+    try { files = await this.jsonlFiles(root); }
+    catch { return; }
+    const nativeSessionToThreadId = new Map<string, string>();
+    for (const [id, summary] of Object.entries(all.meta)) {
+      if (summary.claudeSessionId) nativeSessionToThreadId.set(summary.claudeSessionId, id);
+    }
+    for (const path of files) {
+      const sessionId = basename(path).replace(/\.jsonl$/i, "");
+      const threadId = nativeSessionToThreadId.get(sessionId) ?? sessionId;
+      if (all.deleted?.[threadId]) continue;
+      let source = "";
+      try { source = await readFile(path, "utf8"); } catch { continue; }
+      const lines = source.split(/\r?\n/).flatMap((line) => {
+        if (!line.trim()) return [];
+        try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
+      }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
+      const history = this.historyFromClaudeLines(lines, threadId);
+      if (!history.length) continue;
+      const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? "";
+      const firstUser = history.find((item) => item.kind === "user")?.text ?? "새 Claude Code 채팅";
+      const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text ?? firstUser;
+      const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0);
+      const existing = all.items[threadId] ?? [];
+      if (history.length >= existing.length) all.items[threadId] = history;
+      all.meta[threadId] = {
+        ...all.meta[threadId],
+        id: threadId,
+        cwd,
+        model: all.meta[threadId]?.model || "sonnet",
+        runtime: "claude-code",
+        provider: "claude-code",
+        claudeSessionId: sessionId,
+        title: all.meta[threadId]?.title && all.meta[threadId]?.title !== "새 Claude Code 채팅" ? all.meta[threadId]!.title : compactText(firstUser, "새 Claude Code 채팅", 60),
+        preview: compactText(lastUser, "", 80),
+        updatedAt,
+        archived: all.meta[threadId]?.archived ?? false,
+      };
+    }
+  }
+
+  private historyFromClaudeLines(lines: ClaudeJsonLine[], threadId: string): ThreadHistoryItem[] {
+    return lines.flatMap((line, index): ThreadHistoryItem[] => {
+      if (line.type !== "user" && line.type !== "assistant") return [];
+      const role = String(line.message?.role ?? line.type);
+      const content = line.message?.content;
+      const id = String(line.uuid ?? `${threadId}-claude-${index}`);
+      const turnId = `${threadId}-claude-turn-${index}`;
+      if (role === "user") {
+        const text = claudeTextContent(content);
+        if (!text) return [];
+        return [{ id, kind: "user", text, turnId }];
+      }
+      if (role !== "assistant") return [];
+      const activities = claudeActivities(content, id);
+      const text = claudeTextContent(content);
+      const result: ThreadHistoryItem[] = [];
+      if (activities.length) {
+        result.push({
+          id: `activity-${id}`,
+          kind: "activity",
+          text: "",
+          turnId,
+          activities,
+          status: "completed",
+          startedAt: claudeLineTime(line) * 1000,
+        });
+      }
+      if (text) result.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
+      return result;
+    });
+  }
+
   private async rolloutFiles(dir: string, depth = 0): Promise<string[]> {
     if (depth > 4) return [];
     const entries = await readdir(dir, { withFileTypes: true });
@@ -318,6 +448,17 @@ export class ProviderTranscriptStore {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) return this.rolloutFiles(path, depth + 1);
       return entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl") ? [path] : [];
+    }));
+    return nested.flat();
+  }
+
+  private async jsonlFiles(dir: string, depth = 0): Promise<string[]> {
+    if (depth > 5) return [];
+    const entries = await readdir(dir, { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async (entry) => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return this.jsonlFiles(path, depth + 1);
+      return entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [];
     }));
     return nested.flat();
   }

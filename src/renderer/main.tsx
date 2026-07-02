@@ -2816,6 +2816,9 @@ function App(): React.JSX.Element {
       markThreadRunning(thread.id);
       setBusy(true);
       await window.devilCodex.compactThread({ id: thread.id, cwd: workspace, model: thread.model || model, accountId: thread.accountId });
+      ensureCompactionMarker(thread.id);
+      clearThreadRunning(thread.id);
+      setBusy(false);
     } catch (error) {
       clearThreadRunning(thread.id);
       setBusy(false);
