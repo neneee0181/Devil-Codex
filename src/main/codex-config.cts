@@ -1,8 +1,9 @@
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
 import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
+import { writeCodexConfigAtomic } from "./codex-settings.cjs";
 
 // Registers a local proxy as a NON-default Codex model provider so external
 // models (Claude/Copilot) can run through the Codex app-server (tools + sync)
@@ -71,6 +72,16 @@ async function read(): Promise<string> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw error; }
 }
 
+// Atomic (temp+rename) and no-op when nothing changed: stock Codex and the
+// bundled app-server read this file concurrently, and a truncated mid-write
+// read makes them re-serialize a broken parse — silently dropping the user's
+// model/theme/speed settings. Skipping unchanged writes also shrinks the
+// number of race windows to near zero across Devil start/quit cycles.
+async function writeConfigIfChanged(next: string, previous: string): Promise<void> {
+  if (next === previous) return;
+  await writeCodexConfigAtomic(CONFIG_PATH, next);
+}
+
 // Append the managed provider block at end of config (a TOML table can live
 // anywhere). Root keys must already precede the first table; Codex writes them
 // first, so appending our table last is safe.
@@ -79,14 +90,13 @@ export async function registerDevilProvider(port: number, secret = ""): Promise<
   await backupOnce(source);
   const cleaned = stripProviderBlock(source).trimEnd();
   const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block(port, secret)}`, source);
-  await mkdir(dirname(CONFIG_PATH), { recursive: true });
-  await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(next, source);
 }
 
 export async function unregisterDevilProvider(): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(BEGIN)) return;
-  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripProviderBlock(source), source), { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripProviderBlock(source), source), source);
 }
 
 // Register the embedded-browser MCP so Codex (and external models via the proxy)
@@ -143,14 +153,13 @@ export async function registerDevilBrowserMcp(input: { execPath: string; script:
   lines.push(MCP_END, "");
   const block = lines.join("\n");
   const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block}`, source);
-  await mkdir(dirname(CONFIG_PATH), { recursive: true });
-  await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(next, source);
 }
 
 export async function unregisterDevilBrowserMcp(): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(MCP_BEGIN)) return;
-  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), source), { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedMcpTables(source, MCP_BEGIN, MCP_END, ["devil_browser", "devil_computer"]), source), source);
 }
 
 // "Ask the user" MCP — a structured multiple-choice prompt (like Claude Code's
@@ -179,12 +188,11 @@ export async function registerDevilAskMcp(input: { execPath: string; script: str
     "",
   ].join("\n");
   const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block}`, source);
-  await mkdir(dirname(CONFIG_PATH), { recursive: true });
-  await writeFile(CONFIG_PATH, next, { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(next, source);
 }
 
 export async function unregisterDevilAskMcp(): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(ASK_BEGIN)) return;
-  await writeFile(CONFIG_PATH, preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), { encoding: "utf8", mode: 0o600 });
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), source);
 }

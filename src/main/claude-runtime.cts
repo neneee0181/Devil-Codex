@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { EventEmitter } from "node:events";
-import type { AppServerEvent, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
+import type { AppServerEvent, ApprovalDecision, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
 
 type ClaudeSdkMessage = Record<string, unknown>;
 type ClaudeSdkOptions = Record<string, unknown>;
@@ -67,12 +67,12 @@ function sdkClaudeCodeVersion(bundledExecutable: string): string | undefined {
 
 function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: ThreadSandboxMode): string {
   if (sandboxMode === "danger-full-access" || approvalPolicy === "never") return "bypassPermissions";
+  // Claude Code's own permission engine decides WHEN to ask; Devil only
+  // supplies the answer UI via the canUseTool bridge (same modal as Codex
+  // approvals). read-only stays strict; the normal agent mode auto-accepts
+  // file edits and asks for risky commands, matching Claude Code's CLI feel.
   if (sandboxMode === "read-only") return "default";
-  // Claude Code's acceptEdits mode only auto-accepts file edits; tools such as
-  // WebFetch can still stop for approval, which cannot be answered from `-p`
-  // print mode. Auto mode is the closest match for Devil's normal agent mode:
-  // routine tool calls proceed, while Claude still keeps its own risk gate.
-  return "auto";
+  return "acceptEdits";
 }
 
 async function claudeSdk(): Promise<{ query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage> }> {
@@ -186,9 +186,14 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   };
 }
 
+type PermissionResultLike =
+  | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: unknown[] }
+  | { behavior: "deny"; message: string; interrupt?: boolean };
+
 export class ClaudeCodeRuntime extends EventEmitter {
   private active = new Map<string, AbortController>();
   private toolRuns = new Map<string, { threadId: string; name: string; kind: "command" | "tool" | "fileChange"; summary: string; path?: string }>();
+  private pendingApprovals = new Map<string, { threadId: string; resolve: (decision: ApprovalDecision) => void }>();
 
   constructor(private readonly cwd: string) {
     super();
@@ -248,6 +253,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
         includePartialMessages: true,
         permissionMode: mode,
         allowDangerouslySkipPermissions: mode === "bypassPermissions",
+        ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId) }),
         mcpServers: parseMcpServers(input.mcpConfig),
         // Resume the previous native session when Devil knows it. New sessions
         // keep the SDK's auto-generated id: forcing sessionId=threadId breaks a
@@ -299,6 +305,12 @@ export class ClaudeCodeRuntime extends EventEmitter {
       for (const [id, tool] of this.toolRuns) {
         if (tool.threadId === input.threadId) this.toolRuns.delete(id);
       }
+      for (const [id, pending] of this.pendingApprovals) {
+        if (pending.threadId === input.threadId) {
+          this.pendingApprovals.delete(id);
+          pending.resolve("cancel");
+        }
+      }
     });
     return result;
   }
@@ -309,6 +321,59 @@ export class ClaudeCodeRuntime extends EventEmitter {
     this.active.delete(input.threadId);
     controller.abort();
     return true;
+  }
+
+  // Answer a pending canUseTool prompt. Returns false when the request id is
+  // not ours so the caller can fall through to the app-server approval path.
+  respondApproval(requestId: string, decision: ApprovalDecision): boolean {
+    const pending = this.pendingApprovals.get(requestId);
+    if (!pending) return false;
+    this.pendingApprovals.delete(requestId);
+    pending.resolve(decision);
+    return true;
+  }
+
+  // Claude Code decides when a tool needs permission; Devil supplies the
+  // answer UI. Emits the same requestApproval events the Codex app-server
+  // uses, so the renderer reuses the existing approval dialog unchanged.
+  private canUseToolBridge(threadId: string, turnId: string): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
+    return (toolName, input, options) => new Promise<PermissionResultLike>((resolve) => {
+      const requestId = `claude-approval-${crypto.randomUUID()}`;
+      const summary = toolSummary(toolName, input);
+      const changedPath = fileChangePath(toolName, input);
+      const finish = (decision: ApprovalDecision): void => {
+        this.pendingApprovals.delete(requestId);
+        options.signal.removeEventListener("abort", onAbort);
+        if (decision === "accept" || decision === "acceptForSession") {
+          resolve({
+            behavior: "allow",
+            updatedInput: input,
+            ...(decision === "acceptForSession" && options.suggestions?.length ? { updatedPermissions: options.suggestions } : {}),
+          });
+          return;
+        }
+        resolve({ behavior: "deny", message: "사용자가 Devil Codex 승인 대화상자에서 이 도구 실행을 거부했습니다.", interrupt: decision === "cancel" });
+      };
+      const onAbort = (): void => finish("cancel");
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      this.pendingApprovals.set(requestId, { threadId, resolve: finish });
+      const isCommand = /^(bash|powershell)$/i.test(toolName);
+      // File-editing tools render as file-change approvals; everything else
+      // (shell, WebFetch, MCP tools...) reads best as a command approval row.
+      this.emitEvent({
+        method: changedPath ? "item/fileChange/requestApproval" : "item/commandExecution/requestApproval",
+        requestId,
+        params: {
+          threadId,
+          turnId,
+          itemId: requestId,
+          command: isCommand ? summary : `${toolName}: ${summary}`,
+          ...(changedPath ? { grantRoot: changedPath } : {}),
+          reason: `Claude Code가 ${toolName} 도구 실행 승인을 요청했습니다.`,
+          availableDecisions: ["accept", "acceptForSession", "decline"],
+        },
+      });
+    });
   }
 
   private handleSdkMessage(message: ClaudeSdkMessage, context: TurnContext): void {

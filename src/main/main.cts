@@ -1358,6 +1358,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // first command/file approval). Fall back to the global server only when no
     // live thread server matches.
     const requestKey = String(input.requestId);
+    // Claude runtime canUseTool prompts share the same renderer dialog; their
+    // request ids are claude-approval-* and resolve inside the runtime.
+    if (claudeRuntime.respondApproval(requestKey, input.decision)) return;
     const target = approvalRequestServers.get(requestKey) ?? (input.threadId ? threadServers.get(input.threadId) : undefined) ?? server();
     approvalRequestServers.delete(requestKey);
     return target.respondApproval(input);
