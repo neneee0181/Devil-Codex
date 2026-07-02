@@ -686,7 +686,7 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
       <SideChatModelPicker value={picked} providers={providers} onChange={onPick} />
     </header>
     <div className="side-chat-body" ref={bodyRef}>
-      {!loaded ? <em className="side-chat-empty">불러오는 중…</em>
+      {!loaded ? <div className="side-chat-loading"><span className="side-chat-spinner" /><strong>사이드 채팅 불러오는 중</strong><i /><i /><i /></div>
         : messages.length === 0 && !working ? <em className="side-chat-empty">대화 내용이 없습니다.</em>
         : messages.map((item) => <div key={item.id} className={`side-chat-bubble ${item.kind}`}>
             {item.attachments?.length ? <AttachmentGallery attachments={item.attachments} align={item.kind === "user" ? "end" : "start"} /> : null}

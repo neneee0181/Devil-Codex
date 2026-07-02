@@ -842,6 +842,7 @@ function App(): React.JSX.Element {
   const [gitDialogOpen, setGitDialogOpen] = useState(false);
   const [worktreeDialogCwd, setWorktreeDialogCwd] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [threadFindOpen, setThreadFindOpen] = useState(false);
   const [threadFindQuery, setThreadFindQuery] = useState("");
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
@@ -894,6 +895,7 @@ function App(): React.JSX.Element {
 
   function restoreRuntimeSnapshot(snapshot: RuntimeThreadSnapshot | undefined): boolean {
     if (!snapshot?.thread) return false;
+    setLoadingThreadId(null);
     setView(snapshot.view === "settings" ? "thread" : snapshot.view);
     setWorkspace(snapshot.workspace || workspace);
     setThread(snapshot.thread);
@@ -923,6 +925,7 @@ function App(): React.JSX.Element {
     const restored = restoreRuntimeSnapshot(runtimeSnapshots.current[agentRuntime]);
     if (!restored) {
       activeResume.current = null;
+      setLoadingThreadId(null);
       setThread(null);
       threadRef.current = null;
       setItems([]);
@@ -1176,7 +1179,7 @@ function App(): React.JSX.Element {
       stickToThreadBottom.current = saved ? saved.atBottom : true;
       pendingScrollRestoreThread.current = saved && !saved.atBottom ? thread.id : null;
     }
-    const frame = requestAnimationFrame(() => {
+    const applyInitialScroll = (): void => {
       const node = threadViewRef.current;
       if (!node) return;
       const saved = threadScrollPositions.current[thread.id];
@@ -1198,7 +1201,9 @@ function App(): React.JSX.Element {
       } else {
         syncThreadScrollState(node);
       }
-    });
+    };
+    applyInitialScroll();
+    const frame = requestAnimationFrame(applyInitialScroll);
     return () => cancelAnimationFrame(frame);
     // items: agent responses stream by updating text/activity on existing
     // timeline items, so length alone misses the most common growth path.
@@ -1851,6 +1856,7 @@ function App(): React.JSX.Element {
   }
 
   function restoreNavigation(entry: NavigationEntry): void {
+    setLoadingThreadId(null);
     activeResume.current = entry.thread?.id ?? null;
     threadRef.current = entry.thread;
     const restoredItems = entry.thread?.id ? threadHistoryCache.current.get(entry.thread.id) ?? entry.items : entry.items;
@@ -2085,6 +2091,7 @@ function App(): React.JSX.Element {
   async function resumeThread(summary: ThreadSummary): Promise<void> {
     activeResume.current = summary.id;
     const cachedHistory = threadHistoryCache.current.get(summary.id);
+    setLoadingThreadId(cachedHistory ? null : summary.id);
     navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running && hasConversationItems(cachedHistory)
@@ -2109,12 +2116,19 @@ function App(): React.JSX.Element {
             return nextItems;
           });
         }
+        if (activeResume.current === summary.id) setLoadingThreadId(null);
       }).catch((error) => {
-        if (activeResume.current === summary.id) setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "대화 불러오기 실패", text: String(error) }]);
+        if (activeResume.current === summary.id) {
+          setLoadingThreadId(null);
+          setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "대화 불러오기 실패", text: String(error) }]);
+        }
       });
       if (next.cwd && next.cwd !== workspace) void Promise.all([refreshThreads(next.cwd), refreshChanges(next.cwd)]);
     } catch (error) {
-      if (activeResume.current === summary.id) setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 열기 실패", text: String(error) }]);
+      if (activeResume.current === summary.id) {
+        setLoadingThreadId(null);
+        setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 열기 실패", text: String(error) }]);
+      }
     }
   }
 
@@ -3117,6 +3131,7 @@ function App(): React.JSX.Element {
 
         {externalError && <button className="external-error" onClick={() => setExternalError("")}>{externalError} ×</button>}
         <AnimatePresence>{runtimeShareBusy && <motion.div className="runtime-share-loading" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><Loader2 size={14} />{runtimeShareBusy}</motion.div>}</AnimatePresence>
+        <AnimatePresence>{sideChatCreatingDock && <motion.div className="side-chat-create-loading" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><Loader2 size={14} />사이드 채팅 준비 중…</motion.div>}</AnimatePresence>
         {permissionHint === "computer-use" && <div className="permission-hint">
           <span>Computer Use에 권한이 필요합니다. macOS 설정에서 허용 후 앱을 재시작하세요.</span>
           <div className="permission-hint-actions">
@@ -3134,7 +3149,7 @@ function App(): React.JSX.Element {
             <div className="thread-view" ref={threadViewRef} style={{ "--composer-clearance": `${composerClearance}px` } as CSSProperties} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
               {agentRuntime === "codex" && runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
-              {timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
+              {loadingThreadId === thread?.id ? <div className="thread-loading-state"><span><Loader2 size={18} /></span><strong>대화 불러오는 중</strong><p>이전 메시지를 정리해서 표시하고 있습니다.</p></div> : timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
                 const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));
                 return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
