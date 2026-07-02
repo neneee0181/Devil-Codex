@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
@@ -60,11 +60,28 @@ function block(port: number, secret: string): string {
   ].join("\n");
 }
 
+// Backup names embed an ISO timestamp with ':'/'.' replaced, so plain
+// lexicographic order is chronological. Deleting beyond `keep` stops the
+// backup directory from growing forever (config-* is one small file per app
+// launch; reconcile-* copies the multi-MB SQLite DB per external turn).
+export async function pruneBackups(prefix: string, keep: number): Promise<void> {
+  const dir = join(CODEX_HOME, "devil-codex-backups");
+  try {
+    const entries = (await readdir(dir)).filter((name) => name.startsWith(prefix)).sort();
+    for (const name of entries.slice(0, Math.max(0, entries.length - keep))) {
+      await rm(join(dir, name), { recursive: true, force: true });
+    }
+  } catch {
+    // best-effort: a missing directory or a locked entry never blocks the caller
+  }
+}
+
 async function backupOnce(source: string): Promise<void> {
   const dir = join(CODEX_HOME, "devil-codex-backups");
   await mkdir(dir, { recursive: true });
   const target = join(dir, `config-${new Date().toISOString().replace(/[:.]/g, "-")}.toml`);
   if (!existsSync(target)) await writeFile(target, source, { mode: 0o600 });
+  await pruneBackups("config-", 20);
 }
 
 async function read(): Promise<string> {

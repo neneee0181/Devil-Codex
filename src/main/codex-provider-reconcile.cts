@@ -4,6 +4,7 @@ import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
+import { pruneBackups } from "./codex-config.cjs";
 
 const CODEX_HOME = codexHome();
 const STATE_DB_PATH = join(CODEX_HOME, "state_5.sqlite");
@@ -392,6 +393,9 @@ export class CodexProviderReconciler {
       rolloutPath: row.rollout_path,
       createdAt: Date.now(),
     }, null, 2) + "\n", { mode: 0o600 });
+    // Each backup copies the whole state_5.sqlite (multi-MB); without pruning
+    // the directory grows by ~9MB per external turn.
+    await pruneBackups("reconcile-", 10);
   }
 
   private journalPath(): string {
