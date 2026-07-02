@@ -116,6 +116,7 @@ export function Composer({
   onStop,
   onSlashCommand,
   petVisible,
+  agentRuntime = "codex",
 }: {
   draftKey: string;
   busy: boolean;
@@ -141,6 +142,7 @@ export function Composer({
   onStop: () => void;
   onSlashCommand: (command: SlashCommandId) => void;
   petVisible: boolean;
+  agentRuntime?: "codex" | "claude-code";
 }): React.JSX.Element {
   const initialDraft = useMemo(() => readComposerDraft(draftKey), []);
   const [draft, setDraft] = useState(initialDraft.draft);
@@ -153,7 +155,7 @@ export function Composer({
   const editor = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
-  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible }) : [], [trigger, skillOptions, model, reasoningEffort, responseSpeed, approvalMode, petVisible]);
+  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }) : [], [trigger, skillOptions, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const setApprovalMode = (value: ApprovalMode): void => {
     setApprovalModeState(value);

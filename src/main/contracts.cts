@@ -1,28 +1,34 @@
 export type RuntimeState = "ready" | "connecting" | "connected" | "unavailable" | "error";
+export type AgentRuntimeId = "codex" | "claude-code";
 
 export interface RuntimeStatus {
   state: RuntimeState;
   detail: string;
   cwd: string;
   codexVersion?: string;
+  claudeVersion?: string;
 }
 
 export interface ThreadRef {
   id: string;
   cwd: string;
   model: string;
+  runtime?: AgentRuntimeId;
   provider?: ProviderId;
   accountId?: string;
   accountLabel?: string;
+  claudeSessionId?: string;
 }
 
 export interface ThreadSummary {
   id: string;
   cwd: string;
   model: string;
+  runtime?: AgentRuntimeId;
   provider?: ProviderId;
   accountId?: string;
   accountLabel?: string;
+  claudeSessionId?: string;
   title: string;
   preview: string;
   updatedAt: number;
@@ -66,6 +72,10 @@ export interface ThreadHistoryItem {
   contextUsage?: ContextUsage;
   tokenUsage?: ProviderTokenUsage;
   cumulativeTokenUsage?: ProviderTokenUsage;
+  runtime?: AgentRuntimeId;
+  provider?: ProviderId;
+  accountId?: string;
+  model?: string;
 }
 
 export interface ContextUsage {
@@ -279,17 +289,17 @@ export interface DevilCodexApi {
   connect: () => Promise<RuntimeStatus>;
   chooseWorkspace: () => Promise<string | null>;
   createProjectFolder: (input?: { name?: string }) => Promise<string>;
-  createThread: (input: { cwd: string; model: string; provider?: ProviderId; accountId?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<ThreadRef>;
-  listThreads: (input: { cwd: string; archived?: boolean }) => Promise<ThreadSummary[]>;
-  searchThreads: (input: { query: string; archived?: boolean }) => Promise<ThreadSummary[]>;
-  resumeThread: (input: { id: string; model: string; accountId?: string }) => Promise<ThreadRef>;
+  createThread: (input: { cwd: string; model: string; runtime?: AgentRuntimeId; provider?: ProviderId; accountId?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }) => Promise<ThreadRef>;
+  listThreads: (input: { cwd: string; archived?: boolean; runtime?: AgentRuntimeId }) => Promise<ThreadSummary[]>;
+  searchThreads: (input: { query: string; archived?: boolean; runtime?: AgentRuntimeId }) => Promise<ThreadSummary[]>;
+  resumeThread: (input: { id: string; model: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadRef>;
   renameThread: (input: { id: string; name: string; cwd?: string; model?: string; preview?: string }) => Promise<void>;
   forkThread: (input: { id: string; cwd: string; model: string }) => Promise<ThreadRef>;
   compactThread: (input: { id: string; cwd?: string; model: string; accountId?: string }) => Promise<void>;
-  readThread: (input: { id: string; accountId?: string }) => Promise<ThreadHistoryItem[]>;
-  cacheThreadHistory: (input: { id: string; items: ThreadHistoryItem[]; accountId?: string }) => Promise<void>;
-  syncThreadHistory: (input: { id: string; accountId?: string }) => Promise<ThreadHistoryItem[]>;
-  listProjects: (input?: { archived?: boolean }) => Promise<ThreadSummary[]>;
+  readThread: (input: { id: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadHistoryItem[]>;
+  cacheThreadHistory: (input: { id: string; items: ThreadHistoryItem[]; runtime?: AgentRuntimeId; accountId?: string }) => Promise<void>;
+  syncThreadHistory: (input: { id: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadHistoryItem[]>;
+  listProjects: (input?: { archived?: boolean; runtime?: AgentRuntimeId }) => Promise<ThreadSummary[]>;
   archiveThread: (input: { id: string; accountId?: string }) => Promise<void>;
   unarchiveThread: (input: { id: string; accountId?: string }) => Promise<void>;
   deleteThread: (input: { id: string; accountId?: string }) => Promise<void>;
@@ -349,8 +359,8 @@ export interface DevilCodexApi {
   onProviderUsageChanged: (listener: (event: ProviderUsageChangedEvent) => void) => () => void;
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
   respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
-  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; provider?: ProviderId; accountId?: string; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; retriedAfterCompaction?: boolean }) => Promise<void>;
-  interruptTurn: (input: { threadId: string; turnId?: string }) => Promise<void>;
+  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; runtime?: AgentRuntimeId; provider?: ProviderId; accountId?: string; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; retriedAfterCompaction?: boolean }) => Promise<void>;
+  interruptTurn: (input: { threadId: string; runtime?: AgentRuntimeId; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;
 }

@@ -300,6 +300,10 @@ export class ProviderSettingsStore {
   }
 
   async readApiKey(provider: Exclude<ProviderId, "codex">, accountId?: string): Promise<string> {
+    if (provider === "claude-code" || provider === "copilot" || provider === "antigravity") {
+      const label = catalog.find((item) => item.id === provider)?.label ?? provider;
+      throw new Error(`${label}는 API 키 Provider가 아니라 로그인 Provider입니다. OAuth 로그인 경로로 요청해야 합니다.`);
+    }
     const config = apiProviderConfig(provider);
     const stored = await this.readSettings();
     const id = accountId ?? (stored.provider === provider ? stored.accountId : undefined) ?? (await getStoredAccount(provider))?.id;

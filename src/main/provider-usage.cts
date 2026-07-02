@@ -82,6 +82,66 @@ function usageWindowOrder(label: string): number {
   return 10;
 }
 
+function claudeUsageWindowLabel(path: string, window: Record<string, unknown>): string {
+  const explicit = window.label ?? window.name ?? window.display_name ?? window.displayName ?? window.window_label ?? window.windowLabel;
+  const text = `${path} ${typeof explicit === "string" ? explicit : ""}`.toLowerCase();
+  if (/session|current.?session|conversation/.test(text)) return "현재 세션";
+  if (/fable/.test(text)) return "이번 주(Fable)";
+  if (/week|weekly|7.?day|seven|all.?models|all_models/.test(text)) return "이번 주(전체 모델)";
+  if (/five.?hour|5.?hour|5h|primary/.test(text)) return "현재 세션";
+  if (/secondary/.test(text)) return "이번 주(전체 모델)";
+  return windowLabel(path.split(".").pop() ?? path, window);
+}
+
+function claudeUsageWindowOrder(label: string): number {
+  if (label === "현재 세션") return 0;
+  if (label === "이번 주(전체 모델)") return 1;
+  if (label === "이번 주(Fable)") return 2;
+  return 10 + usageWindowOrder(label);
+}
+
+function collectClaudeUsageWindows(body: Record<string, unknown>): ProviderUsageWindow[] {
+  const windows: ProviderUsageWindow[] = [];
+  const seen = new Set<string>();
+  const addWindow = (label: string, window: Record<string, unknown>): void => {
+    const used = usageValue(window);
+    if (used == null) return;
+    const entry = windowEntry(label, used, resetValue(window));
+    const key = `${entry.label}:${entry.resetsAt ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    windows.push(entry);
+  };
+  const visit = (value: unknown, path: string, depth: number): void => {
+    if (!value || typeof value !== "object" || depth > 4) return;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${path}.${index}`, depth + 1));
+      return;
+    }
+    const object = value as Record<string, unknown>;
+    addWindow(claudeUsageWindowLabel(path, object), object);
+    for (const [key, nested] of Object.entries(object)) {
+      if (!nested || typeof nested !== "object") continue;
+      visit(nested, path ? `${path}.${key}` : key, depth + 1);
+    }
+  };
+  visit(body, "usage", 0);
+  return windows.sort((a, b) => claudeUsageWindowOrder(a.label) - claudeUsageWindowOrder(b.label));
+}
+
+function completeClaudeUsageWindows(windows: ProviderUsageWindow[]): ProviderUsageWindow[] {
+  if (!windows.length) return windows;
+  const labels = new Set(windows.map((window) => window.label));
+  const completed = [...windows];
+  if (!labels.has("이번 주(Fable)")) {
+    const weeklyReset = windows.find((window) => window.label === "이번 주(전체 모델)")?.resetsAt
+      ?? windows.find((window) => /7\s*일|weekly|week/i.test(window.label))?.resetsAt
+      ?? null;
+    completed.push(windowEntry("이번 주(Fable)", 0, weeklyReset));
+  }
+  return completed.sort((a, b) => claudeUsageWindowOrder(a.label) - claudeUsageWindowOrder(b.label));
+}
+
 function collectUsageWindows(body: Record<string, unknown>, depth = 0): ProviderUsageWindow[] {
   const candidates: Array<[string, unknown]> = [];
   const direct = body.rate_limit && typeof body.rate_limit === "object" ? body.rate_limit as Record<string, unknown> : body;
@@ -293,11 +353,13 @@ async function claudeUsage(connected: boolean, account?: ProviderAccount): Promi
     const data = await res.json() as Record<string, unknown>;
     const fiveHour = data.five_hour as Record<string, unknown> | undefined;
     const sevenDay = data.seven_day as Record<string, unknown> | undefined;
-    const windows = [
+    const windows = collectClaudeUsageWindows(data);
+    const legacyWindows = [
       fiveHour ? windowEntry("5시간", fiveHour.utilization, fiveHour.resets_at) : null,
       sevenDay ? windowEntry("7일", sevenDay.utilization, sevenDay.resets_at) : null,
     ].filter(Boolean) as ProviderUsageWindow[];
-    return remember({ provider: "claude-code", label: "Claude Code", connected, windows, ...accountFields(account), unavailable: windows.length ? undefined : "Claude Code 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+    const finalWindows = completeClaudeUsageWindows(windows.length ? windows : legacyWindows);
+    return remember({ provider: "claude-code", label: "Claude Code", connected, windows: finalWindows, ...accountFields(account), unavailable: finalWindows.length ? undefined : "Claude Code 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
   } catch (error) {
     return remember({ provider: "claude-code", label: "Claude Code", connected, windows: [], ...accountFields(account), error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
   }

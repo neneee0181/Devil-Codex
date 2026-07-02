@@ -20,6 +20,7 @@ import { ProviderModelCatalog } from "./provider-model-catalog.cjs";
 import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer } from "./proxy/proxy-server.cjs";
+import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
 import { registerDevilProvider, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp } from "./codex-config.cjs";
@@ -34,11 +35,25 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
   return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot, antigravity };
+}
+
+async function refreshProviderModels(provider: Exclude<ProviderId, "codex">, accountId?: string) {
+  if (provider === "antigravity") {
+    const models = await antigravityModels(accountId);
+    if (!models.length) throw new Error("Antigravity 로그인 또는 사용 가능한 모델을 확인하세요.");
+    return providerSettingsStore.saveModels(provider, models, accountId);
+  }
+  if (provider === "copilot" || provider === "claude-code") {
+    const models = await oauthModels(provider, accountId);
+    if (!models.length) throw new Error(`${provider === "copilot" ? "GitHub Copilot" : "Claude Code"} 로그인 또는 사용 가능한 모델을 확인하세요.`);
+    return providerSettingsStore.saveModels(provider, models, accountId);
+  }
+  return providerModels.refresh(provider, accountId);
 }
 
 type UsageCacheProvider = "codex" | "claude-code" | "copilot" | "antigravity";
@@ -217,6 +232,8 @@ const providerRuntime = new ProviderRuntime(providerSettingsStore, (event) => se
 const providerModels = new ProviderModelCatalog(providerSettingsStore);
 const providerTranscripts = new ProviderTranscriptStore();
 const providerReconciler = new CodexProviderReconciler();
+const claudeRuntime = new ClaudeCodeRuntime(baseServerCwd());
+claudeRuntime.on("event", (event) => sendToRenderer("app-server:event", event));
 const codexProxy = new CodexProxyServer((message) => {
   sendToRenderer("app-server:event", {
     method: "item/completed",
@@ -367,6 +384,22 @@ function cwdKey(cwd: string | undefined): string {
   return String(cwd ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
+function requestedRuntime(value: unknown): AgentRuntimeId {
+  return value === "claude-code" ? "claude-code" : "codex";
+}
+
+function threadRuntime(summary: ThreadSummary): AgentRuntimeId {
+  return summary.runtime === "claude-code" ? "claude-code" : "codex";
+}
+
+function filterRuntime<T extends ThreadSummary>(threads: T[], runtime: AgentRuntimeId): T[] {
+  return threads.filter((thread) => threadRuntime(thread) === runtime);
+}
+
+function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
+  return items.some((item) => item.kind === "agent" && item.runtime === "claude-code" && (item.provider ?? "claude-code") === "claude-code");
+}
+
 function sendToRenderer(channel: string, payload: unknown): void {
   if (!windowRef || windowRef.isDestroyed()) return;
   windowRef.webContents.send(channel, payload);
@@ -414,7 +447,7 @@ async function changedFilesSinceSnapshot(threadId: string): Promise<Array<Worksp
   return changed.filter((file) => file.diff || file.additions || file.deletions).map((file) => ({ ...file, absPath: resolve(before.cwd, file.path) }));
 }
 
-async function emitSyntheticFileChanges(input: { threadId: string; turnId?: string; status: "completed" | "failed" }): Promise<void> {
+async function emitSyntheticFileChanges(input: { threadId: string; turnId?: string; status: "completed" | "failed"; mirrorRollout?: boolean }): Promise<void> {
   const seenNative = nativeFileChangeTurns.delete(turnKey(input.threadId, input.turnId)) || nativeFileChangeTurns.delete(turnKey(input.threadId));
   const changes = await changedFilesSinceSnapshot(input.threadId);
   if (seenNative || changes.length === 0) return;
@@ -432,6 +465,7 @@ async function emitSyntheticFileChanges(input: { threadId: string; turnId?: stri
       },
     },
   });
+  if (input.mirrorRollout === false) return;
   void appendMirroredRolloutEvents(input.threadId, mirrorId, [{
     type: "patch_apply_end",
     call_id: mirrorId,
@@ -1084,6 +1118,60 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   console.log(`[devil-codex computer] control server on ${computerSock}, MCP script ${computerScript}`);
 }
 
+async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean }): Promise<string | undefined> {
+  const settings = await settingsStore.load().catch(() => null);
+  const { script, computerScript, askScript } = mcpScripts();
+  const mcpServers: Record<string, unknown> = {};
+
+  try {
+    const askSock = await askControl.start();
+    mcpServers.devil_ask = {
+      command: process.execPath,
+      args: [askScript],
+      env: {
+        ELECTRON_RUN_AS_NODE: "1",
+        DEVIL_ASK_SOCK: askSock,
+        DEVIL_ASK_SECRET: askControlSecret,
+      },
+    };
+  } catch (error) {
+    console.warn("[devil-codex ask] Claude MCP disabled:", error instanceof Error ? error.message : error);
+  }
+
+  if (settings?.devilMcpEnabled || options?.browser || options?.computer) {
+    try {
+      const sock = await browserControl.start();
+      const computerSock = await desktopControl.start();
+      if (settings?.devilMcpEnabled || options?.browser) {
+        mcpServers.devil_browser = {
+          command: process.execPath,
+          args: [script],
+          env: {
+            ELECTRON_RUN_AS_NODE: "1",
+            DEVIL_BROWSER_SOCK: sock,
+            DEVIL_BROWSER_SECRET: browserControlSecret,
+          },
+        };
+      }
+      if (settings?.devilMcpEnabled || options?.computer) {
+        mcpServers.devil_computer = {
+          command: process.execPath,
+          args: [computerScript],
+          env: {
+            ELECTRON_RUN_AS_NODE: "1",
+            DEVIL_COMPUTER_SOCK: computerSock,
+            DEVIL_COMPUTER_SECRET: desktopControlSecret,
+          },
+        };
+      }
+    } catch (error) {
+      console.warn("[devil-codex mcp] Claude browser/computer MCP disabled:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  return Object.keys(mcpServers).length ? JSON.stringify({ mcpServers }) : undefined;
+}
+
 async function startCodexProxy(): Promise<void> {
   try {
     const port = await codexProxy.start();
@@ -1228,7 +1316,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("providers:clear-key", (_event, input) => providerSettingsStore.clearKey(input.provider, input.accountId));
-  ipcMain.handle("providers:refresh-models", (_event, input) => providerModels.refresh(input.provider, input.accountId));
+  ipcMain.handle("providers:refresh-models", (_event, input) => refreshProviderModels(input.provider, input.accountId));
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
     if (input.provider === "codex") { clearProviderUsageCache("codex"); codexCliLogin("codex"); return null; }
@@ -1275,6 +1363,26 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return target.respondApproval(input);
   });
   ipcMain.handle("thread:create", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") {
+      const model = input.model || "sonnet";
+      const provider = input.provider && input.provider !== "codex" ? input.provider : "claude-code";
+      const thread = provider === "claude-code"
+        ? claudeRuntime.createThread({ cwd: input.cwd, model })
+        : { id: crypto.randomUUID(), cwd: input.cwd, model, runtime: "claude-code", provider };
+      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, input.accountId) : undefined;
+      await providerTranscripts.saveMeta({
+        ...thread,
+        runtime: "claude-code",
+        provider,
+        accountId: input.accountId,
+        accountLabel,
+        title: provider === "claude-code" ? "새 Claude Code 채팅" : "새 외부 모델 채팅",
+        preview: "",
+        updatedAt: Date.now(),
+        archived: false,
+      });
+      return thread;
+    }
     const instance = createAppServer(false);
     let bound = false;
     try {
@@ -1285,7 +1393,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         bound = true;
         loadedThreads.add(thread.id);
         await providerTranscripts.saveMeta({ ...thread, provider: input.provider, accountId: input.accountId, accountLabel: await providerAccountLabel(input.provider, input.accountId), title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
-        return thread;
+        return { ...thread, runtime: "codex", provider: input.provider };
       }
       // API-key providers still use the established local transcript path until
       // their Responses adapters are registered with the local proxy as well.
@@ -1300,11 +1408,16 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("thread:list", async (_event, input) => {
+    const runtime = requestedRuntime(input.runtime);
+    if (runtime === "claude-code") {
+      const requestedCwd = cwdKey(input.cwd);
+      return filterRuntime((await providerTranscripts.summaries()).filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false)), "claude-code");
+    }
     // Codex can still be booting while the renderer asks for a sidebar refresh.
     // Devil's own durable index must remain visible in that short window.
     const [codex, external] = await Promise.all([server().listThreads(input).catch(() => []), providerTranscripts.summaries()]);
     const requestedCwd = cwdKey(input.cwd);
-    const extra = external.filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false));
+    const extra = filterRuntime(external, "codex").filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
     sortThreadsByRecency(merged);
@@ -1320,9 +1433,20 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return dir;
   });
   ipcMain.handle("thread:search", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") {
+      const query = String(input.query ?? "").trim().toLowerCase();
+      if (!query) return [];
+      return filterRuntime(await providerTranscripts.summaries(), "claude-code")
+        .filter((summary) => summary.archived === (input.archived ?? false))
+        .filter((summary) => `${summary.title}\n${summary.preview}\n${summary.cwd}`.toLowerCase().includes(query));
+    }
     return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(input)));
   });
   ipcMain.handle("thread:resume", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") {
+      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === input.id);
+      return { ...claudeRuntime.resumeThread({ id: input.id, cwd: meta?.cwd, model: meta?.model || input.model || "sonnet" }), claudeSessionId: meta?.claudeSessionId };
+    }
     if (await providerTranscripts.isExternal(input.id)) {
       const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
       // Provider thread still has a native Codex shell from `thread/start`.
@@ -1339,6 +1463,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("thread:rename", async (_event, input) => {
     const name = String(input.name ?? "").trim();
     if (!name) throw new Error("채팅 이름을 입력하세요.");
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    const runtime = threadRuntime(meta ?? { id: input.id, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false });
     const external = await providerTranscripts.isExternal(input.id);
     const saveExternalTitle = async (): Promise<void> => {
       await providerTranscripts.saveMeta({
@@ -1353,8 +1479,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     };
 
     let nativeRenameError: unknown;
-    try { await (threadServers.get(input.id) ?? server()).renameThread({ id: input.id, name }); }
-    catch (error) { nativeRenameError = error; }
+    if (runtime === "codex") {
+      try { await (threadServers.get(input.id) ?? server()).renameThread({ id: input.id, name }); }
+      catch (error) { nativeRenameError = error; }
+    }
 
     if (nativeRenameError) {
       try { await providerReconciler.renameThreadTitle({ threadId: input.id, title: name }); }
@@ -1363,16 +1491,21 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       }
     }
 
-    if (external) {
+    if (external || runtime === "claude-code") {
       await saveExternalTitle();
     }
   });
   ipcMain.handle("thread:fork", (_event, input) => server().forkThread(input));
   ipcMain.handle("thread:compact", async (_event, input: { id: string; cwd?: string; model: string; accountId?: string }) => {
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    if (threadRuntime(meta ?? { id: input.id, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false }) === "claude-code") {
+      throw new Error("Claude Code runtime은 Codex app-server 압축을 지원하지 않습니다.");
+    }
     await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model });
     await (await threadServerFor(input.id)).compactThread({ threadId: input.id });
   });
   ipcMain.handle("thread:read", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") return providerTranscripts.read(input.id);
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native
     // thread that took even one stray external turn is flagged external forever
@@ -1393,7 +1526,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     try {
       const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
-      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
+      const cached = await historyCache.load(input.id);
+      const merged = rollout.length ? mergeCachedActivities(rollout, cached) : cached ?? rollout;
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(merged));
     } catch (error) {
       if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
       throw error;
@@ -1401,14 +1536,17 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   ipcMain.handle("thread:cache-history", async (_event, input) => {
     const items = stripInternalDirectivesFromHistory(input.items);
-    if (await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, items);
+    if (requestedRuntime(input.runtime) === "claude-code" || await providerTranscripts.isExternal(input.id)) await providerTranscripts.replaceHistory(input.id, items);
     else await historyCache.save(input.id, items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") return providerTranscripts.read(input.id);
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
-      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(mergeCachedActivities(rollout, await historyCache.load(input.id))));
+      const cached = await historyCache.load(input.id);
+      const merged = rollout.length ? mergeCachedActivities(rollout, cached) : cached ?? rollout;
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(merged));
     }
     const local = await providerTranscripts.read(input.id);
     const native = await server().readThread(input).catch(() => []);
@@ -1419,14 +1557,21 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   ipcMain.handle("thread:projects", async (_event, input) => {
     const archived = (input ?? {}).archived ?? false;
+    const runtime = requestedRuntime((input ?? {}).runtime);
+    if (runtime === "claude-code") return filterRuntime(await providerTranscripts.summaries(), "claude-code").filter((summary) => summary.archived === archived);
     const [codex, external] = await Promise.all([server().listProjects(input ?? {}).catch(() => []), providerTranscripts.summaries()]);
-    const extra = external.filter((summary) => summary.archived === archived);
+    const extra = filterRuntime(external, "codex").filter((summary) => summary.archived === archived);
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
   ipcMain.handle("thread:archive", async (_event, input) => {
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    if (threadRuntime(meta ?? { id: input.id, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false }) === "claude-code") {
+      await providerTranscripts.archive(input.id);
+      return;
+    }
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
     try { await (await threadServerFor(input.id)).archiveThread(input); }
@@ -1438,6 +1583,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (nativeError) throw nativeError;
   });
   ipcMain.handle("thread:unarchive", async (_event, input) => {
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    if (threadRuntime(meta ?? { id: input.id, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false }) === "claude-code") {
+      await providerTranscripts.unarchive(input.id);
+      return;
+    }
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
     try { await (await threadServerFor(input.id)).unarchiveThread(input); }
@@ -1449,6 +1599,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (nativeError) throw nativeError;
   });
   ipcMain.handle("thread:delete", async (_event, input) => {
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    if (threadRuntime(meta ?? { id: input.id, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false }) === "claude-code") {
+      await providerTranscripts.delete(input.id);
+      return;
+    }
     const external = await providerTranscripts.isExternal(input.id);
     let nativeError: unknown;
     try { await (await threadServerFor(input.id)).deleteThread(input); }
@@ -1486,6 +1641,61 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       text: `${input.text}${attachmentEnrichment.context}${englishDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
+    if (requestedRuntime(input.runtime) === "claude-code") {
+      const existingHistory = await providerTranscripts.read(input.threadId);
+      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === input.threadId);
+      const firstTurn = existingHistory.length === 0;
+      const nativeSessionId = meta?.claudeSessionId;
+      const resumeClaudeCode = Boolean(nativeSessionId) || hasClaudeCodeConversation(existingHistory);
+      const provider = input.provider && input.provider !== "codex" ? input.provider : "claude-code";
+      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, input.accountId) : undefined;
+      await providerTranscripts.append(input.threadId, {
+        id: crypto.randomUUID(),
+        kind: "user",
+        text: input.text,
+        ...(attachmentEnrichment.attachments.length ? { attachments: attachmentEnrichment.attachments } : {}),
+      });
+      await providerTranscripts.saveMeta({
+        id: input.threadId,
+        cwd: input.cwd ?? "",
+        model: input.model || "sonnet",
+        runtime: "claude-code",
+        provider,
+        accountId: input.accountId,
+        accountLabel,
+        preview: previewFromText(input.text),
+        updatedAt: Date.now(),
+        archived: false,
+        ...(firstTurn ? { title: titleFromText(input.text) } : {}),
+      });
+      await rememberTurnFileSnapshot(input.threadId, input.cwd);
+      if (provider !== "claude-code") {
+        const text = await providerRuntime.send({ ...turnInput, provider });
+        await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model, accountId: input.accountId });
+        return;
+      }
+      const result = await claudeRuntime.sendTurn({
+        threadId: input.threadId,
+        cwd: input.cwd,
+        text: turnInput.text,
+        model: input.model || "sonnet",
+        resume: resumeClaudeCode,
+        nativeSessionId,
+        mcpConfig: await claudeMcpConfig({
+          browser: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
+          computer: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
+        }),
+        approvalPolicy: input.approvalPolicy,
+        sandboxMode: input.sandboxMode,
+        // Save the native session id as soon as it is known so a turn that
+        // fails midway can still resume the same Claude session on retry.
+        onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
+        onCompleted: (text) => providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId }),
+      });
+      await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
+      if (result.sessionId) await providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: result.sessionId });
+      return;
+    }
     if (usesCodexProxy(input.provider)) {
       const routedModel = routedProviderModel(input.provider, input.model, input.accountId);
       const accountLabel = await providerAccountLabel(input.provider, input.accountId);
@@ -1583,7 +1793,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         ...(firstTurn ? { title: titleFromText(input.text) } : {}),
       });
       const text = await providerRuntime.send(turnInput);
-      await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text });
+      await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "codex", provider: input.provider, model: input.model, accountId: input.accountId });
       return;
     }
     try {
@@ -1616,6 +1826,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("turn:interrupt", async (_event, input) => {
+    if (requestedRuntime(input.runtime) === "claude-code") {
+      if (claudeRuntime.interruptTurn(input)) return;
+      if (providerRuntime.interrupt(input.threadId)) return;
+      throw new Error("no active turn to interrupt");
+    }
     if (providerRuntime.interrupt(input.threadId)) return;
     await threadServer(input.threadId).interruptTurn(input);
   });

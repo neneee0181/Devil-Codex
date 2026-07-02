@@ -1,7 +1,10 @@
 import type { AppServerEvent, ProviderId } from "./contracts.cjs";
+import { antigravityAuth } from "./provider-antigravity.cjs";
 import { apiProviderConfig, apiProviderUrl, ProviderSettingsStore } from "./provider-settings.cjs";
 import { claudeChat, copilotChat } from "./provider-oauth.cjs";
+import { buildAntigravityRequest } from "./proxy/antigravity.cjs";
 import { providerErrorMessage, providerRuntimeErrorMessage } from "./proxy/errors.cjs";
+import type { OcxParsedRequest } from "./proxy/types.cjs";
 
 type ExternalProvider = Exclude<ProviderId, "codex">;
 type ProviderTurn = {
@@ -75,12 +78,15 @@ async function readSse(response: Response, provider: string, onData: (payload: R
 }
 
 function delta(provider: ExternalProvider, event: Record<string, unknown>): string {
-  if (provider === "openai") return String(event.delta ?? "");
   if (provider === "anthropic" || provider === "claude-code") return String((event.delta as Record<string, unknown> | undefined)?.text ?? "");
   if (provider === "google" || provider === "antigravity") {
-    const candidate = (event.candidates as Array<Record<string, unknown>> | undefined)?.[0];
+    const root = provider === "antigravity" ? (event.response as Record<string, unknown> | undefined) ?? event : event;
+    const candidate = (root.candidates as Array<Record<string, unknown>> | undefined)?.[0];
     const parts = (candidate?.content as Record<string, unknown> | undefined)?.parts;
-    return Array.isArray(parts) ? parts.map((part) => String((part as Record<string, unknown>).text ?? "")).join("") : "";
+    return Array.isArray(parts) ? parts.map((part) => {
+      const record = part as Record<string, unknown>;
+      return record.thought === true ? "" : String(record.text ?? "");
+    }).join("") : "";
   }
   return String(((event.choices as Array<Record<string, unknown>> | undefined)?.[0]?.delta as Record<string, unknown> | undefined)?.content ?? "");
 }
@@ -135,8 +141,24 @@ export class ProviderRuntime {
   private async dispatch(input: ProviderTurn, signal: AbortSignal): Promise<Response> {
     if (input.provider === "copilot") return copilotChat(input.model, input.text, signal, input.accountId);
     if (input.provider === "claude-code") return claudeChat(input.model, input.text, signal, input.accountId);
+    if (input.provider === "antigravity") return this.antigravityRequest(input, signal);
     const key = await this.settings.readApiKey(input.provider, input.accountId);
     return this.request(input, key, signal);
+  }
+
+  private async antigravityRequest(input: ProviderTurn, signal: AbortSignal): Promise<Response> {
+    const auth = await antigravityAuth(input.accountId);
+    if (!auth) throw new Error("Antigravity 로그인이 필요합니다.");
+    const parsed: OcxParsedRequest = {
+      model: input.model,
+      context: { messages: [{ role: "user", content: [{ type: "text", text: input.text }] }] },
+      tools: [],
+      reasoningEffort: "medium",
+      options: {},
+      stream: true,
+    };
+    const req = buildAntigravityRequest(parsed, auth);
+    return fetch(req.url, { method: "POST", signal, headers: req.headers, body: req.body });
   }
 
   private request(input: ProviderTurn, key: string, signal: AbortSignal): Promise<Response> {

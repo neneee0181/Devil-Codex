@@ -44,15 +44,20 @@ function mergeCompactionActivities(native: ThreadHistoryItem, cached: ThreadHist
   return { ...native, activities };
 }
 
+function isRuntimeShareItem(item: ThreadHistoryItem): boolean {
+  return item.kind === "system" && (item.title === "런타임 공유" || item.title === "런타임 공유 컨텍스트");
+}
+
 export function mergeCachedActivities(native: ThreadHistoryItem[], cached: ThreadHistoryItem[] | null): ThreadHistoryItem[] {
   if (!cached?.length) return native;
   const cachedByTurnId = new Map<string, ThreadHistoryItem>();
   const standaloneCompactions: ThreadHistoryItem[] = [];
+  const runtimeShareItems = cached.filter(isRuntimeShareItem);
   for (const item of cached) {
     if (item.kind === "activity" && item.turnId) cachedByTurnId.set(item.turnId, item);
     else if (item.kind === "activity" && hasCompactionActivity(item)) standaloneCompactions.push(item);
   }
-  if (!cachedByTurnId.size && !standaloneCompactions.length) return native;
+  if (!cachedByTurnId.size && !standaloneCompactions.length && !runtimeShareItems.length) return native;
 
   const nativeTurnIds = new Set<string>();
   const merged = native.map((item) => {
@@ -70,6 +75,12 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
   for (const item of standaloneCompactions) {
     const exists = merged.some((current) => current.id === item.id || current.activities?.some((activity) => item.activities?.some((entry) => entry.kind === "compaction" && activity.kind === "compaction" && activity.id === entry.id)));
     if (!exists) merged.push(item);
+  }
+  for (let index = runtimeShareItems.length - 1; index >= 0; index -= 1) {
+    const item = runtimeShareItems[index]!;
+    if (!merged.some((current) => current.id === item.id || (current.kind === "system" && current.title === item.title && current.text === item.text))) {
+      merged.unshift(item);
+    }
   }
   return merged;
 }

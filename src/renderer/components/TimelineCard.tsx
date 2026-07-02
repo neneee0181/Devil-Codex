@@ -43,7 +43,7 @@ function imagePathAttachments(paths: string[]): ThreadAttachment[] {
   return paths.map((path) => ({ kind: "image", path, name: path.split("/").at(-1) ?? "image" }));
 }
 
-export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
+export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     catch { setTranslateError(true); setShowTranslation(false); }
     finally { setTranslating(false); }
   };
-  const label = item.title ?? (item.kind === "user" ? "나" : item.kind === "agent" ? "Codex" : "시스템");
+  const label = item.title ?? (item.kind === "user" ? "나" : item.kind === "agent" ? agentLabel : "시스템");
   const visibleItemText = item.kind === "user" ? hideEditedContinuationContext(item.text) : item.text;
   const message = item.kind === "user" ? splitMessageImages(visibleItemText) : { text: hideAppDirectives(item.text), images: [] };
   // Stock Codex repeats pasted images in the text as temp paths (now gone) AND

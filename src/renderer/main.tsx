@@ -4,11 +4,11 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Bell, Blocks, Bot, Check, ChevronDown, ChevronRight, CirclePlus, CircleUser, CloudOff, ExternalLink,
-  Clock, CloudCog, Code2, Copy, Download, FileText, Folder, FolderOpen, GitBranch, Globe2, Laptop, MessageSquarePlus,
+  Clock, CloudCog, Code2, Copy, Download, FileText, Folder, FolderOpen, GitBranch, GitFork, Globe2, Laptop, Loader2, MessageSquarePlus,
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -23,6 +23,8 @@ import { ApprovalRequestDialog } from "./components/ApprovalRequestDialog";
 import { AskUserModal } from "./components/AskUserModal";
 import { GitWorkflowDialog } from "./components/GitWorkflowDialog";
 import { WorktreeDialog } from "./components/WorktreeDialog";
+import codexRuntimeIcon from "./assets/codex-runtime.png";
+import claudeRuntimeIcon from "./assets/claude-runtime.png";
 import { IntegrationsView } from "./components/IntegrationsView";
 import { CommandPalette, type CommandId } from "./components/CommandPalette";
 import { ThreadFind } from "./components/ThreadFind";
@@ -43,6 +45,35 @@ type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
 type EnvironmentSource = { url: string; label: string };
 type ShellMenuKey = "file" | "edit" | "view" | "help";
 type SentModelState = { provider: ProviderId; accountId?: string; model: string };
+
+const CLAUDE_RUNTIME_SKILLS: CodexSkillInfo[] = [
+  {
+    name: "browser-use",
+    description: "Devil 내장 브라우저 MCP를 사용해 페이지 이동, 읽기, 클릭, 입력을 수행합니다.",
+    path: "devil://claude-runtime/browser-use",
+    scope: "devil",
+    enabled: true,
+  },
+  {
+    name: "computer-use",
+    description: "Devil Computer Use MCP를 사용해 화면 확인, 마우스, 키보드 조작을 수행합니다.",
+    path: "devil://claude-runtime/computer-use",
+    scope: "devil",
+    enabled: true,
+  },
+];
+
+function claudeRuntimeSkillPrompt(skillNames: string[]): string {
+  const names = new Set(skillNames);
+  const lines: string[] = [];
+  if (names.has("browser-use")) {
+    lines.push("사용자가 /browser-use를 선택했습니다. WebFetch 대신 Devil MCP 서버 `devil_browser`의 브라우저 도구를 사용하세요. 사용 가능한 도구는 `browser_navigate`, `browser_read`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`이며, SDK에서 `mcp__devil_browser__browser_navigate` 같은 이름으로 보일 수 있습니다.");
+  }
+  if (names.has("computer-use")) {
+    lines.push("사용자가 /computer-use를 선택했습니다. OS 화면 확인이나 마우스/키보드 조작이 필요하면 Devil MCP 서버 `devil_computer`의 도구를 사용하세요. 사용 가능한 도구는 `computer_screenshot`, `computer_click`, `computer_move`, `computer_type`, `computer_key`, `computer_scroll`, `computer_list_windows`이며, 사용자의 명시 요청 범위 안에서만 조작하세요.");
+  }
+  return lines.length ? `[Devil Claude Code runtime tool instructions]\n${lines.join("\n")}\n\n` : "";
+}
 type ThreadScrollPosition = { top: number; atBottom: boolean; updatedAt: number };
 
 const defaultStatus: RuntimeStatus = {
@@ -63,6 +94,10 @@ const SIDE_CHAT_NAMES = ["Laplace", "Curie", "Euler", "Gauss", "Turing", "Lovela
 const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
 const THREAD_SCROLL_POSITIONS_KEY = "devil-codex:thread-scroll-positions";
 const PET_VISIBLE_KEY = "devil-codex:pet-visible";
+const AGENT_RUNTIME_KEY = "devil-codex:agent-runtime";
+const CLAUDE_PROVIDER_KEY = "devil-codex:claude-provider";
+const CLAUDE_ACCOUNT_KEY = "devil-codex:claude-account";
+const CLAUDE_MODEL_KEY = "devil-codex:claude-model";
 const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
 const ENVIRONMENT_SOURCE_LIMIT = 8;
 const ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT = 4;
@@ -220,6 +255,35 @@ function storedResponseSpeed(): ResponseSpeed {
   return localStorage.getItem("devil-codex:response-speed") === "fast" ? "fast" : "standard";
 }
 
+function storedAgentRuntime(): AgentRuntimeId {
+  return localStorage.getItem(AGENT_RUNTIME_KEY) === "claude-code" ? "claude-code" : "codex";
+}
+
+function storedClaudeModel(): string {
+  return localStorage.getItem(CLAUDE_MODEL_KEY) || "sonnet";
+}
+
+function storedClaudeProvider(): ProviderId {
+  return (localStorage.getItem(CLAUDE_PROVIDER_KEY) as ProviderId | null) || "claude-code";
+}
+
+function storedClaudeAccount(): string | undefined {
+  return localStorage.getItem(CLAUDE_ACCOUNT_KEY) || undefined;
+}
+
+function transferContextFromHistory(items: ThreadHistoryItem[]): string {
+  const rows = items
+    .filter((item) => item.kind === "user" || item.kind === "agent" || item.kind === "system")
+    .slice(-24)
+    .map((item) => {
+      const role = item.kind === "user" ? "User" : item.kind === "agent" ? "Assistant" : `System${item.title ? `: ${item.title}` : ""}`;
+      return `### ${role}\n${(item.text ?? "").trim()}`;
+    })
+    .filter((row) => row.trim().length > 0);
+  const text = rows.join("\n\n").trim();
+  return text.length > 24000 ? `${text.slice(-24000).trimStart()}\n\n[앞부분은 길이 제한으로 생략됨]` : text;
+}
+
 function storedPetVisible(): boolean {
   return localStorage.getItem(PET_VISIBLE_KEY) === "true";
 }
@@ -278,6 +342,18 @@ function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: T
   return missing.length ? [...local, ...missing] : local;
 }
 
+function annotateAgentMessages(items: ThreadHistoryItem[], turnId: string, pending?: PendingTurnState): ThreadHistoryItem[] {
+  if (!turnId || !pending) return items;
+  let changed = false;
+  const next = items.map((item) => {
+    if (item.kind !== "agent" || item.turnId !== turnId) return item;
+    if (item.runtime === pending.runtime && item.provider === pending.provider && item.model === pending.model && item.accountId === pending.accountId) return item;
+    changed = true;
+    return { ...item, runtime: pending.runtime, provider: pending.provider, model: pending.model, accountId: pending.accountId };
+  });
+  return changed ? next : items;
+}
+
 function finalAnswerMissingNotice(turnId: string): ThreadHistoryItem {
   return {
     id: `missing-final-${turnId || crypto.randomUUID()}`,
@@ -293,6 +369,7 @@ type PendingTurnState = {
   cwd: string;
   text: string;
   model: string;
+  runtime?: AgentRuntimeId;
   provider?: ProviderId;
   accountId?: string;
   skills?: Array<{ name: string; path: string }>;
@@ -361,6 +438,13 @@ function compactUsageReset(value: string | number | null | undefined): string {
 function providerDisplayName(provider: ProviderId | "unknown", providers: ProviderInfo[]): string {
   if (provider === "unknown") return "알 수 없음";
   return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider === "antigravity" ? "Antigravity" : provider);
+}
+
+function runtimeAgentLabel(runtime: AgentRuntimeId, provider: ProviderId | undefined, providers: ProviderInfo[]): string {
+  const base = runtime === "claude-code" ? "Claude" : "Codex";
+  const defaultProvider = runtime === "claude-code" ? "claude-code" : "codex";
+  if (!provider || provider === defaultProvider) return base;
+  return `${base}(${providerDisplayName(provider, providers)})`;
 }
 
 function providerTokenTotal(usage: ProviderTokenUsage): number {
@@ -450,6 +534,7 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
 
 function App(): React.JSX.Element {
   const [runtime, setRuntime] = useState<RuntimeStatus>(defaultStatus);
+  const [agentRuntime, setAgentRuntimeState] = useState<AgentRuntimeId>(() => storedAgentRuntime());
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [update, setUpdate] = useState<UpdateState>({ status: "none" });
   const [workspace, setWorkspace] = useState("");
@@ -468,7 +553,24 @@ function App(): React.JSX.Element {
   const englishOutput = Boolean(codexSettings.settings?.englishOutput);
   const model = providers.settings?.model ?? "gpt-5.4";
   const accountId = providers.settings?.accountId;
-  const activeProvider = providers.settings?.providers.find((provider) => provider.id === providers.settings?.provider) ?? null;
+  const [claudeModel, setClaudeModelState] = useState(() => storedClaudeModel());
+  const [claudeProviderId, setClaudeProviderIdState] = useState<ProviderId>(() => storedClaudeProvider());
+  const [claudeAccountId, setClaudeAccountIdState] = useState<string | undefined>(() => storedClaudeAccount());
+  const claudeModeProviders = providers.settings?.providers.filter((provider) => provider.id !== "codex") ?? [];
+  const claudeModeProvider = claudeModeProviders.find((provider) => provider.id === claudeProviderId) ?? claudeModeProviders.find((provider) => provider.id === "claude-code") ?? null;
+  const resolvedClaudeProviderId: ProviderId = claudeModeProvider?.id ?? "claude-code";
+  const resolvedClaudeAccountId = claudeAccountId && claudeModeProvider?.accounts.some((account) => account.id === claudeAccountId)
+    ? claudeAccountId
+    : claudeModeProvider?.accounts[0]?.id;
+  const composerProviderId: ProviderId = agentRuntime === "claude-code" ? resolvedClaudeProviderId : providers.settings?.provider ?? "codex";
+  const composerModel = agentRuntime === "claude-code" ? claudeModel : model;
+  const composerAccountId = agentRuntime === "claude-code" ? resolvedClaudeAccountId : accountId;
+  const composerProviders = agentRuntime === "claude-code" ? claudeModeProviders : providers.settings?.providers ?? [];
+  const activeProvider = agentRuntime === "claude-code" ? claudeModeProvider : providers.settings?.providers.find((provider) => provider.id === providers.settings?.provider) ?? null;
+  const setAgentRuntime = (next: AgentRuntimeId): void => {
+    setAgentRuntimeState(next);
+    localStorage.setItem(AGENT_RUNTIME_KEY, next);
+  };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
   const syncStockCodexDefaults = (patch: Partial<Pick<CodexSettings, "model" | "reasoningEffort" | "responseSpeed">>): void => {
@@ -479,6 +581,16 @@ function App(): React.JSX.Element {
     codexSettings.save(next);
   };
   const setModel = (next: { provider: ProviderId; accountId?: string; model: string }): void => {
+    if (agentRuntime === "claude-code") {
+      setClaudeProviderIdState(next.provider);
+      localStorage.setItem(CLAUDE_PROVIDER_KEY, next.provider);
+      setClaudeAccountIdState(next.accountId);
+      if (next.accountId) localStorage.setItem(CLAUDE_ACCOUNT_KEY, next.accountId);
+      else localStorage.removeItem(CLAUDE_ACCOUNT_KEY);
+      setClaudeModelState(next.model);
+      localStorage.setItem(CLAUDE_MODEL_KEY, next.model);
+      return;
+    }
     void providers.select(next);
     if (next.provider === "codex") syncStockCodexDefaults({ model: next.model });
   };
@@ -564,6 +676,7 @@ function App(): React.JSX.Element {
   // Per-main-thread right-panel tab state so returning restores open subagents.
   const panelByThread = useRef<Record<string, { tabs: string[]; active: string | null }>>({});
   const [externalError, setExternalError] = useState("");
+  const [runtimeShareBusy, setRuntimeShareBusy] = useState<string | null>(null);
   const [petVisible, setPetVisible] = useState(storedPetVisible);
   const [permissionHint, setPermissionHint] = useState<"computer-use" | null>(null);
   // Screenshot / annotate from the embedded browser injects an image (+ optional
@@ -571,6 +684,7 @@ function App(): React.JSX.Element {
   const [composerInject, setComposerInject] = useState<{ attachments?: ThreadAttachment[]; text?: string; nonce: number } | null>(null);
   const askAboutPage = (att: ThreadAttachment, text?: string): void => setComposerInject({ attachments: [att], text, nonce: Date.now() });
   const askAboutTerminal = (text: string): void => { setView("thread"); setComposerInject({ text, nonce: Date.now() }); };
+  const keepThreadOnRuntimeSwitch = useRef(false);
   const [view, setView] = useState<AppView>("thread");
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<ThreadSummary[]>([]);
@@ -619,6 +733,20 @@ function App(): React.JSX.Element {
   const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
   useEffect(() => { itemsRef.current = items; }, [items]);
+  useEffect(() => {
+    if (keepThreadOnRuntimeSwitch.current) {
+      keepThreadOnRuntimeSwitch.current = false;
+      if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
+      return;
+    }
+    setThread(null);
+    threadRef.current = null;
+    setItems([]);
+    itemsRef.current = [];
+    threadHistoryCache.current.clear();
+    pendingThreads.current.clear();
+    if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
+  }, [agentRuntime]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
   useEffect(() => { runningTurnsRef.current = runningTurns; }, [runningTurns]);
   useEffect(() => {
@@ -668,20 +796,20 @@ function App(): React.JSX.Element {
   useEffect(() => { void window.devilCodex.listOpenWorkspaceTargets().then(setOpenTargets).catch(() => undefined); }, []);
 
   useEffect(() => {
-    if (runtime.state !== "connected" || !workspace) return;
+    if ((agentRuntime === "codex" && runtime.state !== "connected") || !workspace) return;
     const timer = window.setInterval(() => {
       void refreshThreads(workspace, { quiet: true });
       void refreshProjects({ quiet: true });
       const activeThreadId = threadRef.current?.id;
       if (!activeThreadId) return;
       if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
-      void window.devilCodex.syncThreadHistory({ id: activeThreadId, accountId: threadRef.current?.accountId }).then((history) => {
+      void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: threadRef.current?.runtime ?? agentRuntime, accountId: threadRef.current?.accountId }).then((history) => {
         threadHistoryCache.current.set(activeThreadId, history);
         if (threadRef.current?.id === activeThreadId) setItems(history);
       }).catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [runtime.state, workspace]);
+  }, [runtime.state, workspace, agentRuntime]);
 
   useEffect(() => window.devilCodex.onCommand((command) => {
     if (command === "new-thread") void newThread();
@@ -717,6 +845,7 @@ function App(): React.JSX.Element {
     return () => { active = false; };
   }, [workspace, runtime.state]);
 
+  const composerSkillOptions = agentRuntime === "claude-code" ? CLAUDE_RUNTIME_SKILLS : availableSkills;
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
   function scheduleThreadScrollPersist(): void {
     if (scrollPersistFrame.current != null) return;
@@ -821,7 +950,10 @@ function App(): React.JSX.Element {
   const isGeneralChatWorkspace = basenamePath(workspace) === "new-chat";
   const hasStartedThread = Boolean(activeSummary && items.length > 0);
   const canUseThreadMenu = view === "thread" && hasStartedThread;
-  const composerDraftKey = thread?.id ?? `${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
+  const composerDraftKey = thread?.id ?? `${agentRuntime}:${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
+  const runtimeLabel = agentRuntime === "claude-code" ? "Claude Code" : "Codex";
+  const runtimeBrandLabel = agentRuntime === "claude-code" ? "Claude" : "Codex";
+  const runtimeBrandIcon = agentRuntime === "claude-code" ? claudeRuntimeIcon : codexRuntimeIcon;
   const canOpenWorkspace = Boolean(workspace && !isGeneralChatWorkspace && openTargets.length > 0);
   const activeThreadBusy = Boolean(thread?.id ? runningTurns[thread.id] : busy);
   const runningThreadIds = useMemo(() => new Set(Object.keys(runningTurns)), [runningTurns]);
@@ -920,10 +1052,10 @@ function App(): React.JSX.Element {
     if (view !== "search" || !search.trim()) { setSearchResults([]); setSearchBusy(false); return; }
     const timer = window.setTimeout(() => {
       setSearchBusy(true);
-      void window.devilCodex.searchThreads({ query: search }).then(setSearchResults).catch((error) => setExternalError(`검색 실패: ${String(error)}`)).finally(() => setSearchBusy(false));
+      void window.devilCodex.searchThreads({ query: search, runtime: agentRuntime }).then(setSearchResults).catch((error) => setExternalError(`검색 실패: ${String(error)}`)).finally(() => setSearchBusy(false));
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [search, view]);
+  }, [search, view, agentRuntime]);
 
   const projectGroups = useMemo(() => {
     const sortThreadList = (list: ThreadSummary[]): ThreadSummary[] => [...list]
@@ -1025,7 +1157,8 @@ function App(): React.JSX.Element {
   function persistThreadHistory(threadId: string, items: ThreadHistoryItem[]): void {
     if (!threadId) return;
     threadHistoryCache.current.set(threadId, items);
-    void window.devilCodex.cacheThreadHistory({ id: threadId, items }).catch(() => undefined);
+    const runtimeForThread = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : agentRuntime;
+    void window.devilCodex.cacheThreadHistory({ id: threadId, items, runtime: runtimeForThread }).catch(() => undefined);
   }
 
   function ensureCompactionMarker(threadId: string, turnId?: string): void {
@@ -1112,6 +1245,14 @@ function App(): React.JSX.Element {
     localStorage.setItem(LAST_SENT_MODELS_KEY, JSON.stringify(lastSentModels.current));
   }
 
+  function updateVisibleThreadProvider(threadId: string, provider: ProviderId, nextModel: string, nextAccountId?: string): void {
+    const apply = (current: ThreadRef | null): ThreadRef | null => current?.id === threadId
+      ? { ...current, runtime: agentRuntime, provider, model: nextModel, accountId: nextAccountId }
+      : current;
+    threadRef.current = apply(threadRef.current);
+    setThread((current) => apply(current));
+  }
+
   function modelChangeItemForThread(threadId: string, provider: ProviderId, nextModel: string, nextAccountId?: string): ThreadHistoryItem | null {
     const next = { provider, accountId: nextAccountId, model: nextModel };
     const previous = lastSentModels.current[threadId];
@@ -1193,6 +1334,7 @@ function App(): React.JSX.Element {
     const modelNotice = modelChangeItemForThread(threadId, next.pending.provider ?? "codex", next.pending.model, next.pending.accountId);
     if (modelNotice) appendItemToThread(threadId, modelNotice);
     appendItemToThread(threadId, next.userItem);
+    updateVisibleThreadProvider(threadId, next.pending.provider ?? "codex", next.pending.model, next.pending.accountId);
     pendingTurn.current = next.pending;
     pendingTurns.current.set(threadId, next.pending);
     markThreadRunning(threadId);
@@ -1210,7 +1352,7 @@ function App(): React.JSX.Element {
   // sends it first — same thread, so the model keeps full history and redirects.
   function interruptForSteer(threadId: string): void {
     const turnId = activeTurnsByThread.current.get(threadId);
-    void window.devilCodex.interruptTurn({ threadId, turnId }).catch((error) => {
+    void window.devilCodex.interruptTurn({ threadId, runtime: pendingForThread(threadId)?.runtime ?? threadRef.current?.runtime ?? agentRuntime, turnId }).catch((error) => {
       if (/no active turn to interrupt/i.test(String(error))) {
         activeTurnsByThread.current.delete(threadId);
         if (activeTurn.current?.threadId === threadId) activeTurn.current = null;
@@ -1289,12 +1431,14 @@ function App(): React.JSX.Element {
     }
     const eventThreadId = inferredThreadId;
     const visibleThreadId = threadRef.current?.id ?? "";
+    const eventTurnId = String(eventParams.turnId ?? (eventParams.turn as { id?: unknown } | undefined)?.id ?? activeTurnsByThread.current.get(eventThreadId) ?? "");
+    const pendingForEvent = pendingForThread(eventThreadId);
     if (eventThreadId && eventThreadId !== visibleThreadId) {
-      const next = applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], event);
+      const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], event), eventTurnId, pendingForEvent);
       threadHistoryCache.current.set(eventThreadId, next);
     } else {
       setItems((current) => {
-        const next = applyTimelineEvent(current, event);
+        const next = annotateAgentMessages(applyTimelineEvent(current, event), eventTurnId, pendingForEvent);
         itemsRef.current = next;
         if (eventThreadId) threadHistoryCache.current.set(eventThreadId, next);
         return next;
@@ -1330,6 +1474,7 @@ function App(): React.JSX.Element {
         if (threadId && activeTurnsByThread.current.get(threadId) === turnId) activeTurnsByThread.current.delete(threadId);
         return;
       }
+      const completedPending = pendingForThread(threadId);
       if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
       if (threadId) activeTurnsByThread.current.delete(threadId);
       if (threadId) pendingTurns.current.delete(threadId);
@@ -1342,9 +1487,11 @@ function App(): React.JSX.Element {
         void (async () => {
           const localHistory = threadHistoryCache.current.get(threadId) ?? itemsRef.current;
           const cachedAccountId = threadRef.current?.id === threadId ? threadRef.current.accountId : undefined;
-          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, accountId: cachedAccountId });
-          const history = await window.devilCodex.syncThreadHistory({ id: threadId, accountId: cachedAccountId });
-          let recoveredHistory = appendMissingAgentMessagesForTurn(localHistory, history, turnId);
+          const cachedRuntime = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : pendingForThread(threadId)?.runtime ?? agentRuntime;
+          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
+          if (cachedRuntime === "claude-code") return;
+          const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
+          let recoveredHistory = annotateAgentMessages(appendMissingAgentMessagesForTurn(localHistory, history, turnId), turnId, completedPending);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
             if (!alreadyWarned) recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId)];
@@ -1380,7 +1527,7 @@ function App(): React.JSX.Element {
     if (!threadId) return;
     clearQueuedTurns(threadId);
     compactionRetries.current.delete(threadId);
-    void window.devilCodex.interruptTurn({ threadId, turnId }).catch((error) => {
+    void window.devilCodex.interruptTurn({ threadId, runtime: thread?.runtime ?? pendingForThread(threadId)?.runtime ?? agentRuntime, turnId }).catch((error) => {
       const message = String(error);
       if (/no active turn to interrupt/i.test(message)) {
         activeTurnsByThread.current.delete(threadId);
@@ -1486,7 +1633,7 @@ function App(): React.JSX.Element {
   async function newThreadInProject(cwd: string): Promise<void> {
     navigate({ view: "thread", workspace: cwd, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
-    if (runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd)]);
+    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd)]);
   }
 
   async function chooseWorkspace(): Promise<void> {
@@ -1494,13 +1641,13 @@ function App(): React.JSX.Element {
     if (!next) return;
     navigate({ view: "thread", workspace: next, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
-    if (runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
+    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
   }
 
   async function refreshThreads(cwd = workspace, options?: { quiet?: boolean }): Promise<void> {
     if (!cwd) return;
     try {
-      const loaded = await window.devilCodex.listThreads({ cwd });
+      const loaded = await window.devilCodex.listThreads({ cwd, runtime: agentRuntime });
       for (const summary of loaded) pendingThreads.current.delete(summary.id);
       const currentCwdKey = cwdKey(cwd);
       const pending = [...pendingThreads.current.values()].filter((summary) => cwdKey(summary.cwd) === currentCwdKey && !loaded.some((item) => item.id === summary.id));
@@ -1515,14 +1662,14 @@ function App(): React.JSX.Element {
   async function prefetchThreadHistory(threadId: string, accountId?: string): Promise<void> {
     if (threadHistoryCache.current.has(threadId) || prefetchingThreadHistory.current.has(threadId)) return;
     prefetchingThreadHistory.current.add(threadId);
-    try { threadHistoryCache.current.set(threadId, await window.devilCodex.readThread({ id: threadId, accountId })); }
+    try { threadHistoryCache.current.set(threadId, await window.devilCodex.readThread({ id: threadId, runtime: agentRuntime, accountId })); }
     catch { /* prefetch is opportunistic; opening the thread still reports real errors. */ }
     finally { prefetchingThreadHistory.current.delete(threadId); }
   }
 
   async function refreshProjects(_options?: { quiet?: boolean }): Promise<void> {
     try {
-      const all = await window.devilCodex.listProjects();
+      const all = await window.devilCodex.listProjects({ runtime: agentRuntime });
       const map = new Map<string, { cwd: string; threads: ThreadSummary[] }>();
       for (const summary of all) {
         if (!summary.cwd) continue;
@@ -1544,7 +1691,7 @@ function App(): React.JSX.Element {
     setProjectMenuOpen(false);
     navigate({ view: "archive" });
     setArchivedBusy(true);
-    try { setArchivedThreads(await window.devilCodex.listThreads({ cwd: workspace, archived: true })); }
+    try { setArchivedThreads(await window.devilCodex.listThreads({ cwd: workspace, archived: true, runtime: agentRuntime })); }
     catch (error) { setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "보관함 오류", text: String(error) }]); }
     finally { setArchivedBusy(false); }
   }
@@ -1552,7 +1699,7 @@ function App(): React.JSX.Element {
   async function showAllArchivedThreads(): Promise<void> {
     navigate({ view: "archive" });
     setArchivedBusy(true);
-    try { setArchivedThreads(await window.devilCodex.listProjects({ archived: true })); }
+    try { setArchivedThreads(await window.devilCodex.listProjects({ archived: true, runtime: agentRuntime })); }
     catch (error) { setExternalError(`보관함 오류: ${String(error)}`); }
     finally { setArchivedBusy(false); }
   }
@@ -1653,14 +1800,14 @@ function App(): React.JSX.Element {
 
   async function resumeThread(summary: ThreadSummary): Promise<void> {
     activeResume.current = summary.id;
-    navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || model }, workspace: summary.cwd || workspace, projectDraft: false, items: threadHistoryCache.current.get(summary.id) ?? [], environmentOpen: false });
+    navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: threadHistoryCache.current.get(summary.id) ?? [], environmentOpen: false });
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running
       ? Promise.resolve(threadHistoryCache.current.get(summary.id) ?? [])
-      : window.devilCodex.readThread({ id: summary.id, accountId: summary.accountId });
+      : window.devilCodex.readThread({ id: summary.id, runtime: summary.runtime ?? agentRuntime, accountId: summary.accountId });
     void historyPromise.catch(() => undefined);
     try {
-      const next = await window.devilCodex.resumeThread({ id: summary.id, model, accountId: summary.accountId });
+      const next = await window.devilCodex.resumeThread({ id: summary.id, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, accountId: summary.accountId });
       if (activeResume.current !== summary.id) return;
       setThread(next);
       setWorkspace(next.cwd);
@@ -1712,7 +1859,7 @@ function App(): React.JSX.Element {
         await navigator.clipboard?.writeText(summary.id);
         return;
       }
-      const history = threadHistoryCache.current.get(summary.id) ?? await window.devilCodex.readThread({ id: summary.id, accountId: summary.accountId });
+      const history = threadHistoryCache.current.get(summary.id) ?? await window.devilCodex.readThread({ id: summary.id, runtime: summary.runtime ?? agentRuntime, accountId: summary.accountId });
       threadHistoryCache.current.set(summary.id, history);
       const markdown = [`# ${summary.title}`, "", `- Session ID: ${summary.id}`, `- Directory: ${summary.cwd}`, "", ...history.map((item) => `## ${item.kind}${item.title ? `: ${item.title}` : ""}\n\n${item.text || ""}`)].join("\n");
       await navigator.clipboard?.writeText(markdown);
@@ -1735,6 +1882,77 @@ function App(): React.JSX.Element {
       setThreads((list) => [...list].sort((a, b) => Number(next.includes(b.id)) - Number(next.includes(a.id)) || b.updatedAt - a.updatedAt));
       return next;
     });
+  }
+
+  async function shareActiveThreadToOtherRuntime(): Promise<void> {
+    if (!activeSummary || !workspace) return;
+    setThreadMenuOpen(false);
+    const sourceRuntime = activeSummary.runtime ?? agentRuntime;
+    const targetRuntime: AgentRuntimeId = sourceRuntime === "claude-code" ? "codex" : "claude-code";
+    const targetLabel = targetRuntime === "claude-code" ? "Devil Claude Code" : "Devil Codex";
+    const sourceLabel = sourceRuntime === "claude-code" ? "Devil Claude Code" : "Devil Codex";
+    const targetProvider: ProviderId = targetRuntime === "claude-code" ? "claude-code" : "codex";
+    const targetModel = targetRuntime === "claude-code"
+      ? claudeModel
+      : providers.settings?.provider === "codex" ? model : "gpt-5.4";
+    const now = Math.floor(Date.now() / 1000);
+    const sharedTitle = `공유: ${activeSummary.title || "새 채팅"}`;
+    const marker: ThreadHistoryItem = {
+      id: crypto.randomUUID(),
+      kind: "system",
+      title: "런타임 공유",
+      text: `${sourceLabel} thread에서 ${targetLabel} thread를 새로 열고 대화 컨텍스트를 첨부했습니다.\n공유 버튼 자체는 모델을 호출하지 않았습니다.\n추가 토큰은 이 새 thread에서 첫 메시지를 보낼 때만 사용됩니다.`,
+    };
+    const contextText = transferContextFromHistory(threadHistoryCache.current.get(activeSummary.id) ?? itemsRef.current);
+    const contextItem: ThreadHistoryItem | null = contextText ? {
+      id: crypto.randomUUID(),
+      kind: "system",
+      title: "런타임 공유 컨텍스트",
+      text: contextText,
+    } : null;
+    const initialItems = contextItem ? [marker, contextItem] : [marker];
+
+    try {
+      setRuntimeShareBusy(`${targetLabel}로 대화 넘기는 중...`);
+      const created = await window.devilCodex.createThread({
+        cwd: workspace,
+        model: targetModel,
+        runtime: targetRuntime,
+        provider: targetProvider,
+      });
+      const nextThread: ThreadRef = {
+        ...created,
+        runtime: targetRuntime,
+        provider: targetProvider,
+        model: targetModel,
+      };
+      const summary: ThreadSummary = {
+        id: created.id,
+        cwd: workspace,
+        model: targetModel,
+        runtime: targetRuntime,
+        provider: targetProvider,
+        title: sharedTitle,
+        preview: marker.text,
+        updatedAt: now,
+        archived: false,
+      };
+      threadHistoryCache.current.set(created.id, initialItems);
+      pendingThreads.current.set(created.id, summary);
+      await window.devilCodex.cacheThreadHistory({ id: created.id, runtime: targetRuntime, items: initialItems }).catch(() => undefined);
+      await window.devilCodex.renameThread({ id: created.id, name: sharedTitle, cwd: workspace, model: targetModel, preview: marker.text }).catch(() => undefined);
+      keepThreadOnRuntimeSwitch.current = true;
+      setAgentRuntime(targetRuntime);
+      threadRef.current = nextThread;
+      setThread(nextThread);
+      setItems(initialItems);
+      setThreads([summary]);
+      navigate({ view: "thread", thread: nextThread, workspace, projectDraft: false, items: initialItems, environmentOpen: false });
+    } catch (error) {
+      setExternalError(`런타임 공유 실패: ${String(error)}`);
+    } finally {
+      setRuntimeShareBusy(null);
+    }
   }
 
   async function unarchiveThread(summary: ThreadSummary): Promise<void> {
@@ -1787,17 +2005,25 @@ function App(): React.JSX.Element {
     const attachmentContext = attachmentContextForModel(input.attachments);
     const imageAttachments = input.attachments.filter((item) => item.kind === "image").map((item) => item.url ?? item.path);
     const attachmentDetails = displayAttachments(input.attachments);
-    const selectedSkills = input.skills.flatMap((name) => { const skill = availableSkills.find((item) => item.name === name); return skill ? [{ name: skill.name, path: skill.path }] : []; });
+    const selectedSkills = input.skills.flatMap((name) => { const skill = composerSkillOptions.find((item) => item.name === name); return skill ? [{ name: skill.name, path: skill.path }] : []; });
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
     const visiblePrompt = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
-    const text = `${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
+    const handoffIndex = itemsRef.current.findIndex((item) => item.kind === "system" && item.title === "런타임 공유 컨텍스트");
+    const handoffContext = handoffIndex >= 0 && !itemsRef.current.slice(handoffIndex + 1).some((item) => item.kind === "agent")
+      ? itemsRef.current[handoffIndex]?.text.trim()
+      : "";
+    const handoffPrefix = handoffContext
+      ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
+      : "";
+    const runtimeSkillPrefix = agentRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills) : "";
+    const text = `${runtimeSkillPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
-    const provider = options.provider ?? providers.settings?.provider ?? "codex";
-    const selectedAccountId = options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
+    const provider = agentRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? providers.settings?.provider ?? "codex";
+    const selectedAccountId = agentRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === providers.settings?.provider ? accountId : undefined);
     const sendAccountId = provider === "codex" ? undefined : selectedAccountId;
-    const sendModel = options.model ?? model;
-    if (!text || !workspace || (provider === "codex" && runtime.state !== "connected")) return;
+    const sendModel = agentRuntime === "claude-code" ? options.model ?? composerModel : options.model ?? model;
+    if (!text || !workspace || (agentRuntime === "codex" && provider === "codex" && runtime.state !== "connected")) return;
     const permissions = input.approvalMode === "full"
       ? { approvalPolicy: "never" as const, sandboxMode: "danger-full-access" as const }
       : input.approvalMode === "ask"
@@ -1818,7 +2044,7 @@ function App(): React.JSX.Element {
     }
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -1831,13 +2057,14 @@ function App(): React.JSX.Element {
     setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, ...visibleTurnItems]));
     setBusy(true);
     try {
-      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
-      threadRef.current = activeThread;
-      setThread(activeThread);
+      const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
+      const visibleThread: ThreadRef = { ...activeThread, runtime: agentRuntime, provider, model: sendModel, accountId: sendAccountId };
+      threadRef.current = visibleThread;
+      setThread(visibleThread);
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
-        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
+        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id && summary.id !== replacedThread?.id)]);
       }
@@ -1846,7 +2073,7 @@ function App(): React.JSX.Element {
         hideThreadIdLocally(replacedThread.id);
       }
       const sidecars = readSidecarSettings();
-      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const pending: PendingTurnState = { threadId: activeThread.id, cwd: workspace, text, model: sendModel, runtime: agentRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
       pendingTurn.current = pending;
       pendingTurns.current.set(activeThread.id, pending);
       markThreadRunning(activeThread.id);
@@ -2034,7 +2261,7 @@ function App(): React.JSX.Element {
     navigate({ view: "thread", workspace: next, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
     setExpandedProjects((prev) => ({ ...prev, [next]: true }));
-    if (runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next), refreshProjects()]);
+    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next), refreshProjects()]);
   }
 
   async function createLocalProject(): Promise<void> {
@@ -2045,7 +2272,7 @@ function App(): React.JSX.Element {
       navigate({ view: "thread", workspace: cwd, thread: null, items: [], projectDraft: true, environmentOpen: false });
       setProjectAlias("");
       setExpandedProjects((prev) => ({ ...prev, [cwd]: true }));
-      if (runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
+      if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
     } catch (error) {
       setExternalError(`프로젝트 생성 실패: ${String(error)}`);
     }
@@ -2100,7 +2327,7 @@ function App(): React.JSX.Element {
     setOpenProjectMenu(null);
     navigate({ view: "archive", workspace: cwd });
     setArchivedBusy(true);
-    try { setArchivedThreads(await window.devilCodex.listThreads({ cwd, archived: true })); }
+    try { setArchivedThreads(await window.devilCodex.listThreads({ cwd, archived: true, runtime: agentRuntime })); }
     catch (error) { setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "보관함 오류", text: String(error) }]); }
     finally { setArchivedBusy(false); }
   }
@@ -2154,7 +2381,7 @@ function App(): React.JSX.Element {
     }
     try {
       const forked = await window.devilCodex.forkThread({ id: thread.id, cwd: workspace, model: thread.model || model });
-      const history = await window.devilCodex.readThread({ id: forked.id }).catch(() => []);
+      const history = await window.devilCodex.readThread({ id: forked.id, runtime: "codex" }).catch(() => []);
       threadHistoryCache.current.set(forked.id, history);
       navigate({ view: "thread", thread: forked, workspace: forked.cwd || workspace, items: history, projectDraft: false, environmentOpen: false });
       await Promise.all([refreshThreads(forked.cwd || workspace, { quiet: true }), refreshProjects()]);
@@ -2354,7 +2581,7 @@ function App(): React.JSX.Element {
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
     try {
       const seed = providers.settings?.provider === "codex" ? model : "gpt-5.4";
-      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, provider: "codex" });
+      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, runtime: "codex", provider: "codex" });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
       openSideTab(created.id, label, dock);
@@ -2445,6 +2672,10 @@ function App(): React.JSX.Element {
           <button className={view === "plugins" ? "selected" : ""} onClick={() => openView("plugins")}><Blocks />플러그인</button>
           <button className={view === "automations" ? "selected" : ""} onClick={() => openView("automations")}><Bot />자동화</button>
         </nav>
+        <div className="agent-mode-switch" aria-label="에이전트 모드">
+          <button type="button" className={agentRuntime === "codex" ? "active" : ""} onClick={() => setAgentRuntime("codex")}><img className="runtime-logo" src={codexRuntimeIcon} alt="" />Codex</button>
+          <button type="button" className={agentRuntime === "claude-code" ? "active" : ""} onClick={() => setAgentRuntime("claude-code")}><img className="runtime-logo" src={claudeRuntimeIcon} alt="" />Claude</button>
+        </div>
 
         {sidebarLayoutMode === "projectsDown" && generalChats.length > 0 && (
           <div className="general-chats">
@@ -2524,13 +2755,13 @@ function App(): React.JSX.Element {
 
         <div className="account-wrap" data-shell-popover-root>
           <AnimatePresence>{accountMenuOpen && <motion.div className="account-menu" initial={{ opacity: 0, y: 6, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 4, scale: .98 }} transition={{ duration: .15 }}>
-            <button className="account-id" onClick={openNativeCodex}><CircleUser size={17} /><span>Codex</span></button>
+            <button className="account-id" onClick={agentRuntime === "codex" ? openNativeCodex : () => openSettingsSection("연결")}><img className="runtime-logo" src={runtimeBrandIcon} alt="" /><span>{runtimeBrandLabel}</span></button>
             <button onClick={() => openSettingsSection("연결")}><CircleUser size={17} />개인 계정</button>
             <div className="menu-divider" />
             <button onClick={() => { openView("settings"); setAccountMenuOpen(false); }}><Settings size={17} />설정<kbd>{shortcut("⌘,")}</kbd></button>
             <div className="menu-divider" />
-            <button onClick={() => setAccountUsageOpen((open) => !open)}><Target size={17} />남은 사용량<ChevronDown size={15} className={accountUsageOpen ? "chev open" : "chev"} /></button>
-            <AnimatePresence>{accountUsageOpen && <AccountUsageInline entries={quickUsage.report?.entries ?? []} state={quickUsage.state} onDetails={() => openSettingsSection("사용량 및 청구")} />}</AnimatePresence>
+            <button onClick={() => setAccountUsageOpen((open) => !open)}><Target size={17} />사용량<ChevronDown size={15} className={accountUsageOpen ? "chev open" : "chev"} /></button>
+            <AnimatePresence>{accountUsageOpen && <AccountUsageInline entries={quickUsage.report?.entries ?? []} state={quickUsage.state} preferredProvider={composerProviderId} onDetails={() => openSettingsSection("사용량 및 청구")} />}</AnimatePresence>
           </motion.div>}</AnimatePresence>
           <button className={view === "settings" ? "settings-button selected" : "settings-button"} onClick={() => { const next = !accountMenuOpen; closePopovers(); setAccountMenuOpen(next); }}><Settings />설정</button>
         </div>
@@ -2552,7 +2783,7 @@ function App(): React.JSX.Element {
                 onForward={goForward}
               />
             )}
-            <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
+            <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} shareRuntimeLabel={(activeSummary.runtime ?? agentRuntime) === "claude-code" ? "Devil Codex" : "Devil Claude Code"} onShareRuntime={() => void shareActiveThreadToOtherRuntime()} />}</AnimatePresence></span>}</div>
           </div>
           <div className="topbar-actions">
             {update.status === "available" && <button className="update-badge" onClick={() => void window.devilCodex.installUpdate()} title={`Devil Codex ${update.version} 업데이트`}><Download size={15} />업데이트 {update.version}</button>}
@@ -2570,6 +2801,7 @@ function App(): React.JSX.Element {
         </header>
 
         {externalError && <button className="external-error" onClick={() => setExternalError("")}>{externalError} ×</button>}
+        <AnimatePresence>{runtimeShareBusy && <motion.div className="runtime-share-loading" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><Loader2 size={14} />{runtimeShareBusy}</motion.div>}</AnimatePresence>
         {permissionHint === "computer-use" && <div className="permission-hint">
           <span>Computer Use에 권한이 필요합니다. macOS 설정에서 허용 후 앱을 재시작하세요.</span>
           <div className="permission-hint-actions">
@@ -2585,17 +2817,17 @@ function App(): React.JSX.Element {
         {view === "thread" ? (
           <>
             <div className="thread-view" ref={threadViewRef} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
-              {runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
+              {agentRuntime === "codex" && runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
-              {timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 Codex 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
+              {timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const itemChanges = changesFromTurn(items, item.turnId, changes.branch);
                 const canRollbackTurn = Boolean(item.turnId && items.some((activity) => activity.kind === "activity" && activity.turnId === item.turnId && activity.activities?.some((entry) => entry.kind === "fileChange" && entry.files?.some((file) => Boolean(file.diff)))));
-                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
+                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={model} providerId={providers.settings?.provider ?? "codex"} accountId={accountId} providers={providers.settings?.providers ?? []} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={availableSkills} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} />
+            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (agentRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={agentRuntime === "codex" ? contextUsage : undefined} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={agentRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -3068,8 +3300,9 @@ function collectEnvironmentSources(items: ThreadHistoryItem[]): EnvironmentSourc
   return [...urls.values()];
 }
 
-function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUsageEntry[]; state: string; onDetails: () => void }): React.JSX.Element {
-  const entry = entries.find((item) => item.windows.length > 0) ?? entries[0];
+function AccountUsageInline({ entries, state, preferredProvider, onDetails }: { entries: ProviderUsageEntry[]; state: string; preferredProvider?: ProviderId; onDetails: () => void }): React.JSX.Element {
+  const preferredEntry = preferredProvider ? entries.find((item) => item.provider === preferredProvider && item.windows.length > 0) ?? entries.find((item) => item.provider === preferredProvider) : undefined;
+  const entry = preferredEntry ?? entries.find((item) => item.windows.length > 0) ?? entries[0];
   const message = state === "loading" || state === "idle"
     ? "사용량을 불러오는 중..."
     : !entry
@@ -3082,7 +3315,7 @@ function AccountUsageInline({ entries, state, onDetails }: { entries: ProviderUs
       {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
-        <span>{Math.round(window.remainingPercent)}%</span>
+        <span>{Math.round(window.usedPercent)}% 사용</span>
         <time>{compactUsageReset(window.resetsAt)}</time>
       </div>)}
     </> : <p>{message}</p>}
@@ -3157,7 +3390,7 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
         <button onClick={onCodexWeb}><CloudCog />Codex 웹 연결<ExternalLink /></button>
         <button className="disabled" disabled><CloudOff />클라우드에 보내기</button>
         <div className="menu-divider" />
-        <button onClick={onUsage}><Target />남은 사용량<ChevronRight /></button>
+        <button onClick={onUsage}><Target />사용량<ChevronRight /></button>
       </div>}
     </div>
     {gitAvailable && <div className="environment-popover-wrap">
@@ -3275,13 +3508,14 @@ function AutomationsView({ onPrompt }: { onPrompt: (prompt: string) => void }): 
   );
 }
 
-function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide }: { pinned: boolean; onPin: () => void; onRename: () => void; onCopy: (kind: "cwd" | "id" | "markdown") => void; onSide: () => void }): React.JSX.Element {
+function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide, shareRuntimeLabel, onShareRuntime }: { pinned: boolean; onPin: () => void; onRename: () => void; onCopy: (kind: "cwd" | "id" | "markdown") => void; onSide: () => void; shareRuntimeLabel: string; onShareRuntime: () => void }): React.JSX.Element {
   const [copyOpen, setCopyOpen] = useState(false);
   return <motion.div className="thread-menu" initial={{ opacity: 0, y: -6, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: .98 }} transition={{ duration: .13, ease: [.4, 0, .2, 1] }}>
     <button onClick={onPin}>{pinned ? <PinOff size={16} /> : <Pin size={16} />}{pinned ? "채팅 고정 해제" : "채팅 고정"}<kbd>{shortcut("⌥⌘P")}</kbd></button>
     <button onClick={onRename}><Pencil size={16} />채팅 이름 바꾸기<kbd>{shortcut("⌥⌘R")}</kbd></button>
     <div className="menu-divider" />
     <button onClick={onSide}><MessageSquarePlus size={16} />사이드 채팅 열기<kbd>{shortcut("⌥⌘S")}</kbd></button>
+    <button onClick={onShareRuntime}><GitFork size={16} />{shareRuntimeLabel}로 대화 넘기기</button>
     <button className={copyOpen ? "active" : ""} onClick={() => setCopyOpen((open) => !open)}><Copy size={16} />복사<ChevronRight size={15} className="chev" /></button>
     <AnimatePresence>
       {copyOpen && (

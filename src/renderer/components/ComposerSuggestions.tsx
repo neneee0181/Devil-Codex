@@ -55,6 +55,7 @@ export type SlashCommandContext = {
   responseSpeed: ResponseSpeed;
   approvalMode: ApprovalMode;
   petVisible: boolean;
+  runtime?: "codex" | "claude-code";
 };
 
 export type ComposerSuggestion = {
@@ -95,7 +96,10 @@ export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ 
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
-  const commandItems = commands
+  const commandSource = context.runtime === "claude-code"
+    ? commands.filter((command) => ["goal", "plan", "status", "model", "settings"].includes(command.id))
+    : commands;
+  const commandItems = commandSource
     .filter((command) => {
       if (!normalized) return true;
       return [command.id, command.label, command.detail instanceof Function ? "" : command.detail, ...(command.aliases ?? [])].some((part) => part.toLowerCase().includes(normalized));

@@ -89,7 +89,7 @@ type ModelUsageRow = {
 };
 
 function ProviderUsagePage({ report, requestLog, providerSettings, state, onRefresh }: { report: { entries: ProviderUsageEntry[] } | null; requestLog: ProviderRequestLogEntry[]; providerSettings: ProviderSettings | null; state: string; onRefresh: () => void }): React.JSX.Element {
-  const [tab, setTab] = useState<UsageTab>("devil");
+  const [tab, setTab] = useState<UsageTab>("quota");
   const entries = report?.entries ?? [];
   const devil = useMemo(() => summarizeDevilUsage(requestLog, providerSettings), [requestLog, providerSettings]);
   return <><div className="usage-head"><span><h1>사용량 및 청구</h1><p>공식 Provider 한도와 Devil Codex에서 프록시한 모델별 토큰 사용량을 함께 확인합니다. 금액은 Provider 공개 단가 기준의 추정치입니다.</p></span><button className="secondary" onClick={onRefresh} disabled={state === "loading"}>{state === "loading" ? "새로고침 중…" : "새로고침"}</button></div>
@@ -143,12 +143,12 @@ function ModelUsageCard({ row }: { row: ModelUsageRow }): React.JSX.Element {
 function ProviderUsageCard({ entry }: { entry: ProviderUsageEntry }): React.JSX.Element {
   const account = entry.accountEmail || entry.accountLabel;
   return <div className="setting-card usage-provider-card"><header><span><strong>{entry.label}</strong><small>{[account, entry.connected ? "로그인됨" : "로그인 안 됨"].filter(Boolean).join(" · ")}</small></span><small>{formatUpdated(entry.updatedAt)}</small></header>
-    {entry.windows.length ? <div>{entry.windows.map((window) => <UsageWindow key={window.label} title={window.label} remaining={window.remainingPercent} resetsAt={window.resetsAt} />)}</div> : <p className={entry.error ? "usage-error" : "usage-unavailable"}>{entry.error ? `오류: ${entry.error}` : entry.unavailable ?? "표시할 사용량 데이터가 없습니다."}</p>}</div>;
+    {entry.windows.length ? <div>{entry.windows.map((window) => <UsageWindow key={window.label} title={window.label} used={window.usedPercent} remaining={window.remainingPercent} resetsAt={window.resetsAt} />)}</div> : <p className={entry.error ? "usage-error" : "usage-unavailable"}>{entry.error ? `오류: ${entry.error}` : entry.unavailable ?? "표시할 사용량 데이터가 없습니다."}</p>}</div>;
 }
 
-function UsageWindow({ title, remaining, resetsAt }: { title: string; remaining: number; resetsAt?: string | number | null }): React.JSX.Element {
+function UsageWindow({ title, used, remaining, resetsAt }: { title: string; used: number; remaining: number; resetsAt?: string | number | null }): React.JSX.Element {
   const level = remaining < 20 ? "danger" : remaining < 50 ? "warning" : "healthy";
-  return <div className={`usage-row ${level}`}><span><strong>{title} 사용 한도</strong><small>{formatReset(resetsAt)}</small></span><progress value={remaining} max="100" /><b>{Math.round(remaining)}% 남음</b></div>;
+  return <div className={`usage-row ${level}`}><span><strong>{title}</strong><small>{formatReset(resetsAt)}</small></span><progress value={used} max="100" /><b>{Math.round(used)}% 사용</b></div>;
 }
 
 function formatUpdated(value: number): string { return new Date(value).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }); }

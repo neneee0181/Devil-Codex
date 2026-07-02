@@ -357,7 +357,7 @@ export async function* streamGoogle(response: Response, options: { label?: strin
               yield { type: "tool_call_delta", arguments: JSON.stringify(fn.args ?? {}) };
               yield { type: "tool_call_end" };
             }
-            const text = String(record.text ?? "");
+            const text = record.thought === true ? "" : String(record.text ?? "");
             if (text) yield { type: "text_delta", text };
           }
         }

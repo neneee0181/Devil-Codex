@@ -315,7 +315,8 @@ function thinkingStatusText(entry: ThreadActivityEntry | undefined): string {
 
 export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; onOpenFile: (path: string) => void }): React.JSX.Element {
   const running = item.status === "inProgress";
-  const failed = item.status === "failed";
+  const entries = item.activities ?? [];
+  const failed = item.status === "failed" || entries.some((entry) => entry.status === "failed");
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(running);
   const [tick, setTick] = useState(0);
@@ -327,7 +328,6 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
     return () => window.clearInterval(timer);
   }, [failed, running]);
   const elapsed = running ? Date.now() - (item.startedAt ?? Date.now()) : item.durationMs ?? 0;
-  const entries = item.activities ?? [];
   const runningEntry = latestRunningEntry(entries);
   const diagnosticsEntries = entries.filter((entry) => entry.kind === "diagnostic");
   const summary = useMemo(() => {
