@@ -191,10 +191,25 @@ function updateActivity(items: ThreadHistoryItem[], turnId: string, update: (ite
   return [...items, update({ id: `activity-${turnId}`, kind: "activity", text: "", turnId, status: "inProgress", startedAt: Date.now(), activities: [] })];
 }
 
+function normalizedActivityDetail(value: string | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isDuplicateProviderFailureMessage(entries: ThreadActivityEntry[], entry: ThreadActivityEntry): boolean {
+  if (entry.kind !== "message" || entry.status !== "failed") return false;
+  const detail = normalizedActivityDetail(entry.detail);
+  if (!detail) return false;
+  return entries.some((current) => current.id !== entry.id
+    && current.kind === "message"
+    && current.status === "failed"
+    && normalizedActivityDetail(current.detail) === detail);
+}
+
 function upsertEntry(items: ThreadHistoryItem[], turnId: string, entry: ThreadActivityEntry): ThreadHistoryItem[] {
   return updateActivity(items, turnId, (activity) => {
     const entries = activity.activities ?? [];
     const exists = entries.some((current) => current.id === entry.id);
+    if (!exists && isDuplicateProviderFailureMessage(entries, entry)) return activity;
     return { ...activity, activities: exists ? entries.map((current) => current.id === entry.id ? { ...current, ...entry } : current) : [...entries, entry] };
   });
 }
@@ -363,7 +378,24 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
   }
   if ((event.method === "item/started" || event.method === "item/completed") && item && turnId) {
     const type = String(item.type ?? "");
-    if (!explicitTurnId && (type === "providerDiagnostics" || type === "fileChange" || type === "webSearch" || type === "contextCompaction")) return items;
+    if (!explicitTurnId && (type === "fileChange" || type === "webSearch" || type === "contextCompaction")) return items;
+    if (type === "providerDiagnostics") {
+      const effectiveTurnId = explicitTurnId || latestActivityTurnId(items);
+      if (effectiveTurnId) {
+        const mapped = entryFromItem(item);
+        const entry = mapped && event.method === "item/completed" ? {
+          ...mapped,
+          status: mapped.status === "failed" && hasFinalAgentMessage(items, effectiveTurnId)
+            ? "completed" as const
+            : mapped.status === "failed" || mapped.status === "declined" ? mapped.status : "completed" as const,
+        } : mapped;
+        if (entry) {
+          const next = upsertEntry(items, effectiveTurnId, entry);
+          return hasFinalAgentMessage(next, effectiveTurnId) ? normalizeFinalAnswerActivity(next, effectiveTurnId) : next;
+        }
+      }
+      return items;
+    }
     if (isAssistantMessageItem(item, type) && isFinalAssistantMessage(item)) {
       const id = String(item.id ?? crypto.randomUUID());
       const text = assistantText(item);
@@ -372,7 +404,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       // into the work timeline; keep this latest message standalone (the final
       // answer until something later proves otherwise).
       const base = demotePriorAgentMessages(items, turnId, id);
-      const next = exists ? base.map((current) => current.id === id ? { ...current, text } : current) : [...base, { id, kind: "agent", text, turnId }];
+      const next = exists ? base.map((current) => current.id === id ? { ...current, text } : current) : [...base, { id, kind: "agent" as const, text, turnId }];
       return normalizeFinalAnswerActivity(next, turnId);
     }
     const mapped = entryFromItem(item);
@@ -401,7 +433,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     if (exists) return items.map((current) => current.id === itemId ? { ...current, text: current.text + delta } : current);
     // First delta of a brand-new message: fold any earlier message into the
     // work timeline, keep this one streaming standalone.
-    const next = [...demotePriorAgentMessages(items, turnId, itemId), { id: itemId, kind: "agent", text: delta, turnId }];
+    const next = [...demotePriorAgentMessages(items, turnId, itemId), { id: itemId, kind: "agent" as const, text: delta, turnId }];
     return normalizeFinalAnswerActivity(next, turnId);
   }
   if ((event.method === "item/reasoning/summaryTextDelta" || event.method === "item/plan/delta") && turnId) return appendEntryText(items, turnId, String(params.itemId ?? crypto.randomUUID()), event.method.includes("reasoning") ? "reasoning" : "message", String(params.delta ?? ""));

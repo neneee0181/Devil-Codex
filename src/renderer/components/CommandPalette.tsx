@@ -120,7 +120,7 @@ export function CommandPalette({
 
   const rows = useMemo<Row[]>(() => [
     ...visibleThreads.map((thread, index) => ({ kind: "thread" as const, id: `thread:${thread.id}`, thread, shortcut: index < 9 ? shortcut(`⌘${index + 1}`) : undefined })),
-    ...visibleCommands.map((command, index) => ({ kind: "command" as const, id: `${command.id}:${index}`, command })),
+    ...visibleCommands.map((command) => ({ kind: "command" as const, id: command.id, command })),
   ], [visibleThreads, visibleCommands]);
 
   useEffect(() => setActive(0), [query, rows.length]);

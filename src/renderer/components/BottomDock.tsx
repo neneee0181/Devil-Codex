@@ -1,6 +1,6 @@
 import { useCallback, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { X } from "lucide-react";
-import type { ProviderId, ProviderInfo, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
+import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
 import { SideChat, ToolContent } from "./ToolContent";
@@ -25,6 +25,8 @@ export function BottomDock({
   onTerminalOpenPath,
   onSubagentPick,
   onSubagentHistory,
+  onNewSideChat,
+  sideChatCreating,
   onSelect,
   onAdd,
   onCloseTab,
@@ -44,14 +46,16 @@ export function BottomDock({
   selectedDiff: WorkspaceDiff | null;
   diffBusy: boolean;
   subagentLabels: Record<string, string>;
-  subagentCtx: { model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
+  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
-  subagentPick: Record<string, { provider: ProviderId; model: string }>;
+  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string }>;
   onTerminalAsk: (text: string) => void;
   onTerminalOpenPath: (path: string) => void;
-  onSubagentPick: (id: string, pick: { provider: ProviderId; model: string }) => void;
+  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
+  onNewSideChat: () => void;
+  sideChatCreating?: boolean;
   onSelect: (tool: string) => void;
   onAdd: (tool: ToolKind) => void;
   onCloseTab: (tool: string) => void;
@@ -83,7 +87,7 @@ export function BottomDock({
       <div className="bottom-dock-content">
         {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="bottom" onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
         {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "사이드 채팅" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
-        {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
+        {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       </div>
     </section>
   );

@@ -1,6 +1,6 @@
 import { useCallback, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Maximize2, Minimize2, X } from "lucide-react";
-import type { ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
+import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
 import { ToolContent, SideChat, type ContentTool } from "./ToolContent";
@@ -31,6 +31,7 @@ export function UtilityPanel({
   onSubagentHistory,
   onOpenSubagent,
   onNewSideChat,
+  sideChatCreating,
   onSelect,
   onAdd,
   onCloseTab,
@@ -51,19 +52,20 @@ export function UtilityPanel({
   diffBusy: boolean;
   subagentLabels: Record<string, string>;
   subagentList: Array<{ id: string; label: string }>;
-  subagentCtx: { model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
+  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
   expanded: boolean;
   onBrowserAsk: (attachment: ThreadAttachment, text?: string) => void;
   onTerminalAsk: (text: string) => void;
   onTerminalOpenPath: (path: string) => void;
-  subagentPick: Record<string, { provider: ProviderId; model: string }>;
+  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string }>;
   onToggleExpanded: () => void;
-  onSubagentPick: (id: string, pick: { provider: ProviderId; model: string }) => void;
+  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
   onOpenSubagent: (id: string, label: string) => void;
   onNewSideChat: () => void;
+  sideChatCreating?: boolean;
   onSelect: (tool: string) => void;
   onAdd: (tool: ToolKind) => void;
   onCloseTab: (tool: string) => void;
@@ -88,7 +90,7 @@ export function UtilityPanel({
       </header>
       {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="right" onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
       {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "서브에이전트" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
-      {active && active !== "terminal" && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
+      {active && active !== "terminal" && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       {!active && <ToolLauncherMenu onSelect={onAdd} />}
     </aside>
   );

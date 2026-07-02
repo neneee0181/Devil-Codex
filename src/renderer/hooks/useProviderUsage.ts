@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProviderRequestLogEntry, ProviderUsageReport } from "../../shared/contracts";
 
-interface RefreshOptions { quiet?: boolean; }
+interface RefreshOptions { quiet?: boolean; force?: boolean; }
 
 export function useProviderUsage(active: boolean): {
   report: ProviderUsageReport | null;
@@ -17,7 +17,7 @@ export function useProviderUsage(active: boolean): {
     if (!options.quiet) setState("loading");
     try {
       const [nextReport, nextLog] = await Promise.all([
-        window.devilCodex.providerUsage(),
+        window.devilCodex.providerUsage({ force: options.force }),
         window.devilCodex.providerRequestLog(),
       ]);
       setReport(nextReport);
@@ -30,7 +30,7 @@ export function useProviderUsage(active: boolean): {
 
   useEffect(() => {
     if (!active) return;
-    void refresh();
+    void refresh({ force: true });
   }, [active, refresh]);
 
   useEffect(() => {
@@ -49,21 +49,24 @@ export function useProviderUsage(active: boolean): {
   useEffect(() => {
     if (!active) return undefined;
     let timer: number | undefined;
-    const rerun = (): void => {
+    const rerun = (event?: { completed?: boolean }): void => {
       if (timer !== undefined) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = undefined;
-        void refresh({ quiet: true });
+        void refresh({ quiet: true, force: Boolean(event?.completed) });
       }, 150);
     };
     const dispose = window.devilCodex.onProviderUsageChanged(rerun);
+    const forceRerun = (): void => rerun({ completed: true });
+    window.addEventListener("devil-codex:provider-usage-refresh", forceRerun);
     return () => {
       dispose();
+      window.removeEventListener("devil-codex:provider-usage-refresh", forceRerun);
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [active, refresh]);
 
-  const manualRefresh = useCallback(() => refresh(), [refresh]);
+  const manualRefresh = useCallback(() => refresh({ force: true }), [refresh]);
 
   return { report, requestLog, state, refresh: manualRefresh };
 }

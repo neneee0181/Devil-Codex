@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
-import { antigravityUsage } from "./provider-antigravity.cjs";
+import { antigravityUsage, clearAntigravityUsageCache } from "./provider-antigravity.cjs";
 import { readCurrentCodexAuth, refreshCodexAuth, writeCurrentCodexAuth, type CodexAuthJson } from "./provider-codex-accounts.cjs";
 
 const CACHE_TTL_MS = 90_000;
@@ -233,8 +233,12 @@ function remember(entry: ProviderUsageEntry, subject?: string): ProviderUsageEnt
 export function clearProviderUsageCache(provider?: ProviderUsageEntry["provider"]): void {
   if (provider) {
     for (const key of cache.keys()) if (key.startsWith(`${provider}:`)) cache.delete(key);
+    if (provider === "antigravity") clearAntigravityUsageCache();
   }
-  else cache.clear();
+  else {
+    cache.clear();
+    clearAntigravityUsageCache();
+  }
 }
 
 function codexToken(auth: CodexAuthJson | null): string | null {
@@ -408,7 +412,8 @@ function accounts(settings: ProviderSettings | undefined, provider: ProviderUsag
   return settings?.providers.find((item) => item.id === provider)?.accounts ?? [];
 }
 
-export async function providerUsageReport(auth: ProviderAuthStatus, settings?: ProviderSettings): Promise<ProviderUsageReport> {
+export async function providerUsageReport(auth: ProviderAuthStatus, settings?: ProviderSettings, options: { force?: boolean } = {}): Promise<ProviderUsageReport> {
+  if (options.force) clearProviderUsageCache();
   const claudeAccounts = accounts(settings, "claude-code");
   const copilotAccounts = accounts(settings, "copilot");
   const antigravityAccounts = accounts(settings, "antigravity");

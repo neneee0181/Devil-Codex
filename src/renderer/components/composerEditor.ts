@@ -44,10 +44,11 @@ export function plainTextFromClipboard(event: ClipboardEvent): string {
 
 export function getEditorTextBeforeCaret(editor: HTMLDivElement): string | null {
   const selection = window.getSelection();
-  if (!selection?.rangeCount || !editor.contains(selection.anchorNode)) return null;
+  const anchorNode = selection?.anchorNode;
+  if (!selection?.rangeCount || !anchorNode || !editor.contains(anchorNode)) return null;
   const range = selection.getRangeAt(0).cloneRange();
   range.selectNodeContents(editor);
-  range.setEnd(selection.anchorNode, selection.anchorOffset);
+  range.setEnd(anchorNode, selection.anchorOffset);
   return range.toString();
 }
 

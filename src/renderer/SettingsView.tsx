@@ -32,16 +32,21 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
     try { return { ...defaults, ...JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") }; } catch { return defaults; }
   });
   const codex = useCodexSettings();
-  useEffect(() => { if (!codex.settings) return; setConfig((current) => ({ ...current, approval: approvalLabel(codex.settings.approvalPolicy), sandbox: sandboxLabel(codex.settings.sandboxMode), devilMcpEnabled: codex.settings.devilMcpEnabled, englishOutput: codex.settings.englishOutput })); }, [codex.settings]);
+  useEffect(() => {
+    const settings = codex.settings;
+    if (!settings) return;
+    setConfig((current) => ({ ...current, approval: approvalLabel(settings.approvalPolicy), sandbox: sandboxLabel(settings.sandboxMode), devilMcpEnabled: settings.devilMcpEnabled, englishOutput: settings.englishOutput }));
+  }, [codex.settings]);
   useEffect(() => { localStorage.setItem("devil-codex:settings", JSON.stringify(config)); }, [config]);
   const visible = useMemo(() => groups.map((group) => ({ ...group, items: group.items.filter(([name]) => name.toLowerCase().includes(query.toLowerCase())) })).filter((group) => group.items.length), [query]);
   const update = <K extends keyof Config>(key: K, value: Config[K]): void => {
     setConfig((current) => ({ ...current, [key]: value }));
-    if (!codex.settings) return;
-    if (key === "approval") codex.save({ ...codex.settings, approvalPolicy: approvalValue(String(value)) });
-    if (key === "sandbox") codex.save({ ...codex.settings, sandboxMode: sandboxValue(String(value)) });
-    if (key === "devilMcpEnabled") codex.save({ ...codex.settings, devilMcpEnabled: Boolean(value) });
-    if (key === "englishOutput") codex.save({ ...codex.settings, englishOutput: Boolean(value) });
+    const settings = codex.settings;
+    if (!settings) return;
+    if (key === "approval") codex.save({ ...settings, approvalPolicy: approvalValue(String(value)) });
+    if (key === "sandbox") codex.save({ ...settings, sandboxMode: sandboxValue(String(value)) });
+    if (key === "devilMcpEnabled") codex.save({ ...settings, devilMcpEnabled: Boolean(value) });
+    if (key === "englishOutput") codex.save({ ...settings, englishOutput: Boolean(value) });
   };
 
   return <div className="settings-view">

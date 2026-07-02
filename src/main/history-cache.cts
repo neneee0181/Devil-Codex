@@ -48,6 +48,48 @@ function isRuntimeShareItem(item: ThreadHistoryItem): boolean {
   return item.kind === "system" && (item.title === "런타임 공유" || item.title === "런타임 공유 컨텍스트");
 }
 
+function normalizedText(value: string | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function itemMergeKey(item: ThreadHistoryItem): string {
+  if (item.kind === "user") return `user:${normalizedText(item.text)}:${item.attachments?.length ?? 0}`;
+  if (item.kind === "agent") return `agent:${item.turnId ?? ""}:${normalizedText(item.text)}`;
+  if (item.kind === "system") return `system:${item.title ?? ""}:${normalizedText(item.text)}`;
+  if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;
+  return item.id;
+}
+
+function containsEquivalent(items: ThreadHistoryItem[], item: ThreadHistoryItem): boolean {
+  const key = itemMergeKey(item);
+  return items.some((current) => current.id === item.id || itemMergeKey(current) === key);
+}
+
+function insertMissingCachedItems(native: ThreadHistoryItem[], cached: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  let merged = [...native];
+  const cacheKey = (item: ThreadHistoryItem): string => `${item.id}:${itemMergeKey(item)}`;
+  for (const item of cached) {
+    if (item.kind !== "user" && item.kind !== "agent" && item.kind !== "system") continue;
+    if (containsEquivalent(merged, item)) continue;
+    const cachedIndex = cached.indexOf(item);
+    let insertAt = merged.length;
+    for (let index = cachedIndex + 1; index < cached.length; index += 1) {
+      const next = cached[index]!;
+      const targetIndex = merged.findIndex((current) => current.id === next.id || itemMergeKey(current) === itemMergeKey(next));
+      if (targetIndex >= 0) { insertAt = targetIndex; break; }
+    }
+    if (insertAt === merged.length) {
+      for (let index = cachedIndex - 1; index >= 0; index -= 1) {
+        const previous = cached[index]!;
+        const targetIndex = merged.findIndex((current) => current.id === previous.id || itemMergeKey(current) === itemMergeKey(previous));
+        if (targetIndex >= 0) { insertAt = targetIndex + 1; break; }
+      }
+    }
+    merged = [...merged.slice(0, insertAt), { ...item, id: item.id || cacheKey(item) }, ...merged.slice(insertAt)];
+  }
+  return merged;
+}
+
 export function mergeCachedActivities(native: ThreadHistoryItem[], cached: ThreadHistoryItem[] | null): ThreadHistoryItem[] {
   if (!cached?.length) return native;
   const cachedByTurnId = new Map<string, ThreadHistoryItem>();
@@ -57,7 +99,8 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
     if (item.kind === "activity" && item.turnId) cachedByTurnId.set(item.turnId, item);
     else if (item.kind === "activity" && hasCompactionActivity(item)) standaloneCompactions.push(item);
   }
-  if (!cachedByTurnId.size && !standaloneCompactions.length && !runtimeShareItems.length) return native;
+  const hasCachedConversationItems = cached.some((item) => item.kind === "user" || item.kind === "agent" || item.kind === "system");
+  if (!cachedByTurnId.size && !standaloneCompactions.length && !runtimeShareItems.length && !hasCachedConversationItems) return native;
 
   const nativeTurnIds = new Set<string>();
   const merged = native.map((item) => {
@@ -82,5 +125,5 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
       merged.unshift(item);
     }
   }
-  return merged;
+  return insertMissingCachedItems(merged, cached);
 }

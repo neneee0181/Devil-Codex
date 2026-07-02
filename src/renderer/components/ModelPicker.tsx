@@ -17,7 +17,7 @@ const speeds: Array<{ value: ResponseSpeed; label: string; detail: string }> = [
 ];
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const modelPageSize = 10;
-const notifyProviderAuthChanged = (): void => window.dispatchEvent(new Event("devil-codex:provider-auth-changed"));
+const notifyProviderAuthChanged = (): void => { window.dispatchEvent(new Event("devil-codex:provider-auth-changed")); };
 
 function capabilityLabel(value: string | undefined): string {
   if (value === "native") return "native";

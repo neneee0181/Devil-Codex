@@ -1348,7 +1348,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return status;
   });
   ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
-  ipcMain.handle("providers:usage", async () => providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load()));
+  ipcMain.handle("providers:usage", async (_event, input) => providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load(), { force: Boolean(input?.force) }));
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
   ipcMain.handle("approval:respond", (_event, input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => {

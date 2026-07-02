@@ -112,7 +112,7 @@ const api: DevilCodexApi = {
   providerLogin: (input) => ipcRenderer.invoke("providers:login", input),
   providerLogout: (input) => ipcRenderer.invoke("providers:logout", input),
   providerOauthModels: (input) => ipcRenderer.invoke("providers:oauth-models", input),
-  providerUsage: () => ipcRenderer.invoke("providers:usage"),
+  providerUsage: (input) => ipcRenderer.invoke("providers:usage", input),
   providerRequestLog: () => ipcRenderer.invoke("providers:request-log"),
   onProviderAuth: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

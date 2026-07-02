@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
 
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
-const notifyProviderAuthChanged = (): void => window.dispatchEvent(new Event("devil-codex:provider-auth-changed"));
+const notifyProviderAuthChanged = (): void => { window.dispatchEvent(new Event("devil-codex:provider-auth-changed")); };
 
 function authedFor(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
   if (!provider.authProvider) return false;

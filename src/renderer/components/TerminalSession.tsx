@@ -156,7 +156,7 @@ export function TerminalSession({
     const id = `cmd-${Date.now()}-${commandSeq.current++}`;
     activeEntryId.current = id;
     setEntries((current) => [
-      { id, command: clean, output: "", startedAt: Date.now(), pinned: false, collapsed: false, status: "running" },
+      { id, command: clean, output: "", startedAt: Date.now(), pinned: false, collapsed: false, status: "running" as const },
       ...current.map((entry) => entry.status === "running" ? { ...entry, status: "done" as const } : entry),
     ].slice(0, COMMAND_LIMIT));
     scheduleSettle(id);

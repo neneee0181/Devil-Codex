@@ -353,7 +353,7 @@ export interface DevilCodexApi {
   providerLogin: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<DeviceCodeInfo | null>;
   providerLogout: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<ProviderAuthStatus>;
   providerOauthModels: (input: { provider: "copilot" | "claude-code" | "antigravity"; accountId?: string }) => Promise<ProviderModel[]>;
-  providerUsage: () => Promise<ProviderUsageReport>;
+  providerUsage: (input?: { force?: boolean }) => Promise<ProviderUsageReport>;
   providerRequestLog: () => Promise<ProviderRequestLogEntry[]>;
   onProviderAuth: (listener: (status: ProviderAuthStatus) => void) => () => void;
   onProviderUsageChanged: (listener: (event: ProviderUsageChangedEvent) => void) => () => void;

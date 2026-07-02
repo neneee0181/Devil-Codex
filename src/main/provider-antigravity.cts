@@ -69,6 +69,10 @@ export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 const modelCache = new Map<string, { models: ProviderModel[]; fetchedAt: number }>();
 const quotaCache = new Map<string, { windows: ProviderUsageWindow[]; fetchedAt: number }>();
+
+export function clearAntigravityUsageCache(): void {
+  quotaCache.clear();
+}
 let antigravityLoginInProgress = false;
 let antigravityLoginSession = 0;
 let activeCallback: { server: Server; timeout: ReturnType<typeof setTimeout>; reject: (error: Error) => void } | null = null;

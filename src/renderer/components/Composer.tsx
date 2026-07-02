@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, type Ref, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
 import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
@@ -117,6 +117,7 @@ export function Composer({
   onSlashCommand,
   petVisible,
   agentRuntime = "codex",
+  wrapRef,
 }: {
   draftKey: string;
   busy: boolean;
@@ -143,6 +144,7 @@ export function Composer({
   onSlashCommand: (command: SlashCommandId) => void;
   petVisible: boolean;
   agentRuntime?: "codex" | "claude-code";
+  wrapRef?: Ref<HTMLFormElement>;
 }): React.JSX.Element {
   const initialDraft = useMemo(() => readComposerDraft(draftKey), []);
   const [draft, setDraft] = useState(initialDraft.draft);
@@ -408,7 +410,7 @@ export function Composer({
   };
 
   return (
-    <form className="composer-wrap" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+    <form ref={wrapRef} className="composer-wrap" onSubmit={(event) => { event.preventDefault(); submit(); }}>
       {queued.length > 0 && <QueuedMessages items={queued} onEdit={onEditQueued} onRemove={onRemoveQueued} onSteer={onSteerQueued} />}
       <div className={attachments.length > 0 ? "composer has-attachments" : "composer"} onDragOver={(event) => event.preventDefault()} onDrop={onComposerDrop}>
         {attachments.length > 0 && (

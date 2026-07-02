@@ -44,7 +44,7 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
   );
   const usedTurnIds = new Set<string>();
   let cursor = 0;
-  const result = native.map((item) => {
+  let result = native.map((item) => {
     // Activity items: prefer local entries when they are richer.
     if (item.kind === "activity" && item.turnId) {
       const localAct = localActivityMap.get(item.turnId);
@@ -65,7 +65,40 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
     cursor = Math.max(cursor, matchIndex >= 0 ? matchIndex + 1 : cursor + 1);
     return { ...item, attachments: match.attachments };
   });
-  // Add activity items that exist in local but not in native at all.
+  // Add conversation/activity items that exist in local but not in native at all.
+  // External-provider rollouts can be thinner than Devil's local transcript, and
+  // dropping a local user item makes the completed work appear without the
+  // prompt that started it.
+  const hasEquivalent = (candidate: ThreadHistoryItem): boolean => result.some((item) => {
+    if (item.id === candidate.id) return true;
+    if (item.kind !== candidate.kind) return false;
+    if (candidate.kind === "user") return item.text.trim() === candidate.text.trim() && (item.attachments?.length ?? 0) === (candidate.attachments?.length ?? 0);
+    if (candidate.kind === "agent") return item.turnId === candidate.turnId && item.text.trim() === candidate.text.trim();
+    if (candidate.kind === "system") return item.title === candidate.title && item.text.trim() === candidate.text.trim();
+    return false;
+  });
+  for (const [localIndex, item] of local.entries()) {
+    if (item.kind !== "user" && item.kind !== "agent" && item.kind !== "system") continue;
+    if (hasEquivalent(item)) continue;
+    let insertAt = result.length;
+    for (let index = localIndex + 1; index < local.length; index += 1) {
+      const next = local[index]!;
+      const targetIndex = result.findIndex((current) => current.id === next.id || (
+        current.kind === next.kind && current.text.trim() === next.text.trim() && current.turnId === next.turnId
+      ));
+      if (targetIndex >= 0) { insertAt = targetIndex; break; }
+    }
+    if (insertAt === result.length) {
+      for (let index = localIndex - 1; index >= 0; index -= 1) {
+        const previous = local[index]!;
+        const targetIndex = result.findIndex((current) => current.id === previous.id || (
+          current.kind === previous.kind && current.text.trim() === previous.text.trim() && current.turnId === previous.turnId
+        ));
+        if (targetIndex >= 0) { insertAt = targetIndex + 1; break; }
+      }
+    }
+    result = [...result.slice(0, insertAt), item, ...result.slice(insertAt)];
+  }
   for (const [turnId, act] of localActivityMap) {
     if (!usedTurnIds.has(turnId)) result.push(act);
   }

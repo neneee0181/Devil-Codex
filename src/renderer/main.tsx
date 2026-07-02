@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -371,6 +371,65 @@ function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: T
   return missing.length ? [...local, ...missing] : local;
 }
 
+function timelineItemKey(item: ThreadHistoryItem): string {
+  if (item.id) return item.id;
+  if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;
+  if (item.kind === "agent" && item.turnId) return `agent:${item.turnId}:${item.text}`;
+  if (item.kind === "user") return `user:${item.text}:${item.attachments?.length ?? 0}`;
+  return `${item.kind}:${item.turnId ?? ""}:${item.text ?? ""}`;
+}
+
+function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadActivityEntry[] = []): ThreadActivityEntry[] {
+  if (!base.length) return overlay;
+  if (!overlay.length) return base;
+  const result = [...base];
+  const indexes = new Map(result.map((entry, index) => [entry.id, index]));
+  for (const entry of overlay) {
+    const index = indexes.get(entry.id);
+    if (index == null) {
+      indexes.set(entry.id, result.length);
+      result.push(entry);
+      continue;
+    }
+    const current = result[index]!;
+    result[index] = {
+      ...current,
+      ...entry,
+      detail: entry.detail ?? current.detail,
+      files: entry.files ?? current.files,
+      images: entry.images ?? current.images,
+      status: current.status === "failed" || entry.status === "failed" ? "failed" : entry.status ?? current.status,
+    };
+  }
+  return result;
+}
+
+function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  if (!base.length) return overlay;
+  if (!overlay.length) return base;
+  const result = [...base];
+  const indexes = new Map(result.map((item, index) => [timelineItemKey(item), index]));
+  for (const item of overlay) {
+    const key = timelineItemKey(item);
+    const index = indexes.get(key);
+    if (index == null) { indexes.set(key, result.length); result.push(item); continue; }
+    const current = result[index];
+    if (current.kind === "activity" && item.kind === "activity") {
+      result[index] = {
+        ...current,
+        ...item,
+        activities: mergeActivityEntries(current.activities, item.activities),
+        status: current.status === "failed" || item.status === "failed" ? "failed" : item.status ?? current.status,
+      };
+    } else { result[index] = item; }
+  }
+  return result;
+}
+
+function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
+  return Boolean(items?.some((item) => item.kind === "user" || item.kind === "agent" || item.kind === "system"));
+}
+
 function annotateAgentMessages(items: ThreadHistoryItem[], turnId: string, pending?: PendingTurnState): ThreadHistoryItem[] {
   if (!turnId || !pending) return items;
   let changed = false;
@@ -685,6 +744,7 @@ function App(): React.JSX.Element {
   // Subagents ("하위 에이전트") are separate — spawned by the main thread's model.
   // Side conversations are per main thread (each thread has its own 곁가지 대화).
   const [sideChatsByThread, setSideChatsByThread] = useState<Record<string, Array<{ id: string; label: string }>>>({});
+  const [sideChatCreatingDock, setSideChatCreatingDock] = useState<"right" | "bottom" | null>(null);
   const subagentIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => { for (const list of Object.values(sideChatsByThread)) for (const c of list) subagentIdsRef.current.add(c.id); }, [sideChatsByThread]);
   // Hide all side conversations from the main sidebar (spawned subagents are
@@ -698,7 +758,7 @@ function App(): React.JSX.Element {
   const [subagentHistory, setSubagentHistory] = useState<Record<string, ThreadHistoryItem[]>>({});
   const [subagentBusy, setSubagentBusy] = useState<Record<string, boolean>>({});
   // Per-subagent picked model so it doesn't reset when switching tabs.
-  const [subagentPick, setSubagentPick] = useState<Record<string, { provider: ProviderId; model: string }>>({});
+  const [subagentPick, setSubagentPick] = useState<Record<string, { provider: ProviderId; accountId?: string; model: string }>>({});
   const [utilityPanelExpanded, setUtilityPanelExpanded] = useState(false);
   const [projectExpanded, setProjectExpanded] = useState(true);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -762,6 +822,8 @@ function App(): React.JSX.Element {
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const threadViewRef = useRef<HTMLDivElement>(null);
+  const composerWrapRef = useRef<HTMLFormElement>(null);
+  const [composerClearance, setComposerClearance] = useState(240);
   const stickToThreadBottom = useRef(true);
   const scrolledThreadId = useRef<string | null>(null);
   const pendingScrollRestoreThread = useRef<string | null>(null);
@@ -863,8 +925,13 @@ function App(): React.JSX.Element {
       if (!activeThreadId) return;
       if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
       void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: threadRef.current?.runtime ?? agentRuntime, accountId: threadRef.current?.accountId }).then((history) => {
-        threadHistoryCache.current.set(activeThreadId, history);
-        if (threadRef.current?.id === activeThreadId) setItems(history);
+        const localHistory = threadHistoryCache.current.get(activeThreadId) ?? itemsRef.current;
+        const merged = mergeTimelineItems(localHistory, history);
+        threadHistoryCache.current.set(activeThreadId, merged);
+        if (threadRef.current?.id === activeThreadId) {
+          itemsRef.current = merged;
+          setItems(merged);
+        }
       }).catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
@@ -954,6 +1021,30 @@ function App(): React.JSX.Element {
   }
 
   useLayoutEffect(() => {
+    if (view !== "thread") return;
+    const composerNode = composerWrapRef.current;
+    if (!composerNode) return;
+    let frame: number | null = null;
+    const applyComposerClearance = (): void => {
+      if (frame != null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const next = Math.max(180, Math.ceil(composerNode.getBoundingClientRect().height) + 20);
+        setComposerClearance((current) => Math.abs(current - next) > 1 ? next : current);
+        const threadNode = threadViewRef.current;
+        if (threadNode && stickToThreadBottom.current) {
+          threadNode.scrollTop = threadNode.scrollHeight;
+          if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, threadNode.scrollTop, true);
+        }
+      });
+    };
+    applyComposerClearance();
+    const observer = new ResizeObserver(applyComposerClearance);
+    observer.observe(composerNode);
+    return () => { observer.disconnect(); if (frame != null) cancelAnimationFrame(frame); };
+  }, [view, thread?.id, composerRuntime, queuedHere, runningTurns]);
+
+  useLayoutEffect(() => {
     if (view !== "thread" || !thread?.id) return;
     const firstRenderForThread = scrolledThreadId.current !== thread.id;
     if (firstRenderForThread) {
@@ -969,9 +1060,10 @@ function App(): React.JSX.Element {
       if (pendingScrollRestoreThread.current === thread.id && saved && !saved.atBottom) {
         const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
         node.scrollTop = Math.min(saved.top, maxTop);
+        if (itemsRef.current.length === 0 && maxTop <= 0) return;
         stickToThreadBottom.current = false;
         setShowScrollToBottom(itemsRef.current.length > 0);
-        if (itemsRef.current.length > 0 || maxTop >= saved.top) {
+        if (maxTop >= saved.top || itemsRef.current.length > 0) {
           pendingScrollRestoreThread.current = null;
           syncThreadScrollState(node);
         }
@@ -1054,6 +1146,13 @@ function App(): React.JSX.Element {
     providers: providers.settings?.providers ?? [],
     requestLog: quickUsage.requestLog,
   }), [thread?.id, contextUsage, providers.settings?.providers, quickUsage.requestLog]);
+  const sideConversationRuntime = thread?.runtime ?? composerRuntime;
+  const sideConversationProvider: ProviderId = sideConversationRuntime === "claude-code" ? composerProviderId : "codex";
+  const sideConversationAccountId = sideConversationProvider === "codex" ? undefined : composerAccountId;
+  const sideConversationModel = sideConversationRuntime === "claude-code"
+    ? composerModel
+    : providers.settings?.provider === "codex" ? model : "gpt-5.4";
+  const sideConversationProviders = sideConversationRuntime === "claude-code" ? composerProviders : providers.settings?.providers ?? [];
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
@@ -1493,13 +1592,16 @@ function App(): React.JSX.Element {
     const eventThreadId = inferredThreadId;
     const visibleThreadId = threadRef.current?.id ?? "";
     const eventTurnId = String(eventParams.turnId ?? (eventParams.turn as { id?: unknown } | undefined)?.id ?? activeTurnsByThread.current.get(eventThreadId) ?? "");
+    const timelineEvent = eventTurnId && !eventParams.turnId
+      ? { ...event, params: { ...eventParams, turnId: eventTurnId } }
+      : event;
     const pendingForEvent = pendingForThread(eventThreadId);
     if (eventThreadId && eventThreadId !== visibleThreadId) {
-      const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], event), eventTurnId, pendingForEvent);
+      const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], timelineEvent), eventTurnId, pendingForEvent ?? undefined);
       threadHistoryCache.current.set(eventThreadId, next);
     } else {
       setItems((current) => {
-        const next = annotateAgentMessages(applyTimelineEvent(current, event), eventTurnId, pendingForEvent);
+        const next = annotateAgentMessages(applyTimelineEvent(current, timelineEvent), eventTurnId, pendingForEvent ?? undefined);
         itemsRef.current = next;
         if (eventThreadId) threadHistoryCache.current.set(eventThreadId, next);
         return next;
@@ -1513,6 +1615,7 @@ function App(): React.JSX.Element {
       retryPendingAfterCompaction(threadId, turnId);
     }
     if (event.method === "turn/completed") {
+      window.dispatchEvent(new Event("devil-codex:provider-usage-refresh"));
       const params = (event.params ?? {}) as Record<string, unknown>;
       const turnId = String(params.turnId ?? (params.turn as { id?: unknown } | undefined)?.id ?? "");
       const turnStatus = String((params.turn as { status?: unknown } | undefined)?.status ?? "completed");
@@ -1552,7 +1655,7 @@ function App(): React.JSX.Element {
           await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
           if (cachedRuntime === "claude-code") return;
           const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
-          let recoveredHistory = annotateAgentMessages(appendMissingAgentMessagesForTurn(localHistory, history, turnId), turnId, completedPending);
+          let recoveredHistory = annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
             if (!alreadyWarned) recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId)];
@@ -1861,10 +1964,11 @@ function App(): React.JSX.Element {
 
   async function resumeThread(summary: ThreadSummary): Promise<void> {
     activeResume.current = summary.id;
-    navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: threadHistoryCache.current.get(summary.id) ?? [], environmentOpen: false });
+    const cachedHistory = threadHistoryCache.current.get(summary.id);
+    navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
     const running = Boolean(runningTurnsRef.current[summary.id]);
-    const historyPromise = running
-      ? Promise.resolve(threadHistoryCache.current.get(summary.id) ?? [])
+    const historyPromise = running && hasConversationItems(cachedHistory)
+      ? Promise.resolve(cachedHistory ?? [])
       : window.devilCodex.readThread({ id: summary.id, runtime: summary.runtime ?? agentRuntime, accountId: summary.accountId });
     void historyPromise.catch(() => undefined);
     try {
@@ -1874,8 +1978,17 @@ function App(): React.JSX.Element {
       setWorkspace(next.cwd);
       setProjectDraft(false);
       void historyPromise.then((history) => {
-        threadHistoryCache.current.set(summary.id, history);
-        if (activeResume.current === summary.id) setItems(history);
+        const liveHistory = threadHistoryCache.current.get(summary.id) ?? [];
+        const merged = running ? mergeTimelineItems(history, liveHistory) : history;
+        threadHistoryCache.current.set(summary.id, merged);
+        if (activeResume.current === summary.id) {
+          setItems((current) => {
+            const nextItems = running ? mergeTimelineItems(merged, current) : merged;
+            itemsRef.current = nextItems;
+            threadHistoryCache.current.set(summary.id, nextItems);
+            return nextItems;
+          });
+        }
       }).catch((error) => {
         if (activeResume.current === summary.id) setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "대화 불러오기 실패", text: String(error) }]);
       });
@@ -2064,9 +2177,16 @@ function App(): React.JSX.Element {
 
   async function submit(input: ComposerInput, options: { forceNewThread?: boolean; provider?: ProviderId; accountId?: string; model?: string; replaceFromItemId?: string; contextPrefix?: string } = {}): Promise<void> {
     const attachmentContext = attachmentContextForModel(input.attachments);
-    const imageAttachments = input.attachments.filter((item) => item.kind === "image").map((item) => item.url ?? item.path);
+    const imageAttachments = input.attachments.flatMap((item) => {
+      if (item.kind !== "image") return [];
+      const target = item.url ?? item.path;
+      return target ? [target] : [];
+    });
     const attachmentDetails = displayAttachments(input.attachments);
-    const selectedSkills = input.skills.flatMap((name) => { const skill = composerSkillOptions.find((item) => item.name === name); return skill ? [{ name: skill.name, path: skill.path }] : []; });
+    const selectedSkills = input.skills.flatMap((name) => {
+      const skill = composerSkillOptions.find((item) => item.name === name);
+      return skill?.path ? [{ name: skill.name, path: skill.path }] : [];
+    });
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
     const visiblePrompt = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const handoffIndex = itemsRef.current.findIndex((item) => item.kind === "system" && item.title === "런타임 공유 컨텍스트");
@@ -2115,13 +2235,17 @@ function App(): React.JSX.Element {
     const existingThreadId = !options.forceNewThread && !replacingFromEdit ? thread?.id : undefined;
     const modelNotice = existingThreadId ? modelChangeItemForThread(existingThreadId, provider, sendModel, sendAccountId) : null;
     const visibleTurnItems = modelNotice ? [modelNotice, userItem] : [userItem];
-    setItems((current) => editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...current, ...visibleTurnItems]));
+    const optimisticItems = editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...itemsRef.current, ...visibleTurnItems]);
+    itemsRef.current = optimisticItems;
+    setItems(optimisticItems);
+    if (existingThreadId) threadHistoryCache.current.set(existingThreadId, optimisticItems);
     setBusy(true);
     try {
       const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
       const visibleThread: ThreadRef = { ...activeThread, runtime: composerRuntime, provider, model: sendModel, accountId: sendAccountId };
       threadRef.current = visibleThread;
       setThread(visibleThread);
+      threadHistoryCache.current.set(activeThread.id, optimisticItems);
       rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
@@ -2531,7 +2655,6 @@ function App(): React.JSX.Element {
     if (command === "plugins") { openView("plugins"); return; }
     if (command === "toggle-pin") { toggleActiveThreadPin(); return; }
     if (command === "side-chat") { void newSideChat(); return; }
-    if (command === "environment") { setEnvironmentOpen((open) => !open); return; }
     if (command === "back") { goBack(); return; }
     goForward();
   }
@@ -2638,17 +2761,27 @@ function App(): React.JSX.Element {
     else openUtility(`sidechat:${id}`);
   }
 
-  // Start a fresh side conversation: a temporary codex thread shown in the
-  // environment + right panel, removed (and deleted) when closed.
+  // Start a fresh side conversation in the active runtime, removed when closed.
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
+    if (sideChatCreatingDock) return;
+    setSideChatCreatingDock(dock);
+    if (dock === "bottom") openBottomTool("side-chat");
+    else openUtility("side-chat");
     try {
-      const seed = providers.settings?.provider === "codex" ? model : "gpt-5.4";
-      const created = await window.devilCodex.createThread({ cwd: workspace, model: seed, runtime: "codex", provider: "codex" });
+      const created = await window.devilCodex.createThread({
+        cwd: workspace,
+        model: sideConversationModel,
+        runtime: sideConversationRuntime,
+        provider: sideConversationProvider,
+        accountId: sideConversationAccountId,
+      });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
       openSideTab(created.id, label, dock);
     } catch (error) {
       setExternalError(`사이드 채팅 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSideChatCreatingDock(null);
     }
   }
 
@@ -2878,7 +3011,7 @@ function App(): React.JSX.Element {
         <div className={`content-col${environmentOpen && view === "thread" ? " env-open" : ""}`}>
         {view === "thread" ? (
           <>
-            <div className="thread-view" ref={threadViewRef} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
+            <div className="thread-view" ref={threadViewRef} style={{ "--composer-clearance": `${composerClearance}px` } as CSSProperties} onScroll={(event) => syncThreadScrollState(event.currentTarget)}>
               {agentRuntime === "codex" && runtime.state !== "connected" && <button className="runtime-banner" onClick={() => void connect()}>{runtime.detail} · 다시 연결</button>}
               {threadFindOpen && <ThreadFind query={threadFindQuery} count={visibleItems.length} onChange={setThreadFindQuery} onClose={() => { setThreadFindOpen(false); setThreadFindQuery(""); }} />}
               {timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
@@ -2887,9 +3020,9 @@ function App(): React.JSX.Element {
                 return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
-            <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
+            <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -2906,10 +3039,10 @@ function App(): React.JSX.Element {
         )}
         </div>
 
-        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
+        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} sideChatCreating={sideChatCreatingDock === "right"} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
         </div>
 
-        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentCtx={{ model: providers.settings?.provider === "codex" ? model : "gpt-5.4", provider: "codex", cwd: workspace, providers: providers.settings?.providers ?? [] }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
+        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onNewSideChat={() => void newSideChat("bottom")} sideChatCreating={sideChatCreatingDock === "bottom"} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
       </section>
       {gitDialogOpen && <GitWorkflowDialog cwd={workspace} changes={changes} onClose={() => setGitDialogOpen(false)} onRefresh={() => refreshChanges()} onError={setExternalError} />}
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}

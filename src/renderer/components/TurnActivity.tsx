@@ -301,6 +301,23 @@ function latestRunningEntry(entries: ThreadActivityEntry[]): ThreadActivityEntry
   return undefined;
 }
 
+function normalizedActivityDetail(value: string | undefined): string {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function visibleActivityEntries(entries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const seenFailedMessages = new Set<string>();
+  return entries.filter((entry) => {
+    if (entry.kind !== "message" || entry.status !== "failed") return true;
+    const detail = normalizedActivityDetail(entry.detail);
+    if (!detail) return true;
+    const key = `${entry.title ?? ""}:${detail}`;
+    if (seenFailedMessages.has(key)) return false;
+    seenFailedMessages.add(key);
+    return true;
+  });
+}
+
 function thinkingStatusText(entry: ThreadActivityEntry | undefined): string {
   if (!entry) return "생각중";
   if (entry.kind === "command") return commandKind(entry.title) === "search" ? "코드 살펴보는 중" : commandKind(entry.title) === "read" ? "파일 읽는 중" : "명령 실행 중";
@@ -314,7 +331,7 @@ function thinkingStatusText(entry: ThreadActivityEntry | undefined): string {
 }
 
 export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; onOpenFile: (path: string) => void }): React.JSX.Element {
-  const entries = item.activities ?? [];
+  const entries = visibleActivityEntries(item.activities ?? []);
   const hasRunningEntry = entries.some((entry) => entry.status === "inProgress");
   const running = item.status === "inProgress" || hasRunningEntry;
   const failed = !running && (item.status === "failed" || entries.some((entry) => entry.status === "failed"));
@@ -356,7 +373,7 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
           <span className="turn-activity-live-text">{liveStatus}</span>
         </span>
       </span>
-      <ChevronRight size={16} />
+      <span className="turn-activity-chevron" aria-hidden="true"><ChevronRight size={16} /></span>
     </button>
     <AnimatePresence initial={false}>
       {!open && diagnosticsEntries.length > 0 && <motion.div className="activity-diagnostic-strip" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={motionTransition}><Activity size={14} /><span>Provider 진단</span><small>{diagnosticSummary(diagnosticsEntries[0])}</small></motion.div>}

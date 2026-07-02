@@ -2,7 +2,7 @@ import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, F
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { BrowserState, ProviderAuthStatus, ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry } from "../../shared/contracts";
+import type { AgentRuntimeId, BrowserState, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry } from "../../shared/contracts";
 import type { ToolKind } from "./ToolLauncherMenu";
 import { WorkspaceFilesPanel } from "./WorkspaceFilesPanel";
 import { MarkdownContent } from "./MarkdownContent";
@@ -30,7 +30,7 @@ const INSPECTOR_SCRIPT = `(function(){return new Promise(function(resolve){
   window.__devilCancelPick=function(){cleanup();resolve(null);};
   document.addEventListener('mousemove',move,true);document.addEventListener('click',click,true);document.addEventListener('keydown',key,true);
 });})();`;
-type SideChatTarget = { thread: { id: string; label: string }; model: string; provider: ProviderId; cwd: string; providers: ProviderInfo[] };
+type SideChatTarget = { thread: { id: string; label: string }; runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
 const sideChatModelPageSize = 10;
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const SIDE_CHAT_DRAFTS_KEY = "devil-codex:side-chat-drafts";
@@ -61,21 +61,36 @@ function writeSideChatDraft(threadId: string, draft: string): void {
 }
 
 function providerUsableForPicker(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
-  if (!provider.models.length) return false;
   if (provider.kind === "login") {
     if (provider.id === "codex") return provider.modelsLoaded || provider.models.length > 0;
     return Boolean(provider.authProvider && auth[provider.authProvider] && provider.modelsLoaded);
   }
-  return provider.keyRequired ? provider.credentialSource !== "none" && provider.modelsLoaded : provider.modelsLoaded;
+  if (provider.keyRequired) return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
+  return provider.modelsLoaded;
 }
 
-function SideChatModelPicker({ value, providers, onChange }: { value: { provider: ProviderId; model: string }; providers: ProviderInfo[]; onChange: (pick: { provider: ProviderId; model: string }) => void }): React.JSX.Element {
+function accountModels(provider: ProviderInfo, account: ProviderAccount | undefined): ProviderModel[] {
+  return account?.models?.length ? account.models : provider.models;
+}
+
+function accountLabel(account: ProviderAccount): string {
+  return account.email || account.label || account.id;
+}
+
+function accountKey(provider: ProviderInfo, account?: ProviderAccount): string {
+  return `${provider.id}:${account?.id ?? "default"}`;
+}
+
+type SideChatPick = { provider: ProviderId; accountId?: string; model: string };
+
+function SideChatModelPicker({ value, providers, onChange }: { value: SideChatPick; providers: ProviderInfo[]; onChange: (pick: SideChatPick) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [auth, setAuth] = useState<ProviderAuthStatus>(emptyAuth);
   const [expanded, setExpanded] = useState<Set<ProviderId>>(() => new Set([value.provider]));
-  const [visibleCounts, setVisibleCounts] = useState<Partial<Record<ProviderId, number>>>({});
+  const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(() => new Set([`${value.provider}:${value.accountId ?? "default"}`]));
+  const [visibleCounts, setVisibleCounts] = useState<Partial<Record<string, number>>>({});
   const [menuPos, setMenuPos] = useState({ left: 0, top: 0 });
   const close = (): void => setOpen(false);
   useOutsideDismiss(root, close, open, menuRef);
@@ -87,20 +102,27 @@ function SideChatModelPicker({ value, providers, onChange }: { value: { provider
 
   const connected = providers.filter((provider) => providerUsableForPicker(provider, auth));
   const activeProvider = connected.find((provider) => provider.id === value.provider) ?? providers.find((provider) => provider.id === value.provider);
-  const activeModel = activeProvider?.models.find((model) => model.id === value.model);
+  const activeAccount = activeProvider?.accounts.find((account) => account.id === value.accountId) ?? activeProvider?.accounts[0];
+  const activeModel = activeProvider ? accountModels(activeProvider, activeAccount).find((model) => model.id === value.model) : undefined;
+  const authedFor = (provider: ProviderInfo): boolean => provider.authProvider ? auth[provider.authProvider] : false;
+  const visibleAccountsFor = (provider: ProviderInfo): ProviderAccount[] => provider.kind === "login" && !authedFor(provider) ? [] : provider.accounts;
 
   useEffect(() => {
-    const selectedStillUsable = connected.some((provider) => provider.id === value.provider && provider.models.some((model) => model.id === value.model));
-    const fallback = connected[0]?.models[0];
-    if (!selectedStillUsable && connected[0] && fallback) onChange({ provider: connected[0].id, model: fallback.id });
-  }, [connected, onChange, value.model, value.provider]);
+    const selectedStillUsable = connected.some((provider) => provider.id === value.provider
+      && (visibleAccountsFor(provider).length ? visibleAccountsFor(provider) : [undefined]).some((account) => (!account?.id || account.id === value.accountId) && accountModels(provider, account).some((model) => model.id === value.model)));
+    const fallbackProvider = connected[0];
+    const fallbackAccount = fallbackProvider ? (visibleAccountsFor(fallbackProvider)[0] ?? undefined) : undefined;
+    const fallback = fallbackProvider ? accountModels(fallbackProvider, fallbackAccount)[0] : undefined;
+    if (!selectedStillUsable && fallbackProvider && fallback) onChange({ provider: fallbackProvider.id, accountId: fallbackAccount?.id, model: fallback.id });
+  }, [connected, onChange, value.accountId, value.model, value.provider]);
 
   useEffect(() => {
     if (!open) {
       setVisibleCounts({});
       setExpanded(new Set([value.provider]));
+      setExpandedAccounts(new Set([`${value.provider}:${value.accountId ?? "default"}`]));
     }
-  }, [open, value.provider]);
+  }, [open, value.accountId, value.provider]);
 
   const updateMenuPosition = (): void => {
     const rect = root.current?.getBoundingClientRect();
@@ -134,19 +156,32 @@ function SideChatModelPicker({ value, providers, onChange }: { value: { provider
       return next;
     });
   };
-  const visibleCount = (provider: ProviderInfo): number => {
-    const selectedIndex = provider.id === value.provider ? provider.models.findIndex((item) => item.id === value.model) : -1;
-    const selectedPage = selectedIndex >= 0 ? Math.ceil((selectedIndex + 1) / sideChatModelPageSize) * sideChatModelPageSize : sideChatModelPageSize;
-    return Math.min(provider.models.length, Math.max(visibleCounts[provider.id] ?? sideChatModelPageSize, selectedPage));
+  const toggleAccount = (provider: ProviderInfo, account?: ProviderAccount): void => {
+    const key = accountKey(provider, account);
+    setExpandedAccounts((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
-  const showMore = (provider: ProviderInfo): void => setVisibleCounts((current) => ({ ...current, [provider.id]: Math.min(provider.models.length, visibleCount(provider) + sideChatModelPageSize) }));
-  const choose = (provider: ProviderInfo, model: { id: string }): void => {
-    onChange({ provider: provider.id, model: model.id });
+  const visibleCount = (provider: ProviderInfo, account?: ProviderAccount): number => {
+    const models = accountModels(provider, account);
+    const selectedIndex = provider.id === value.provider && (!account?.id || account.id === value.accountId) ? models.findIndex((item) => item.id === value.model) : -1;
+    const selectedPage = selectedIndex >= 0 ? Math.ceil((selectedIndex + 1) / sideChatModelPageSize) * sideChatModelPageSize : sideChatModelPageSize;
+    return Math.min(models.length, Math.max(visibleCounts[accountKey(provider, account)] ?? sideChatModelPageSize, selectedPage));
+  };
+  const showMore = (provider: ProviderInfo, account?: ProviderAccount): void => {
+    const models = accountModels(provider, account);
+    setVisibleCounts((current) => ({ ...current, [accountKey(provider, account)]: Math.min(models.length, visibleCount(provider, account) + sideChatModelPageSize) }));
+  };
+  const choose = (provider: ProviderInfo, account: ProviderAccount | undefined, model: { id: string }): void => {
+    onChange({ provider: provider.id, accountId: account?.id, model: model.id });
     close();
   };
 
   return <div className="side-chat-model-picker" ref={root} data-popover-root>
-    <button type="button" className="side-chat-model-trigger" onClick={() => setOpen((current) => !current)} title={`${activeProvider?.label ?? value.provider} · ${activeModel?.label ?? value.model}`}>
+    <button type="button" className="side-chat-model-trigger" onClick={() => setOpen((current) => !current)} title={`${activeProvider?.label ?? value.provider}${activeAccount ? ` · ${accountLabel(activeAccount)}` : ""} · ${activeModel?.label ?? value.model}`}>
       <span>{activeModel?.label ?? value.model}</span>
       <ChevronDown size={13} />
     </button>
@@ -157,22 +192,43 @@ function SideChatModelPicker({ value, providers, onChange }: { value: { provider
           {connected.length === 0 && <p className="model-provider-empty">설정 → 연결에서 사용 가능한 모델을 먼저 연결하세요.</p>}
           {connected.map((provider) => {
             const isExpanded = expanded.has(provider.id);
-            const count = visibleCount(provider);
-            const remaining = provider.models.length - count;
+            const visibleAccounts = visibleAccountsFor(provider);
+            const selectedAccount = visibleAccounts.find((account) => account.id === value.accountId) ?? visibleAccounts[0];
+            const selectedModel = accountModels(provider, selectedAccount).find((model) => model.id === value.model);
             return <div className="model-picker-provider-group" key={provider.id}>
               <div className="model-picker-provider-head">
                 <button type="button" className="model-provider-toggle" aria-expanded={isExpanded} onClick={() => toggleProvider(provider.id)}>
                   {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <span><strong>{provider.label}</strong><small>{provider.id === value.provider && activeModel ? activeModel.label : `${provider.models.length}개 모델`}</small></span>
+                  <span><strong>{provider.label}</strong><small>{provider.id === value.provider && selectedModel ? `${selectedAccount ? `${accountLabel(selectedAccount)} · ` : ""}${selectedModel.label}` : `${visibleAccounts.length || 1}개 계정`}</small></span>
                 </button>
               </div>
               <AnimatePresence initial={false}>
                 {isExpanded && <motion.div className="model-provider-options" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }}>
-                  {provider.models.slice(0, count).map((model) => <button type="button" className="model-option" key={model.id} onClick={() => choose(provider, model)}>
-                    <span className="model-option-label"><strong>{model.label || model.id}</strong>{model.capability && <small><i className={`cap ${model.capability.diagnostics}`}>{model.capability.diagnostics}</i><i>tool {model.capability.tools ?? "unknown"}</i><i>img {model.capability.images ?? "unknown"}</i></small>}</span>
-                    {provider.id === value.provider && model.id === value.model && <Check size={15} />}
-                  </button>)}
-                  {remaining > 0 && <button type="button" className="model-show-more" onClick={() => showMore(provider)}><span>더보기</span><small>{Math.min(sideChatModelPageSize, remaining)}개 더 보기 · {count}/{provider.models.length}</small></button>}
+                  {(visibleAccounts.length ? visibleAccounts : [undefined]).map((account) => {
+                    const models = accountModels(provider, account);
+                    const count = visibleCount(provider, account);
+                    const remaining = models.length - count;
+                    const selectedHere = provider.id === value.provider && (!account?.id || account.id === value.accountId);
+                    const accountExpanded = expandedAccounts.has(accountKey(provider, account));
+                    const accountTitle = account ? accountLabel(account) : provider.label;
+                    const accountDetail = account
+                      ? account.credentialSource === "environment" ? "환경 변수" : account.credentialKind === "local" ? "로컬" : `${models.length}개 모델`
+                      : `${models.length}개 모델`;
+                    return <div className="model-account-group" key={account?.id ?? `${provider.id}:default`}>
+                      <button type="button" className={`model-account-head ${selectedHere ? "active" : ""}`} aria-expanded={accountExpanded} onClick={() => toggleAccount(provider, account)}>
+                        {accountExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        <span><strong>{accountTitle}</strong><small>{selectedHere && selectedModel ? selectedModel.label : accountDetail}</small></span>
+                        {selectedHere && <Check size={14} />}
+                      </button>
+                      {accountExpanded && <>
+                        {models.slice(0, count).map((model) => <button type="button" className="model-option" key={`${account?.id ?? "default"}:${model.id}`} onClick={() => choose(provider, account, model)}>
+                          <span className="model-option-label"><strong>{model.label || model.id}</strong>{model.capability && <small><i className={`cap ${model.capability.diagnostics}`}>{model.capability.diagnostics}</i><i>tool {model.capability.tools ?? "unknown"}</i><i>img {model.capability.images ?? "unknown"}</i></small>}</span>
+                          {selectedHere && model.id === value.model && <Check size={15} />}
+                        </button>)}
+                        {remaining > 0 && <button type="button" className="model-show-more" onClick={() => showMore(provider, account)}><span>더보기</span><small>{Math.min(sideChatModelPageSize, remaining)}개 더 보기 · {count}/{models.length}</small></button>}
+                      </>}
+                    </div>;
+                  })}
                 </motion.div>}
               </AnimatePresence>
             </div>;
@@ -184,11 +240,11 @@ function SideChatModelPicker({ value, providers, onChange }: { value: { provider
   </div>;
 }
 
-export function ToolContent({ active, workspace, fileTarget, changes, selectedDiff, diffBusy, onBrowserAsk, subagents, onOpenSubagent, onNewSideChat, onSelectDiff, onSendReviewComment, onApplyHunk }: { active: ContentTool; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; selectedDiff: WorkspaceDiff | null; diffBusy: boolean; onBrowserAsk?: (attachment: import("../../shared/contracts").ThreadAttachment, text?: string) => void; subagents?: Array<{ id: string; label: string }>; onOpenSubagent?: (id: string, label: string) => void; onNewSideChat?: () => void; onSelectDiff: (file: WorkspaceChange) => void; onSendReviewComment: (input: { path: string; line: number; side: "old" | "new"; text: string }) => void; onApplyHunk: (input: { path: string; hunk: string; action: "stage" | "revert" }) => Promise<void> }): React.JSX.Element {
+export function ToolContent({ active, workspace, fileTarget, changes, selectedDiff, diffBusy, onBrowserAsk, subagents, onOpenSubagent, onNewSideChat, sideChatCreating, onSelectDiff, onSendReviewComment, onApplyHunk }: { active: ContentTool; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; selectedDiff: WorkspaceDiff | null; diffBusy: boolean; onBrowserAsk?: (attachment: import("../../shared/contracts").ThreadAttachment, text?: string) => void; subagents?: Array<{ id: string; label: string }>; onOpenSubagent?: (id: string, label: string) => void; onNewSideChat?: () => void; sideChatCreating?: boolean; onSelectDiff: (file: WorkspaceChange) => void; onSendReviewComment: (input: { path: string; line: number; side: "old" | "new"; text: string }) => void; onApplyHunk: (input: { path: string; hunk: string; action: "stage" | "revert" }) => Promise<void> }): React.JSX.Element {
   if (active === "review") return <div className="utility-review"><div className="review-summary"><h2>변경 사항</h2><p><i>+{changes.additions}</i> <b>-{changes.deletions}</b> · {changes.files.length}개 파일</p></div><div className="review-files">{changes.files.map((file) => <button className={selectedDiff?.path === file.path ? "active" : ""} key={`${file.status}:${file.path}`} onClick={() => onSelectDiff(file)}><span>{file.status === "??" ? "새 파일" : file.status}</span><strong>{file.path}</strong><em><i>+{file.additions}</i> <b>-{file.deletions}</b></em></button>)}</div><DiffPreview diff={selectedDiff} loading={diffBusy} onSend={onSendReviewComment} onApplyHunk={onApplyHunk} /></div>;
   if (active === "files") return <WorkspaceFilesPanel workspace={workspace} target={fileTarget} />;
   if (active === "side-chat") return <div className="side-chat-launcher">
-    <button type="button" className="side-chat-new" onClick={() => onNewSideChat?.()}><Plus size={15} />새 사이드 채팅</button>
+    <button type="button" className="side-chat-new" disabled={sideChatCreating} onClick={() => onNewSideChat?.()}>{sideChatCreating ? <span className="side-chat-spinner" /> : <Plus size={15} />}{sideChatCreating ? "사이드 채팅 만드는 중…" : "새 사이드 채팅"}</button>
     {(subagents ?? []).length > 0 && <div className="side-chat-launcher-caption">사이드 채팅 · 하위 에이전트</div>}
     {(subagents ?? []).map((agent) => <button type="button" key={agent.id} className="side-chat-launcher-row" onClick={() => onOpenSubagent?.(agent.id, agent.label)}><Bot size={15} /><span>{agent.label}</span></button>)}
     {(subagents ?? []).length === 0 && <p className="side-chat-launcher-empty">아직 대화가 없습니다. 새 사이드 채팅으로 시작하면 여기 목록에 추가됩니다.</p>}
@@ -567,25 +623,25 @@ const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
 
 // Conversation state is lifted to the parent (history/onHistory) so it survives
 // tab switches and the optimistic message isn't lost on reload.
-export function SideChat({ target, history, busy, pick, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: { provider: ProviderId; model: string }; onPick: (pick: { provider: ProviderId; model: string }) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
-  const { thread, cwd, providers } = target;
+export function SideChat({ target, history, busy, pick, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
+  const { thread, cwd, providers, runtime, accountId } = target;
   const [loaded, setLoaded] = useState(history !== undefined);
   const [draft, setDraft] = useState(() => readSideChatDraft(thread.id));
   const [sending, setSending] = useState(false);
   // Picked model is persisted by the parent (per subagent) so it survives tab switches.
-  const picked = pick ?? { provider: target.provider, model: target.model };
+  const picked = pick ?? { provider: target.provider, accountId: target.accountId, model: target.model };
   const attach = useAttachments();
   const fileInput = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => { writeSideChatDraft(thread.id, draft); }, [thread.id, draft]);
 
   const load = useCallback(async (): Promise<void> => {
-    try { onHistory(await window.devilCodex.readThread({ id: thread.id })); }
+    try { onHistory(await window.devilCodex.readThread({ id: thread.id, runtime, accountId })); }
     catch { onHistory([]); }
     finally { setLoaded(true); }
   // onHistory identity changes per render; intentionally only depend on thread.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thread.id]);
+  }, [thread.id, runtime, accountId]);
 
   // Seed past conversation once; new turns stream in live via app-server events.
   useEffect(() => { if (history === undefined) void load(); else setLoaded(true); }, [thread.id, history, load]);
@@ -609,14 +665,14 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
     try {
       // Best-effort resume: a freshly created side-chat thread has no rollout yet
       // (already loaded from createThread), so a failed resume is fine — proceed.
-      if (picked.provider === "codex") await window.devilCodex.resumeThread({ id: thread.id, model: picked.model }).catch(() => undefined);
+      if (runtime === "codex" && picked.provider === "codex") await window.devilCodex.resumeThread({ id: thread.id, model: picked.model }).catch(() => undefined);
       console.log("[devil-sidechat] send", { threadId: thread.id, ...picked });
-      await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: picked.model, provider: picked.provider, subagent: true, attachments: images, attachmentDetails: atts });
+      await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: picked.model, runtime, provider: picked.provider, accountId: picked.accountId ?? accountId, subagent: true, attachments: images, attachmentDetails: atts });
       // Fallback: live events may not stream for a non-active thread; poll the
       // thread until the agent reply lands, then show the authoritative history.
       for (let attempt = 0; attempt < 40; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 750));
-        const fresh = await window.devilCodex.readThread({ id: thread.id }).catch(() => [] as ThreadHistoryItem[]);
+        const fresh = await window.devilCodex.readThread({ id: thread.id, runtime, accountId }).catch(() => [] as ThreadHistoryItem[]);
         if (fresh.filter((m) => m.kind === "agent").length > baseAgentCount) { onHistory(fresh); break; }
       }
     } catch (error) {
