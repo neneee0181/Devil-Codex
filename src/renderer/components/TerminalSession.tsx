@@ -306,12 +306,23 @@ export function TerminalSession({
     };
     resizeTerminal.current = resize;
     const resizeTimers: Array<ReturnType<typeof setTimeout>> = [];
-    const scheduleResize = (): void => {
-      requestAnimationFrame(resize);
-      [60, 180, 360].forEach((delay) => resizeTimers.push(setTimeout(resize, delay)));
+    const scheduleResize = (delays = [40, 120, 280, 520, 900]): void => {
+      requestAnimationFrame(() => requestAnimationFrame(resize));
+      delays.forEach((delay) => resizeTimers.push(setTimeout(resize, delay)));
     };
-    const observer = new ResizeObserver(() => requestAnimationFrame(resize));
+    const observer = new ResizeObserver(() => scheduleResize([30, 120]));
     observer.observe(host.current);
+    const dockEl = host.current.closest(".bottom-dock");
+    if (dockEl) observer.observe(dockEl);
+    const onTransitionEnd = (event: Event): void => {
+      if (event.target === dockEl) scheduleResize([0, 80, 220]);
+    };
+    dockEl?.addEventListener("transitionend", onTransitionEnd);
+    if ("fonts" in document) {
+      void document.fonts.ready.then(() => {
+        if (!disposed) scheduleResize([0, 140]);
+      });
+    }
 
     // The PTY can emit its first prompt before createTerminal resolves and sets
     // sessionId; buffer those early chunks and flush once the id is known.
@@ -419,7 +430,8 @@ export function TerminalSession({
     hostEl.addEventListener("copy", onCopy);
 
     void (async () => {
-      try { fitter.fit(); } catch { /* host not laid out yet */ }
+      resize();
+      scheduleResize([0, 80, 180]);
       try {
         const session = await window.devilCodex.createTerminal({ cwd: workspace, cols: view.cols || 100, rows: view.rows || 24, key: terminalKey });
         if (disposed) {
@@ -451,6 +463,7 @@ export function TerminalSession({
     return () => {
       disposed = true;
       observer.disconnect();
+      dockEl?.removeEventListener("transitionend", onTransitionEnd);
       stream();
       onData.dispose();
       resizeTimers.forEach(clearTimeout);

@@ -10,12 +10,12 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-03T10:52:00+09:00
+Last: 2026-07-03T11:08:00+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
-- Releasing `0.1.19`: `/` composer suggestions merge Codex plugin skills and Claude MCP/plugin skills through IPC helpers; Claude mode lists Claude MCP sources.
+- Releasing `0.1.20`: bottom terminal first-open fit now waits for dock transition/font/layout settling and resizes the PTY after initial mount.
 - Fixed Claude transcript ordering: JSONL import classifies assistant text before tool_use/tool_result as activity "작업 메모" instead of standalone final agent messages, preventing duplicated/out-of-order narration after steering or sync.
 - Token-spend finding: Claude Code path calls `@anthropic-ai/claude-agent-sdk` directly; high usage is mostly resumed session context + selected prefixes + large tool/output history, not Codex proxy double-routing.
 - Provider usage UI now matches Claude CLI direction: quota rows display `% 사용` from `usedPercent`; Claude parser accepts more percent/ratio field names, carries parent context into nested windows so Fable model buckets can be labeled, and no longer fabricates a 0% Fable row when missing.
