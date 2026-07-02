@@ -38,9 +38,23 @@ function resetValue(window: Record<string, unknown> | undefined): string | numbe
 }
 
 function usageValue(window: Record<string, unknown>): { kind: "used" | "remaining"; value: unknown } | null {
-  const remaining = window.remaining_percent ?? window.percent_remaining ?? window.remainingPercent ?? window.percentRemaining;
+  const remaining = window.remaining_percent ?? window.percent_remaining ?? window.remainingPercent ?? window.percentRemaining ?? window.remaining_percentage ?? window.remainingPercentage;
   if (remaining != null) return { kind: "remaining", value: remaining };
-  const used = window.used_percent ?? window.percent_used ?? window.utilization ?? window.usedPercent ?? window.percentUsed ?? window.used_percentage ?? window.usedPercentage;
+  const used = window.used_percent
+    ?? window.percent_used
+    ?? window.utilization
+    ?? window.usedPercent
+    ?? window.percentUsed
+    ?? window.used_percentage
+    ?? window.usedPercentage
+    ?? window.usage_percent
+    ?? window.usagePercent
+    ?? window.usage_percentage
+    ?? window.usagePercentage
+    ?? window.percent
+    ?? window.percentage
+    ?? window.ratio
+    ?? window.fraction;
   if (used != null) return { kind: "used", value: used };
   const consumed = Number(window.used ?? window.current ?? window.consumed ?? window.usage);
   const limit = Number(window.limit ?? window.total ?? window.maximum ?? window.max);
@@ -91,9 +105,10 @@ function usageWindowOrder(label: string): number {
   return 10;
 }
 
-function claudeUsageWindowLabel(path: string, window: Record<string, unknown>): string {
+function claudeUsageWindowLabel(path: string, window: Record<string, unknown>, context = ""): string {
   const explicit = window.label ?? window.name ?? window.display_name ?? window.displayName ?? window.window_label ?? window.windowLabel;
   const hints = [
+    context,
     path,
     explicit,
     window.model,
@@ -107,6 +122,13 @@ function claudeUsageWindowLabel(path: string, window: Record<string, unknown>): 
     window.bucket,
     window.tier,
     window.plan,
+    window.metric,
+    window.metric_name,
+    window.metricName,
+    window.scope,
+    window.type,
+    window.model_family,
+    window.modelFamily,
   ].filter((value): value is string => typeof value === "string");
   const text = hints.join(" ").toLowerCase();
   if (/session|current.?session|conversation/.test(text)) return "현재 세션";
@@ -127,6 +149,30 @@ function claudeUsageWindowOrder(label: string): number {
 function collectClaudeUsageWindows(body: Record<string, unknown>): ProviderUsageWindow[] {
   const windows: ProviderUsageWindow[] = [];
   const seen = new Set<string>();
+  const contextHint = (object: Record<string, unknown>): string => [
+    object.label,
+    object.name,
+    object.display_name,
+    object.displayName,
+    object.model,
+    object.model_name,
+    object.modelName,
+    object.limit,
+    object.limit_id,
+    object.limitId,
+    object.limit_name,
+    object.limitName,
+    object.bucket,
+    object.tier,
+    object.plan,
+    object.metric,
+    object.metric_name,
+    object.metricName,
+    object.scope,
+    object.type,
+    object.model_family,
+    object.modelFamily,
+  ].filter((value): value is string => typeof value === "string").join(" ");
   const addWindow = (label: string, window: Record<string, unknown>): void => {
     const usage = usageValue(window);
     if (!usage) return;
@@ -138,34 +184,26 @@ function collectClaudeUsageWindows(body: Record<string, unknown>): ProviderUsage
     seen.add(key);
     windows.push(entry);
   };
-  const visit = (value: unknown, path: string, depth: number): void => {
-    if (!value || typeof value !== "object" || depth > 4) return;
+  const visit = (value: unknown, path: string, depth: number, context: string): void => {
+    if (!value || typeof value !== "object" || depth > 8) return;
     if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, `${path}.${index}`, depth + 1));
+      value.forEach((item, index) => visit(item, `${path}.${index}`, depth + 1, context));
       return;
     }
     const object = value as Record<string, unknown>;
-    addWindow(claudeUsageWindowLabel(path, object), object);
+    const ownContext = [context, path.split(".").pop(), contextHint(object)].filter(Boolean).join(" ");
+    addWindow(claudeUsageWindowLabel(path, object, ownContext), object);
     for (const [key, nested] of Object.entries(object)) {
       if (!nested || typeof nested !== "object") continue;
-      visit(nested, path ? `${path}.${key}` : key, depth + 1);
+      visit(nested, path ? `${path}.${key}` : key, depth + 1, ownContext);
     }
   };
-  visit(body, "usage", 0);
+  visit(body, "usage", 0, "");
   return windows.sort((a, b) => claudeUsageWindowOrder(a.label) - claudeUsageWindowOrder(b.label));
 }
 
 function completeClaudeUsageWindows(windows: ProviderUsageWindow[]): ProviderUsageWindow[] {
-  if (!windows.length) return windows;
-  const labels = new Set(windows.map((window) => window.label));
-  const completed = [...windows];
-  if (!labels.has("이번 주(Fable)")) {
-    const weeklyReset = windows.find((window) => window.label === "이번 주(전체 모델)")?.resetsAt
-      ?? windows.find((window) => /7\s*일|weekly|week/i.test(window.label))?.resetsAt
-      ?? null;
-    completed.push(windowEntry("이번 주(Fable)", 0, weeklyReset));
-  }
-  return completed.sort((a, b) => claudeUsageWindowOrder(a.label) - claudeUsageWindowOrder(b.label));
+  return windows.sort((a, b) => claudeUsageWindowOrder(a.label) - claudeUsageWindowOrder(b.label));
 }
 
 function collectUsageWindows(body: Record<string, unknown>, depth = 0): ProviderUsageWindow[] {

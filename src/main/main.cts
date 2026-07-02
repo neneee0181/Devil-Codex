@@ -35,7 +35,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, CodexSkillInfo, ContextUsage, ExternalTarget, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -85,8 +85,7 @@ function frontmatterValue(markdown: string, key: string): string {
   return line ? line.slice(line.indexOf(":") + 1).trim().replace(/^['"]|['"]$/g, "") : "";
 }
 
-async function listClaudeSkills(): Promise<CodexSkillInfo[]> {
-  const root = join(app.getPath("home"), ".claude", "skills");
+async function readSkillDirectory(root: string, scope: string, namePrefix = ""): Promise<CodexSkillInfo[]> {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   const skills = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry): Promise<CodexSkillInfo | null> => {
     const skillPath = join(root, entry.name, "SKILL.md");
@@ -94,9 +93,89 @@ async function listClaudeSkills(): Promise<CodexSkillInfo[]> {
     if (!markdown) return null;
     const name = frontmatterValue(markdown, "name") || entry.name;
     const description = frontmatterValue(markdown, "description") || markdown.split(/\r?\n/).find((line) => line.trim() && !line.startsWith("---"))?.trim() || "";
-    return { name, description, path: skillPath, scope: "claude", enabled: true };
+    return { name: namePrefix ? `${namePrefix}:${name}` : name, description, path: skillPath, scope, enabled: true };
   }));
-  return skills.filter((skill): skill is CodexSkillInfo => Boolean(skill?.name && skill.path)).sort((a, b) => a.name.localeCompare(b.name));
+  return skills.filter((skill): skill is CodexSkillInfo => Boolean(skill?.name && skill.path));
+}
+
+async function listClaudeSkills(): Promise<CodexSkillInfo[]> {
+  const base = await readSkillDirectory(join(app.getPath("home"), ".claude", "skills"), "claude");
+  // Installed Claude plugins carry their own skills/ directory; the CLI shows
+  // them namespaced as `plugin:skill`, so mirror that naming here.
+  const pluginSkills: CodexSkillInfo[] = [];
+  try {
+    const registryPath = join(app.getPath("home"), ".claude", "plugins", "installed_plugins.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as { plugins?: Record<string, Array<{ installPath?: string }>> };
+    for (const [pluginKey, installs] of Object.entries(registry.plugins ?? {})) {
+      const pluginName = pluginKey.split("@")[0] ?? pluginKey;
+      const installPath = installs?.[installs.length - 1]?.installPath;
+      if (!installPath) continue;
+      pluginSkills.push(...await readSkillDirectory(join(installPath, "skills"), "claude-plugin", pluginName));
+    }
+  } catch { /* No plugin registry — base skills only. */ }
+  const seen = new Set(base.map((skill) => skill.name));
+  const merged = [...base, ...pluginSkills.filter((skill) => !seen.has(skill.name))];
+  return merged.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Codex desktop installs marketplace plugins (Notion, GitHub, ...) under
+// ~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/skills, but the CLI
+// app-server's skills/list does not register them, so scan the cache directly.
+async function listCodexPluginSkills(): Promise<CodexSkillInfo[]> {
+  const cacheRoot = join(app.getPath("home"), ".codex", "plugins", "cache");
+  const skills: CodexSkillInfo[] = [];
+  const marketplaces = await readdir(cacheRoot, { withFileTypes: true }).catch(() => []);
+  for (const marketplace of marketplaces) {
+    if (!marketplace.isDirectory()) continue;
+    const plugins = await readdir(join(cacheRoot, marketplace.name), { withFileTypes: true }).catch(() => []);
+    for (const plugin of plugins) {
+      if (!plugin.isDirectory()) continue;
+      const versions = await readdir(join(cacheRoot, marketplace.name, plugin.name), { withFileTypes: true }).catch(() => []);
+      const version = versions.filter((entry) => entry.isDirectory()).at(-1);
+      if (!version) continue;
+      skills.push(...await readSkillDirectory(join(cacheRoot, marketplace.name, plugin.name, version.name, "skills"), "plugin"));
+    }
+  }
+  const seen = new Set<string>();
+  return skills.filter((skill) => !seen.has(skill.name) && seen.add(skill.name)).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function mcpServerNamesFrom(source: unknown): string[] {
+  if (!source || typeof source !== "object") return [];
+  const servers = (source as { mcpServers?: Record<string, unknown> }).mcpServers;
+  return servers && typeof servers === "object" ? Object.keys(servers) : [];
+}
+
+// Claude Code loads MCP servers from ~/.claude.json (global + per-project),
+// the project's .mcp.json, and installed plugin .mcp.json files. List them so
+// the composer's "/" menu can mention them like stock Codex does.
+async function listClaudeMcpServers(input: { cwd?: string } = {}): Promise<McpServerInfo[]> {
+  const home = app.getPath("home");
+  const names = new Set<string>();
+  try {
+    const config = JSON.parse(await readFile(join(home, ".claude.json"), "utf8")) as { mcpServers?: Record<string, unknown>; projects?: Record<string, { mcpServers?: Record<string, unknown> }> };
+    for (const name of mcpServerNamesFrom(config)) names.add(name);
+    if (input.cwd) for (const name of mcpServerNamesFrom(config.projects?.[input.cwd])) names.add(name);
+  } catch { /* Missing config is fine. */ }
+  if (input.cwd) {
+    try {
+      const project = JSON.parse(await readFile(join(input.cwd, ".mcp.json"), "utf8"));
+      for (const name of mcpServerNamesFrom(project)) names.add(name);
+    } catch { /* No project .mcp.json. */ }
+  }
+  try {
+    const registryPath = join(home, ".claude", "plugins", "installed_plugins.json");
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as { plugins?: Record<string, Array<{ installPath?: string }>> };
+    for (const installs of Object.values(registry.plugins ?? {})) {
+      const installPath = installs?.[installs.length - 1]?.installPath;
+      if (!installPath) continue;
+      try {
+        const pluginMcp = JSON.parse(await readFile(join(installPath, ".mcp.json"), "utf8"));
+        for (const name of mcpServerNamesFrom(pluginMcp)) names.add(name);
+      } catch { /* Plugin without MCP config. */ }
+    }
+  } catch { /* No plugin registry. */ }
+  return [...names].sort().map((name) => ({ name, authStatus: "unsupported", tools: [], resources: 0 }));
 }
 import { createGitWorktree, listGitWorktrees } from "./worktree-service.cjs";
 import { BrowserViewManager } from "./browser-view.cjs";
@@ -1308,6 +1387,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("update:install", () => installUpdate(() => windowRef));
   ipcMain.handle("subagent:info", (_event, input) => providerReconciler.getSubagentInfo(input.id));
   ipcMain.handle("claude:skills", () => listClaudeSkills());
+  ipcMain.handle("claude:mcp-list", (_event, input) => listClaudeMcpServers(input ?? {}));
+  ipcMain.handle("codex:plugin-skills", () => listCodexPluginSkills());
   ipcMain.handle("workspace:choose", async () => {
     const result = await dialog.showOpenDialog(windowRef!, { properties: ["openDirectory", "createDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;

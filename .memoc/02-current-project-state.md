@@ -226,6 +226,9 @@ See `.memoc/worklog/` for full shared activity history.
 - New project creation now asks for a project name before creating the folder and saves it as alias. Renderer persists running thread ids to localStorage so Ctrl+R can restore in-progress UI state while main process continues the turn.
 - Bottom dock resize now triggers thread bottom stabilization when the user is at the bottom, preventing the composer from covering the newest chat content.
 - Steering interrupt ordering now suppresses late item events from the interrupted turn and removes its stale standalone agent answer before sending the queued steering prompt.
+- Composer `/` suggestions now include Codex plugin skills plus Claude MCP/plugin sources, and Claude JSONL import keeps tool-adjacent assistant narration inside the activity timeline instead of duplicating it as final chat.
+- Provider quota cards now display used percent like Claude CLI, and Claude usage parsing recognizes more usage-percent field names plus nested parent context for Fable buckets while avoiding fake 0% Fable rows.
+- Timeline merge dedupes final agent answers semantically by turn/text, preventing live item + synced history from rendering the same final answer twice.
 - Electron app was manually verified: runtime connection, thread creation, and a real `gpt-5.4` turn returned `clean timeline`.
 - Electron app was manually verified: app-server returned existing workspace threads and resumed a selected thread.
 - External proxy operation is not the desired end-user architecture; protocol adapters should live inside `devil-codex` where feasible.

@@ -382,7 +382,7 @@ function modelKey(value: SentModelState): string {
 }
 
 function agentMessageKey(item: ThreadHistoryItem): string {
-  return item.id || `${item.turnId ?? ""}:${item.text}`;
+  return `agent:${item.turnId ?? ""}:${item.text.trim()}`;
 }
 
 function hasAgentMessageForTurn(items: ThreadHistoryItem[], turnId: string): boolean {
@@ -404,9 +404,9 @@ function removeAgentMessagesForTurn(items: ThreadHistoryItem[], turnId: string):
 
 function timelineItemKey(item: ThreadHistoryItem): string {
   if (item.kind === "user") return userTimelineKey(item);
-  if (item.id) return item.id;
   if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;
-  if (item.kind === "agent" && item.turnId) return `agent:${item.turnId}:${item.text}`;
+  if (item.kind === "agent") return agentMessageKey(item);
+  if (item.id) return item.id;
   return `${item.kind}:${item.turnId ?? ""}:${item.text ?? ""}`;
 }
 
@@ -434,6 +434,30 @@ function dedupePreAnswerUserItems(items: ThreadHistoryItem[]): ThreadHistoryItem
     else seen.set(key, index);
   }
   return remove.size ? items.filter((_, index) => !remove.has(index)) : items;
+}
+
+function dedupeAgentItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const seen = new Set<string>();
+  const next: ThreadHistoryItem[] = [];
+  let changed = false;
+  for (const item of items) {
+    if (item.kind !== "agent") {
+      next.push(item);
+      continue;
+    }
+    const key = agentMessageKey(item);
+    if (seen.has(key)) {
+      changed = true;
+      continue;
+    }
+    seen.add(key);
+    next.push(item);
+  }
+  return changed ? next : items;
+}
+
+function dedupeTimelineItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  return dedupeAgentItems(dedupePreAnswerUserItems(items));
 }
 
 function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadActivityEntry[] = []): ThreadActivityEntry[] {
@@ -464,7 +488,7 @@ function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadA
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
-  const result = dedupePreAnswerUserItems(base);
+  const result = dedupeTimelineItems(base);
   const indexes = new Map(result.map((item, index) => [timelineItemKey(item), index]));
   for (const item of overlay) {
     const key = timelineItemKey(item);
@@ -480,7 +504,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       };
     } else { result[index] = item; }
   }
-  return dedupePreAnswerUserItems(result);
+  return dedupeTimelineItems(result);
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
@@ -1128,7 +1152,18 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (!workspace || runtime.state !== "connected") { setAvailableSkills([]); return; }
     let active = true;
-    void window.devilCodex.listSkills({ cwd: workspace }).then((skills) => { if (active) setAvailableSkills(skills.filter((skill) => skill.enabled)); }).catch((error) => setExternalError(`스킬 목록 실패: ${String(error)}`));
+    void Promise.all([
+      window.devilCodex.listSkills({ cwd: workspace }).catch((error) => { setExternalError(`스킬 목록 실패: ${String(error)}`); return [] as CodexSkillInfo[]; }),
+      // Desktop-installed marketplace plugins (Notion, GitHub, ...) are not in
+      // the app-server skill registry, so merge the plugin cache scan.
+      window.devilCodex.listCodexPluginSkills().catch(() => [] as CodexSkillInfo[]),
+    ]).then(([skills, pluginSkills]) => {
+      if (!active) return;
+      const enabled = skills.filter((skill) => skill.enabled);
+      const seen = new Set(enabled.map((skill) => skill.name.toLowerCase()));
+      const extras = pluginSkills.filter((skill) => skill.enabled && !seen.has(skill.name.toLowerCase()));
+      setAvailableSkills([...enabled, ...extras]);
+    });
     return () => { active = false; };
   }, [workspace, runtime.state]);
 
@@ -1141,8 +1176,16 @@ function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (runtime.state !== "connected") { setAvailableMcpServers([]); return; }
     let active = true;
+    // Claude Code loads its own MCP config (~/.claude.json, .mcp.json, plugin
+    // .mcp.json), so the "/" menu must list those instead of Codex servers.
+    if (composerRuntime === "claude-code") {
+      void window.devilCodex.listClaudeMcpServers({ ...(workspace ? { cwd: workspace } : {}) })
+        .then((servers) => { if (active) setAvailableMcpServers(servers.filter((server) => server.name)); })
+        .catch(() => { if (active) setAvailableMcpServers([]); });
+      return () => { active = false; };
+    }
+    if (runtime.state !== "connected") { setAvailableMcpServers([]); return; }
     void window.devilCodex.listMcpServers({ ...(thread?.id ? { threadId: thread.id } : {}) })
       .then((servers) => {
         if (!active) return;
@@ -1150,7 +1193,7 @@ function App(): React.JSX.Element {
       })
       .catch(() => { if (active) setAvailableMcpServers([]); });
     return () => { active = false; };
-  }, [thread?.id, runtime.state]);
+  }, [thread?.id, runtime.state, composerRuntime, workspace]);
 
   const composerSkillOptions = composerRuntime === "claude-code"
     ? [...CLAUDE_RUNTIME_SKILLS, ...availableClaudeSkills.filter((skill) => !CLAUDE_RUNTIME_SKILLS.some((builtIn) => builtIn.name === skill.name))]
@@ -2595,11 +2638,23 @@ function App(): React.JSX.Element {
       .filter((name) => name.startsWith("mcp:"))
       .map((name) => name.slice("mcp:".length))
       .filter(Boolean);
+    // Plugin-cache skills are unknown to the app-server registry, so send them
+    // as prompt instructions instead of native skill input items.
+    const codexPluginSkills = composerRuntime === "codex"
+      ? input.skills.flatMap((name) => {
+        const skill = composerSkillOptions.find((item) => item.name === name);
+        return skill?.scope === "plugin" && skill.path ? [skill] : [];
+      })
+      : [];
     const selectedSkills = input.skills.flatMap((name) => {
       if (name.startsWith("mcp:")) return [];
       const skill = composerSkillOptions.find((item) => item.name === name);
+      if (skill?.scope === "plugin" && composerRuntime === "codex") return [];
       return skill?.path ? [{ name: skill.name, path: skill.path }] : [];
     });
+    const codexPluginSkillPrefix = codexPluginSkills.length
+      ? `[플러그인 스킬]\n${codexPluginSkills.map((skill) => `사용자가 $${skill.name} 스킬을 선택했습니다. 이 스킬 지침 파일을 먼저 읽고 따르세요: ${skill.path}`).join("\n")}\n\n`
+      : "";
     const mcpPrefix = selectedMcpServers.length
       ? `[연결된 플러그인/MCP 언급]\n이번 요청에서는 사용자가 ${selectedMcpServers.map((name) => `/${name}`).join(", ")} 플러그인을 명시했습니다. 관련 정보 조회나 작업이 필요하면 해당 MCP 서버의 사용 가능한 도구를 우선 사용하세요.\n\n`
       : "";
@@ -2613,7 +2668,7 @@ function App(): React.JSX.Element {
       ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
       : "";
     const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills.filter((name) => !name.startsWith("mcp:")), composerSkillOptions) : "";
-    const text = `${runtimeSkillPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
+    const text = `${runtimeSkillPrefix}${codexPluginSkillPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
     const displayText = `${input.skills.map((skill) => skill.startsWith("mcp:") ? `/${skill.slice("mcp:".length)}` : `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;
@@ -2958,7 +3013,7 @@ function App(): React.JSX.Element {
       const contextPercent = contextUsage ? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100) : null;
       const quota = quickUsage.report?.entries
         .find((entry) => entry.connected && entry.windows.length > 0)
-        ?.windows.map((window) => `${window.label}: ${Math.round(window.remainingPercent)}% 남음`)
+        ?.windows.map((window) => `${window.label}: ${Math.round(window.usedPercent)}% 사용`)
         .join(" · ") ?? "확인 불가";
       const statusText = [
         `채팅 ID: ${thread?.id ?? "새 채팅"}`,
@@ -3967,7 +4022,7 @@ function AccountUsageInline({ entries, state, preferredProvider, onDetails }: { 
       {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
-        <span>{Math.round(window.remainingPercent)}% 남음</span>
+        <span>{Math.round(window.usedPercent)}% 사용</span>
         <time>{compactUsageReset(window.resetsAt)}</time>
       </div>)}
     </> : <p>{message}</p>}

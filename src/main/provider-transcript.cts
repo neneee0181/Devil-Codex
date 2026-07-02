@@ -61,6 +61,15 @@ function claudeTextContent(content: unknown): string {
     .trim();
 }
 
+function claudeContentParts(content: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object");
+}
+
+function claudeHasToolUse(content: unknown): boolean {
+  return claudeContentParts(content).some((part) => String(part.type ?? "") === "tool_use");
+}
+
 function isClaudeLocalCommandText(text: string): boolean {
   const normalized = text.trim();
   return normalized.startsWith("<local-command-caveat>")
@@ -78,9 +87,8 @@ function isClaudeHookNoiseText(text: string): boolean {
 }
 
 function isClaudeToolResultOnly(content: unknown): boolean {
-  return Array.isArray(content)
-    && content.length > 0
-    && content.every((part) => Boolean(part) && typeof part === "object" && String((part as Record<string, unknown>).type ?? "") === "tool_result");
+  const parts = claudeContentParts(content);
+  return parts.length > 0 && parts.every((part) => String(part.type ?? "") === "tool_result");
 }
 
 function hasClaudeImportNoise(items: ThreadHistoryItem[]): boolean {
@@ -477,21 +485,80 @@ export class ProviderTranscriptStore {
   }
 
   private historyFromClaudeLines(lines: ClaudeJsonLine[], threadId: string): ThreadHistoryItem[] {
-    return lines.flatMap((line, index): ThreadHistoryItem[] => {
-      if (line.type !== "user" && line.type !== "assistant") return [];
+    const items: ThreadHistoryItem[] = [];
+    let turnIndex = 0;
+    let currentTurnId = "";
+
+    const ensureActivity = (turnId: string, entry: ThreadActivityEntry): void => {
+      const index = items.findIndex((item) => item.kind === "activity" && item.turnId === turnId);
+      if (index >= 0) {
+        const current = items[index]!;
+        const activities = current.activities ?? [];
+        if (activities.some((activity) => activity.id === entry.id)) return;
+        items[index] = { ...current, activities: [...activities, entry] };
+        return;
+      }
+      items.push({ id: `activity-${turnId}`, kind: "activity", text: "", turnId, status: "completed", activities: [entry] });
+    };
+
+    const nextRealUserIndex = (start: number): number => {
+      for (let index = start + 1; index < lines.length; index += 1) {
+        const line = lines[index]!;
+        const role = String(line.message?.role ?? line.type);
+        if (role !== "user") continue;
+        const text = claudeTextContent(line.message?.content);
+        if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(line.message?.content)) return index;
+      }
+      return lines.length;
+    };
+
+    const hasLaterToolBeforeNextUser = (start: number): boolean => {
+      const end = nextRealUserIndex(start);
+      for (let index = start + 1; index < end; index += 1) {
+        const line = lines[index]!;
+        const role = String(line.message?.role ?? line.type);
+        if (role === "assistant" && claudeHasToolUse(line.message?.content)) return true;
+        if (role === "user" && isClaudeToolResultOnly(line.message?.content)) return true;
+      }
+      return false;
+    };
+
+    lines.forEach((line, index) => {
+      if (line.type !== "user" && line.type !== "assistant") return;
       const role = String(line.message?.role ?? line.type);
       const content = line.message?.content;
       const id = String(line.uuid ?? `${threadId}-claude-${index}`);
-      const turnId = `${threadId}-claude-turn-${index}`;
       if (role === "user") {
         const text = claudeTextContent(content);
-        if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return [];
-        return [{ id, kind: "user", text, turnId }];
+        if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return;
+        currentTurnId = `${threadId}-claude-turn-${turnIndex++}`;
+        items.push({ id, kind: "user", text, turnId: currentTurnId });
+        return;
       }
-      if (role !== "assistant") return [];
+      if (role !== "assistant") return;
+      const turnId = currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
       const text = claudeTextContent(content);
-      return text && !isClaudeHookNoiseText(text) ? [{ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" }] : [];
+      const hasTool = claudeHasToolUse(content);
+      if (text && !isClaudeHookNoiseText(text)) {
+        if (hasTool || hasLaterToolBeforeNextUser(index)) {
+          ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
+        } else {
+          items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
+        }
+      }
+      for (const part of claudeContentParts(content).filter((part) => String(part.type ?? "") === "tool_use")) {
+        const toolId = String(part.id ?? `${id}-tool`);
+        const name = String(part.name ?? "Claude 도구");
+        ensureActivity(turnId, {
+          id: toolId,
+          kind: "mcp",
+          title: `${name} 실행`,
+          detail: JSON.stringify(part.input ?? {}, null, 2),
+          status: "completed",
+        });
+      }
     });
+    return items;
   }
 
   private async rolloutFiles(dir: string, depth = 0): Promise<string[]> {

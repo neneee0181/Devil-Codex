@@ -95,6 +95,8 @@ const api: DevilCodexApi = {
   installUpdate: () => ipcRenderer.invoke("update:install"),
   getSubagentInfo: (input) => ipcRenderer.invoke("subagent:info", input),
   listClaudeSkills: () => ipcRenderer.invoke("claude:skills"),
+  listClaudeMcpServers: (input) => ipcRenderer.invoke("claude:mcp-list", input ?? {}),
+  listCodexPluginSkills: () => ipcRenderer.invoke("codex:plugin-skills"),
   onUpdateState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
     ipcRenderer.on("update:state", handler);
