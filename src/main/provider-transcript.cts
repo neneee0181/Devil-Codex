@@ -59,23 +59,27 @@ function claudeTextContent(content: unknown): string {
     .trim();
 }
 
-function claudeActivities(content: unknown, fallbackId: string): ThreadActivityEntry[] {
-  if (!Array.isArray(content)) return [];
-  const activities: ThreadActivityEntry[] = [];
-  for (const [index, raw] of content.entries()) {
-    if (!raw || typeof raw !== "object") continue;
-    const part = raw as Record<string, unknown>;
-    const type = String(part.type ?? "");
-    const id = String(part.id ?? `${fallbackId}-${index}`);
-    if (type === "thinking" && typeof part.thinking === "string" && part.thinking.trim()) {
-      activities.push({ id, kind: "reasoning", title: "추론", detail: part.thinking.trim(), status: "completed" });
-    } else if (type === "tool_use") {
-      const name = String(part.name ?? "Claude Code tool");
-      const input = part.input && typeof part.input === "object" ? JSON.stringify(part.input) : "";
-      activities.push({ id, kind: "mcp", title: `${name} 실행`, detail: input, status: "completed" });
-    }
-  }
-  return activities;
+function isClaudeLocalCommandText(text: string): boolean {
+  const normalized = text.trim();
+  return normalized.startsWith("<local-command-caveat>")
+    || normalized.startsWith("<command-name>")
+    || normalized.startsWith("<command-message>")
+    || normalized.startsWith("<local-command-stdout>")
+    || normalized.startsWith("<local-command-stderr>");
+}
+
+function isClaudeToolResultOnly(content: unknown): boolean {
+  return Array.isArray(content)
+    && content.length > 0
+    && content.every((part) => Boolean(part) && typeof part === "object" && String((part as Record<string, unknown>).type ?? "") === "tool_result");
+}
+
+function hasClaudeImportNoise(items: ThreadHistoryItem[]): boolean {
+  return items.some((item) => {
+    if (item.kind === "user" && isClaudeLocalCommandText(item.text)) return true;
+    if (item.kind === "activity" && item.id.startsWith("activity-") && !item.turnId?.startsWith("claude-")) return true;
+    return false;
+  });
 }
 
 function claudeLineTime(line: ClaudeJsonLine): number {
@@ -392,7 +396,7 @@ export class ProviderTranscriptStore {
       const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text ?? firstUser;
       const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0);
       const existing = all.items[threadId] ?? [];
-      if (history.length >= existing.length) all.items[threadId] = history;
+      if (history.length >= existing.length || hasClaudeImportNoise(existing)) all.items[threadId] = history;
       all.meta[threadId] = {
         ...all.meta[threadId],
         id: threadId,
@@ -418,26 +422,12 @@ export class ProviderTranscriptStore {
       const turnId = `${threadId}-claude-turn-${index}`;
       if (role === "user") {
         const text = claudeTextContent(content);
-        if (!text) return [];
+        if (!text || isClaudeLocalCommandText(text) || isClaudeToolResultOnly(content)) return [];
         return [{ id, kind: "user", text, turnId }];
       }
       if (role !== "assistant") return [];
-      const activities = claudeActivities(content, id);
       const text = claudeTextContent(content);
-      const result: ThreadHistoryItem[] = [];
-      if (activities.length) {
-        result.push({
-          id: `activity-${id}`,
-          kind: "activity",
-          text: "",
-          turnId,
-          activities,
-          status: "completed",
-          startedAt: claudeLineTime(line) * 1000,
-        });
-      }
-      if (text) result.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
-      return result;
+      return text ? [{ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" }] : [];
     });
   }
 

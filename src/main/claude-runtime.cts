@@ -26,6 +26,10 @@ function claudeBin(): string {
   return process.platform === "win32" ? "claude.cmd" : "claude";
 }
 
+function unpackedAsarPath(path: string): string {
+  return path.includes("app.asar") ? path.replace("app.asar", "app.asar.unpacked") : path;
+}
+
 function commandSpec(bin: string, args: string[]): { command: string; args: string[] } {
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(bin)) {
     return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", bin, ...args] };
@@ -45,12 +49,20 @@ function sdkBundledExecutable(): string | undefined {
   for (const candidate of candidates) {
     try {
       const resolved = require.resolve(candidate);
-      if (existsSync(resolved)) return resolved;
+      const unpacked = unpackedAsarPath(resolved);
+      if (existsSync(unpacked)) return unpacked;
+      if (existsSync(resolved) && !resolved.includes("app.asar")) return resolved;
     } catch {
       // try the next candidate package
     }
   }
   return undefined;
+}
+
+function claudeCodeExecutable(): string | undefined {
+  const override = process.env.DEVIL_CLAUDE_BIN;
+  if (override && existsSync(override)) return override;
+  return sdkBundledExecutable();
 }
 
 // The SDK's `exports` map hides its package.json from require(), so read it
@@ -262,9 +274,11 @@ export class ClaudeCodeRuntime extends EventEmitter {
     this.active.set(input.threadId, abortController);
     const run = (async () => {
       const { query } = await claudeSdk();
+      const pathToClaudeCodeExecutable = claudeCodeExecutable();
       const options: ClaudeSdkOptions = {
         cwd: input.cwd,
         model: input.model,
+        ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         abortController,
         includePartialMessages: true,
         permissionMode: mode,

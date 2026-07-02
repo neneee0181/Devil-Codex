@@ -45,6 +45,10 @@ History: worklog. Resume risks: 04-handoff.md.
 - Claude create parity follow-up: new Claude Code threads reserve `claudeSessionId = thread.id`; first send uses SDK `sessionId` until the native transcript exists, then resumes it.
 - Turn status follow-up: `turn/completed` now finalizes nested in-progress activity entries so completed turns stop showing "응답 작성 중".
 - Release prep for `v0.1.12`: package version bumped; Claude Code native transcript sync/create parity and stale turn-status fixes ready for commit/tag/push.
+- Post-v0.1.12 local fix: Claude JSONL import now drops CLI local-command/tool-result-only records and imports native sessions as clean user/assistant text, replacing prior noisy imports.
+- Terminal persistence follow-up: right/bottom terminals now use per-thread dock keys; main reuses keyed PTYs and replays buffered output when switching threads.
+- Claude packaged binary fix: SDK query now passes `pathToClaudeCodeExecutable` pointing at `app.asar.unpacked` bundled Claude exe, avoiding packaged app launch failures from `app.asar`.
+- Release prep for `v0.1.13`: package version bumped; Claude import cleanup, terminal persistence, and packaged Claude binary fixes ready for commit/tag/push.
 
 ## Verify
 - `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass under `devil-codex@0.1.11`.

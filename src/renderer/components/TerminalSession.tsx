@@ -14,11 +14,23 @@ type CommandEntry = {
   collapsed: boolean;
   status: "running" | "done";
 };
+type TerminalViewState = {
+  sessionId: string | null;
+  shell: string;
+  buffer: string;
+  entries: CommandEntry[];
+  inputBuffer: string;
+  activeEntryId: string | null;
+  commandSeq: number;
+  historyOpen: boolean;
+};
 
 const COMMAND_LIMIT = 80;
 const OUTPUT_LIMIT = 24000;
 const PREVIEW_LIMIT = 4200;
 const COMMAND_SETTLE_MS = 2200;
+const TERMINAL_BUFFER_LIMIT = 120_000;
+const terminalStates = new Map<string, TerminalViewState>();
 
 function stripAnsi(text: string): string {
   return text
@@ -99,6 +111,7 @@ export function TerminalSession({
   active,
   workspace,
   dock = "bottom",
+  terminalKey,
   onShell,
   onSendToComposer,
   onOpenPath,
@@ -106,27 +119,50 @@ export function TerminalSession({
   active: boolean;
   workspace: string;
   dock?: TerminalDock;
+  terminalKey?: string;
   onShell: (shell: string) => void;
   onSendToComposer?: (text: string) => void;
   onOpenPath?: (path: string) => void;
 }): React.JSX.Element {
+  const stateKey = terminalKey ?? `${dock}:${workspace}`;
+  const saved = terminalStates.get(stateKey);
   const host = useRef<HTMLDivElement>(null);
   const term = useRef<Xterm | null>(null);
   const fit = useRef<FitAddon | null>(null);
-  const sessionId = useRef<string | null>(null);
+  const sessionId = useRef<string | null>(saved?.sessionId ?? null);
   const lastSize = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
   const resizeTerminal = useRef<() => void>(() => undefined);
   const pasteClipboard = useRef<() => void>(() => undefined);
   const copySelection = useRef<() => boolean>(() => false);
-  const inputBuffer = useRef("");
-  const activeEntryId = useRef<string | null>(null);
-  const commandSeq = useRef(0);
+  const outputBuffer = useRef(saved?.buffer ?? "");
+  const inputBuffer = useRef(saved?.inputBuffer ?? "");
+  const activeEntryId = useRef<string | null>(saved?.activeEntryId ?? null);
+  const commandSeq = useRef(saved?.commandSeq ?? 0);
   const settleTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [error, setError] = useState("");
-  const [shell, setShell] = useState("연결 중...");
-  const [historyOpen, setHistoryOpen] = useState(dock === "bottom");
+  const [shell, setShell] = useState(saved?.shell ?? "연결 중...");
+  const [historyOpen, setHistoryOpen] = useState(saved?.historyOpen ?? dock === "bottom");
   const [historyQuery, setHistoryQuery] = useState("");
-  const [entries, setEntries] = useState<CommandEntry[]>([]);
+  const [entries, setEntries] = useState<CommandEntry[]>(saved?.entries ?? []);
+  const shellRef = useRef(shell);
+  const historyOpenRef = useRef(historyOpen);
+  const entriesRef = useRef(entries);
+  useEffect(() => { shellRef.current = shell; }, [shell]);
+  useEffect(() => { historyOpenRef.current = historyOpen; }, [historyOpen]);
+  useEffect(() => { entriesRef.current = entries; }, [entries]);
+
+  const rememberState = (): void => {
+    terminalStates.set(stateKey, {
+      sessionId: sessionId.current,
+      shell: shellRef.current,
+      buffer: outputBuffer.current,
+      entries: entriesRef.current,
+      inputBuffer: inputBuffer.current,
+      activeEntryId: activeEntryId.current,
+      commandSeq: commandSeq.current,
+      historyOpen: historyOpenRef.current,
+    });
+  };
 
   const settleEntry = (id: string): void => {
     const timer = settleTimers.current.get(id);
@@ -261,6 +297,7 @@ export function TerminalSession({
     const stream = window.devilCodex.onTerminalData((event) => {
       if (sessionId.current) {
         if (event.id === sessionId.current) {
+          outputBuffer.current = `${outputBuffer.current}${event.data}`.slice(-TERMINAL_BUFFER_LIMIT);
           view.write(event.data);
           appendOutput(event.data);
         }
@@ -362,10 +399,19 @@ export function TerminalSession({
     void (async () => {
       try { fitter.fit(); } catch { /* host not laid out yet */ }
       try {
-        const session = await window.devilCodex.createTerminal({ cwd: workspace, cols: view.cols || 100, rows: view.rows || 24 });
-        if (disposed) { void window.devilCodex.closeTerminal({ id: session.id }); return; }
+        const session = await window.devilCodex.createTerminal({ cwd: workspace, cols: view.cols || 100, rows: view.rows || 24, key: terminalKey });
+        if (disposed) {
+          if (!terminalKey) void window.devilCodex.closeTerminal({ id: session.id });
+          return;
+        }
         sessionId.current = session.id;
+        const replay = session.buffer ?? outputBuffer.current;
+        if (replay) {
+          outputBuffer.current = replay.slice(-TERMINAL_BUFFER_LIMIT);
+          view.write(replay);
+        }
         for (const event of pending) if (event.id === session.id) {
+          outputBuffer.current = `${outputBuffer.current}${event.data}`.slice(-TERMINAL_BUFFER_LIMIT);
           view.write(event.data);
           appendOutput(event.data);
         }
@@ -388,12 +434,15 @@ export function TerminalSession({
       resizeTimers.forEach(clearTimeout);
       hostEl.removeEventListener("paste", onPaste, { capture: true });
       hostEl.removeEventListener("copy", onCopy);
-      if (sessionId.current) void window.devilCodex.closeTerminal({ id: sessionId.current });
+      rememberState();
+      if (sessionId.current && !terminalKey) void window.devilCodex.closeTerminal({ id: sessionId.current });
       settleTimers.current.forEach((timer) => clearTimeout(timer));
       settleTimers.current.clear();
-      sessionId.current = null;
-      inputBuffer.current = "";
-      activeEntryId.current = null;
+      if (!terminalKey) {
+        sessionId.current = null;
+        inputBuffer.current = "";
+        activeEntryId.current = null;
+      }
       view.dispose();
       term.current = null;
       fit.current = null;
@@ -401,7 +450,9 @@ export function TerminalSession({
       pasteClipboard.current = () => undefined;
       copySelection.current = () => false;
     };
-  }, [active, workspace, onShell]);
+  }, [active, workspace, onShell, stateKey, terminalKey]);
+
+  useEffect(() => { rememberState(); }, [shell, entries, historyOpen, stateKey]);
 
   useEffect(() => {
     if (!active) return;

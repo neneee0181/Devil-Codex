@@ -19,6 +19,7 @@ export function UtilityPanel({
   subagentLabels,
   subagentList,
   browserSessionKey,
+  terminalSessionKey,
   subagentCtx,
   subagentHistory,
   subagentBusy,
@@ -54,6 +55,7 @@ export function UtilityPanel({
   subagentLabels: Record<string, string>;
   subagentList: Array<{ id: string; label: string }>;
   browserSessionKey: string;
+  terminalSessionKey: string;
   subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
@@ -90,7 +92,7 @@ export function UtilityPanel({
         <button type="button" onClick={onToggleExpanded} aria-label={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"} title={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
         <button type="button" onClick={onClose} aria-label="우측 패널 닫기"><X size={17} /></button>
       </header>
-      {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="right" onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
+      {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="right" terminalKey={terminalSessionKey} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
       {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "서브에이전트" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
       {active && active !== "terminal" && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       {!active && <ToolLauncherMenu onSelect={onAdd} />}

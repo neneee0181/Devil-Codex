@@ -1331,7 +1331,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (!/^https?:\/\//i.test(url)) throw new Error("지원하지 않는 URL입니다.");
     await shell.openExternal(url);
   });
-  ipcMain.handle("terminal:create", (_event, input) => terminals().create(input.cwd, input.cols, input.rows));
+  ipcMain.handle("terminal:create", (_event, input) => terminals().create(input.cwd, input.cols, input.rows, input.key));
   ipcMain.handle("terminal:write", (_event, input) => terminals().write(input.id, input.data));
   ipcMain.handle("terminal:resize", (_event, input) => terminals().resize(input.id, input.cols, input.rows));
   ipcMain.handle("terminal:close", (_event, input) => terminals().close(input.id));

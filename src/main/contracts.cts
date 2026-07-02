@@ -131,7 +131,7 @@ export interface McpServerInfo { name: string; authStatus: string; tools: McpToo
 export interface WorkspaceEntry { name: string; path: string; kind: "file" | "folder"; }
 export interface WorkspaceFile { path: string; kind: "text" | "image" | "binary"; content: string; }
 
-export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; }
+export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; buffer?: string; key?: string; }
 export interface TerminalData { id: string; data: string; }
 export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; englishOutput: boolean; }
 export type ProviderId =
@@ -332,7 +332,7 @@ export interface DevilCodexApi {
   getFilePath: (file: File) => string;
   clipboardReadText: () => string;
   clipboardWriteText: (input: { text: string }) => void;
-  createTerminal: (input: { cwd: string; cols: number; rows: number }) => Promise<TerminalSession>;
+  createTerminal: (input: { cwd: string; cols: number; rows: number; key?: string }) => Promise<TerminalSession>;
   writeTerminal: (input: TerminalData) => Promise<void>;
   resizeTerminal: (input: { id: string; cols: number; rows: number }) => Promise<void>;
   closeTerminal: (input: { id: string }) => Promise<void>;
