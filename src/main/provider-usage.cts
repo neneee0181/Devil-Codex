@@ -12,12 +12,18 @@ const cache = new Map<string, { entry: ProviderUsageEntry; ts: number; subject?:
 function clampPercent(value: unknown): number {
   const number = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(number)) return 0;
-  return Math.max(0, Math.min(100, number));
+  const percent = number > 0 && number <= 1 ? number * 100 : number;
+  return Math.max(0, Math.min(100, percent));
 }
 
 function windowEntry(label: string, used: unknown, resetsAt: unknown): ProviderUsageWindow {
   const usedPercent = clampPercent(used);
   return { label, usedPercent, remainingPercent: Math.max(0, 100 - usedPercent), resetsAt: resetsAt as string | number | null | undefined };
+}
+
+function windowEntryFromRemaining(label: string, remaining: unknown, resetsAt: unknown): ProviderUsageWindow {
+  const remainingPercent = clampPercent(remaining);
+  return { label, usedPercent: Math.max(0, 100 - remainingPercent), remainingPercent, resetsAt: resetsAt as string | number | null | undefined };
 }
 
 function resetValue(window: Record<string, unknown> | undefined): string | number | null {
@@ -31,14 +37,14 @@ function resetValue(window: Record<string, unknown> | undefined): string | numbe
   return typeof relative === "number" ? Date.now() + relative * 1000 : null;
 }
 
-function usageValue(window: Record<string, unknown>): unknown {
-  const used = window.used_percent ?? window.percent_used ?? window.utilization ?? window.usedPercent ?? window.percentUsed ?? window.used_percentage ?? window.usedPercentage;
-  if (used != null) return used;
+function usageValue(window: Record<string, unknown>): { kind: "used" | "remaining"; value: unknown } | null {
   const remaining = window.remaining_percent ?? window.percent_remaining ?? window.remainingPercent ?? window.percentRemaining;
-  if (remaining != null) return 100 - clampPercent(remaining);
+  if (remaining != null) return { kind: "remaining", value: remaining };
+  const used = window.used_percent ?? window.percent_used ?? window.utilization ?? window.usedPercent ?? window.percentUsed ?? window.used_percentage ?? window.usedPercentage;
+  if (used != null) return { kind: "used", value: used };
   const consumed = Number(window.used ?? window.current ?? window.consumed ?? window.usage);
   const limit = Number(window.limit ?? window.total ?? window.maximum ?? window.max);
-  return Number.isFinite(consumed) && Number.isFinite(limit) && limit > 0 ? (consumed / limit) * 100 : undefined;
+  return Number.isFinite(consumed) && Number.isFinite(limit) && limit > 0 ? { kind: "used", value: (consumed / limit) * 100 } : null;
 }
 
 function secondsValue(window: Record<string, unknown>): number | null {
@@ -70,9 +76,12 @@ function windowLabel(key: string, window: Record<string, unknown>): string {
 function usageWindowFrom(key: string, value: unknown): ProviderUsageWindow | null {
   if (!value || typeof value !== "object") return null;
   const window = value as Record<string, unknown>;
-  const used = usageValue(window);
-  if (used == null) return null;
-  return windowEntry(windowLabel(key, window), used, resetValue(window));
+  const usage = usageValue(window);
+  if (!usage) return null;
+  const label = windowLabel(key, window);
+  return usage.kind === "remaining"
+    ? windowEntryFromRemaining(label, usage.value, resetValue(window))
+    : windowEntry(label, usage.value, resetValue(window));
 }
 
 function usageWindowOrder(label: string): number {
@@ -84,7 +93,22 @@ function usageWindowOrder(label: string): number {
 
 function claudeUsageWindowLabel(path: string, window: Record<string, unknown>): string {
   const explicit = window.label ?? window.name ?? window.display_name ?? window.displayName ?? window.window_label ?? window.windowLabel;
-  const text = `${path} ${typeof explicit === "string" ? explicit : ""}`.toLowerCase();
+  const hints = [
+    path,
+    explicit,
+    window.model,
+    window.model_name,
+    window.modelName,
+    window.limit,
+    window.limit_id,
+    window.limitId,
+    window.limit_name,
+    window.limitName,
+    window.bucket,
+    window.tier,
+    window.plan,
+  ].filter((value): value is string => typeof value === "string");
+  const text = hints.join(" ").toLowerCase();
   if (/session|current.?session|conversation/.test(text)) return "현재 세션";
   if (/fable/.test(text)) return "이번 주(Fable)";
   if (/week|weekly|7.?day|seven|all.?models|all_models/.test(text)) return "이번 주(전체 모델)";
@@ -104,9 +128,11 @@ function collectClaudeUsageWindows(body: Record<string, unknown>): ProviderUsage
   const windows: ProviderUsageWindow[] = [];
   const seen = new Set<string>();
   const addWindow = (label: string, window: Record<string, unknown>): void => {
-    const used = usageValue(window);
-    if (used == null) return;
-    const entry = windowEntry(label, used, resetValue(window));
+    const usage = usageValue(window);
+    if (!usage) return;
+    const entry = usage.kind === "remaining"
+      ? windowEntryFromRemaining(label, usage.value, resetValue(window))
+      : windowEntry(label, usage.value, resetValue(window));
     const key = `${entry.label}:${entry.resetsAt ?? ""}`;
     if (seen.has(key)) return;
     seen.add(key);

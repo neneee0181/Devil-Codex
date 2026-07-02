@@ -3,18 +3,19 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-27T22:05:00
-updated: 2026-07-02T14:20:00+09:00
+updated: 2026-07-02T13:05:52+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-02T14:35:00+09:00
+Last: 2026-07-02T13:05:52+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
+- v0.1.3 release prep: Provider quota UI now displays remaining percent like stock Codex; usage parser treats `remaining_percent` as remaining, supports 0..1 ratios, and recognizes Claude Fable labels from model/limit/tier fields. Work-duration timer now ticks while any activity entry is in progress, not only when parent turn status is inProgress.
 - v0.1.2 release prep: `package.json`/lock bumped to 0.1.2 for tag-triggered GitHub release action.
 - v0.1.1 release prep and stock restart continuation fixes are on origin/main.
 - Claude Code runtime hardened: probe now detects the SDK's bundled platform `claude` binary (no external CLI needed), tool_result events from user messages resolve tool rows (was dead path), tool calls show in-progress via `item/started`, thinking streams as reasoning, text blocks separated, result usage attached to `turn/completed`.
@@ -25,4 +26,4 @@ History: worklog. Resume risks: 04-handoff.md.
 - Claude approval bridge: SDK `canUseTool` → existing renderer approval dialog; acceptEdits/default modes; accept/decline verified live.
 
 ## Verify
-- `npm run build` passes under `devil-codex@0.1.2`.
+- `npm run build` passes under `devil-codex@0.1.3`.

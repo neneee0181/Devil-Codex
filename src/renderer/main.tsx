@@ -3315,7 +3315,7 @@ function AccountUsageInline({ entries, state, preferredProvider, onDetails }: { 
       {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
-        <span>{Math.round(window.usedPercent)}% 사용</span>
+        <span>{Math.round(window.remainingPercent)}% 남음</span>
         <time>{compactUsageReset(window.resetsAt)}</time>
       </div>)}
     </> : <p>{message}</p>}
