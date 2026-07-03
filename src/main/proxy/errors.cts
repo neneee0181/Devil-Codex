@@ -30,6 +30,9 @@ export function providerErrorMessage(provider: string, status: number, detail: s
   const suffix = truncateRaw(raw);
   const lower = raw.toLowerCase();
   if (status === 401) {
+    if (lower.includes("token_revoked") || lower.includes("invalidated oauth token")) {
+      return `${provider} 로그인 토큰이 만료되었거나 취소되었습니다. 설정 > 연결에서 로그아웃한 뒤 다시 로그인해 주세요.${suffix}`;
+    }
     return `${provider} 인증이 만료되었거나 로그인 정보가 유효하지 않습니다. 설정에서 로그아웃 후 다시 로그인해 주세요.${suffix}`;
   }
   if (status === 403) {
@@ -82,6 +85,9 @@ export function providerRuntimeErrorMessage(provider: string, error: unknown): s
     lower.includes("connection")
   ) {
     return `${provider} 네트워크 연결에 실패했습니다. 인터넷 연결, VPN/프록시, provider 서버 상태를 확인해 주세요.${truncateRaw(raw)}`;
+  }
+  if (lower.includes("token_revoked") || lower.includes("invalidated oauth token")) {
+    return `${provider} 로그인 토큰이 만료되었거나 취소되었습니다. 설정 > 연결에서 로그아웃한 뒤 다시 로그인해 주세요.${truncateRaw(raw)}`;
   }
   if (lower.includes("api key") || lower.includes("authentication") || lower.includes("unauthorized") || lower.includes("invalid token")) {
     return `${provider} 인증 정보가 없거나 유효하지 않습니다. 설정의 Provider 연결/API 키를 다시 확인해 주세요.${truncateRaw(raw)}`;

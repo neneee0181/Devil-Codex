@@ -1,11 +1,98 @@
 import * as pty from "node-pty";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
-export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; buffer?: string; key?: string; }
+export type TerminalShellId = "auto" | "wsl" | "git-bash" | "pwsh" | "powershell" | "cmd";
+export interface TerminalShellProfile { id: TerminalShellId; label: string; available: boolean; path?: string; detail?: string; }
+export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; buffer?: string; key?: string; shellId?: TerminalShellId; shellLabel?: string; }
 type TerminalProcess = { write: (data: string) => void; resize: (cols: number, rows: number) => void; kill: () => void };
 type TerminalRecord = TerminalProcess & { meta: TerminalSession; buffer: string; key?: string };
 
 const BUFFER_LIMIT = 120_000;
+const WINDOWS_PATH_EXTENSIONS = [".exe", ".cmd", ".bat", ""];
+
+type ResolvedShell = { id: TerminalShellId; label: string; command: string; args: string[]; cwd: string };
+
+function pathEntries(): string[] {
+  return (process.env.PATH ?? "").split(";").filter(Boolean);
+}
+
+function findOnPath(command: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  for (const dir of pathEntries()) {
+    for (const ext of WINDOWS_PATH_EXTENSIONS) {
+      const candidate = join(dir, command.toLowerCase().endsWith(ext) ? command : `${command}${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function firstExisting(paths: string[]): string | undefined {
+  return paths.find((path) => existsSync(path));
+}
+
+function gitBashPath(): string | undefined {
+  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const localAppData = process.env.LOCALAPPDATA ?? "";
+  const userProfile = process.env.USERPROFILE ?? "";
+  return firstExisting([
+    join(programFiles, "Git", "bin", "bash.exe"),
+    join(programFiles, "Git", "usr", "bin", "bash.exe"),
+    join(programFilesX86, "Git", "bin", "bash.exe"),
+    localAppData ? join(localAppData, "Programs", "Git", "bin", "bash.exe") : "",
+    userProfile ? join(userProfile, "scoop", "apps", "git", "current", "bin", "bash.exe") : "",
+    findOnPath("bash.exe") ?? "",
+  ].filter(Boolean));
+}
+
+function windowsPathToWsl(path: string): string {
+  const match = path.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (!match) return path.replace(/\\/g, "/");
+  return `/mnt/${match[1]!.toLowerCase()}/${match[2]!.replace(/\\/g, "/")}`;
+}
+
+function availableShellProfiles(): TerminalShellProfile[] {
+  if (process.platform !== "win32") {
+    return [
+      { id: "auto", label: "자동", available: true, detail: "시스템 기본 shell" },
+      { id: "cmd", label: process.env.SHELL || "/bin/zsh", available: true, path: process.env.SHELL || "/bin/zsh" },
+    ];
+  }
+  const wsl = findOnPath("wsl.exe") ?? firstExisting([join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wsl.exe")]);
+  const gitBash = gitBashPath();
+  const pwsh = findOnPath("pwsh.exe");
+  const powershell = findOnPath("powershell.exe") ?? firstExisting([join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")]);
+  const cmd = process.env.COMSPEC || findOnPath("cmd.exe") || "cmd.exe";
+  const profiles: TerminalShellProfile[] = [
+    { id: "auto", label: "자동", available: true, detail: "WSL → Git Bash → PowerShell 7 → Windows PowerShell → cmd 순서" },
+    { id: "wsl", label: "WSL Bash", available: Boolean(wsl), path: wsl, detail: wsl ? "Linux-like shell" : "wsl.exe를 찾을 수 없음" },
+    { id: "git-bash", label: "Git Bash", available: Boolean(gitBash), path: gitBash, detail: gitBash ? "Git for Windows bash" : "Git Bash를 찾을 수 없음" },
+    { id: "pwsh", label: "PowerShell 7", available: Boolean(pwsh), path: pwsh, detail: pwsh ? "pwsh.exe" : "PowerShell 7을 찾을 수 없음" },
+    { id: "powershell", label: "Windows PowerShell", available: Boolean(powershell), path: powershell, detail: "Windows 기본 PowerShell" },
+    { id: "cmd", label: "Command Prompt", available: true, path: cmd, detail: "Windows cmd.exe" },
+  ];
+  return profiles;
+}
+
+function resolveShell(requested: TerminalShellId | undefined, cwd: string): ResolvedShell {
+  if (process.platform !== "win32") {
+    const shell = process.env.SHELL || "/bin/zsh";
+    return { id: "auto", label: shell, command: shell, args: [], cwd };
+  }
+  const profiles = availableShellProfiles();
+  const available = (id: TerminalShellId): TerminalShellProfile | undefined => profiles.find((profile) => profile.id === id && profile.available && profile.path);
+  const id = requested && requested !== "auto" && available(requested)
+    ? requested
+    : (available("wsl")?.id ?? available("git-bash")?.id ?? available("pwsh")?.id ?? available("powershell")?.id ?? "cmd");
+  const profile = available(id) ?? available("cmd")!;
+  if (id === "wsl") return { id, label: profile.label, command: profile.path!, args: ["--cd", windowsPathToWsl(cwd), "--exec", "bash", "-li"], cwd };
+  if (id === "git-bash") return { id, label: profile.label, command: profile.path!, args: ["--login", "-i"], cwd };
+  if (id === "pwsh" || id === "powershell") return { id, label: profile.label, command: profile.path!, args: ["-NoLogo"], cwd };
+  return { id: "cmd", label: profile.label, command: profile.path ?? "cmd.exe", args: [], cwd };
+}
 
 export class TerminalManager {
   private sessions = new Map<string, TerminalRecord>();
@@ -14,16 +101,19 @@ export class TerminalManager {
 
   constructor(private readonly emit: (payload: { id: string; data: string }) => void) {}
 
-  create(cwd: string, cols = 100, rows = 24, key?: string): TerminalSession {
+  profiles(): TerminalShellProfile[] { return availableShellProfiles(); }
+
+  create(cwd: string, cols = 100, rows = 24, key?: string, shellId?: TerminalShellId): TerminalSession {
+    const terminalCwd = cwd || process.cwd();
+    const shell = resolveShell(shellId, terminalCwd);
     const existingId = key ? this.keyedSessions.get(key) : undefined;
     const existing = existingId ? this.sessions.get(existingId) : undefined;
-    if (existing) {
+    if (existing && existing.meta.shellId === shell.id) {
       existing.resize(cols, rows);
       return { ...existing.meta, buffer: existing.buffer, key };
     }
+    if (existing) this.close(existing.meta.id);
     const id = `terminal-${this.nextId++}`;
-    const shell = process.platform === "win32" ? process.env.COMSPEC || "cmd.exe" : process.env.SHELL || "/bin/zsh";
-    const terminalCwd = cwd || process.cwd();
     let processRef: TerminalProcess;
     let fallback = false;
     const append = (data: string): void => {
@@ -32,7 +122,7 @@ export class TerminalManager {
       this.emit({ id, data });
     };
     try {
-      const native = pty.spawn(shell, [], { name: "xterm-256color", cwd: terminalCwd, cols, rows, env: process.env as Record<string, string> });
+      const native = pty.spawn(shell.command, shell.args, { name: "xterm-256color", cwd: shell.cwd, cols, rows, env: process.env as Record<string, string> });
       native.onData(append);
       native.onExit(() => this.deleteSession(id));
       processRef = {
@@ -42,7 +132,7 @@ export class TerminalManager {
       };
     } catch {
       fallback = true;
-      const child = spawn(shell, ["-i"], { cwd: terminalCwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(shell.command, shell.args.length ? shell.args : ["-i"], { cwd: terminalCwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
       child.stdout.on("data", (data: Buffer) => append(data.toString()));
       child.stderr.on("data", (data: Buffer) => append(data.toString()));
       child.on("exit", () => this.deleteSession(id));
@@ -53,7 +143,7 @@ export class TerminalManager {
       };
       append("\u001b[33mPTY를 사용할 수 없어 호환 shell 모드로 실행합니다.\u001b[0m\r\n");
     }
-    const meta = { id, cwd: terminalCwd, shell, fallback };
+    const meta = { id, cwd: terminalCwd, shell: shell.command, fallback, shellId: shell.id, shellLabel: shell.label };
     this.sessions.set(id, { ...processRef, meta, buffer: "", key });
     if (key) this.keyedSessions.set(key, id);
     return { ...meta, key };

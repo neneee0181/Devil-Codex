@@ -268,7 +268,11 @@ function recentAppServerError(): string | undefined {
   if (!recent.length) return undefined;
   const errish = recent.filter((entry) => /error|fail|denied|unauthor|forbidden|401|403|429|quota|usage|rate.?limit|exceeded|invalid|not ?found|unsupported|expired|token|timeout/i.test(entry.line));
   const picked = (errish.length ? errish : recent).slice(-4).map((entry) => entry.line);
-  return picked.join(" | ").slice(0, 600) || undefined;
+  const raw = picked.join(" | ").slice(0, 600);
+  if (/token_revoked|invalidated oauth token|401 unauthorized/i.test(raw)) {
+    return `Codex 로그인 토큰이 만료되었거나 취소되었습니다. 설정 > 연결에서 Codex 계정을 로그아웃한 뒤 다시 로그인해 주세요. 원문: ${raw}`;
+  }
+  return raw || undefined;
 }
 function tokenCountInfo(event: { method: string; params?: unknown }): { context: number; total: number; max: number } | undefined {
   const params = (event.params ?? {}) as Record<string, unknown>;
@@ -1413,7 +1417,8 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (!/^https?:\/\//i.test(url)) throw new Error("지원하지 않는 URL입니다.");
     await shell.openExternal(url);
   });
-  ipcMain.handle("terminal:create", (_event, input) => terminals().create(input.cwd, input.cols, input.rows, input.key));
+  ipcMain.handle("terminal:shells", () => terminals().profiles());
+  ipcMain.handle("terminal:create", (_event, input) => terminals().create(input.cwd, input.cols, input.rows, input.key, input.shellId));
   ipcMain.handle("terminal:write", (_event, input) => terminals().write(input.id, input.data));
   ipcMain.handle("terminal:resize", (_event, input) => terminals().resize(input.id, input.cols, input.rows));
   ipcMain.handle("terminal:close", (_event, input) => terminals().close(input.id));

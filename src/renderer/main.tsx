@@ -2067,6 +2067,14 @@ function App(): React.JSX.Element {
     } else {
       queueVisibleTimelineEvent(eventThreadId, timelineEvent, eventTurnId, pendingForEvent ?? undefined);
     }
+    if (event.method === "response.failed" && eventThreadId) {
+      if (!eventTurnId || activeTurn.current?.turnId === eventTurnId || activeTurn.current?.threadId === eventThreadId) activeTurn.current = null;
+      if (!eventTurnId || activeTurnsByThread.current.get(eventThreadId) === eventTurnId) activeTurnsByThread.current.delete(eventThreadId);
+      pendingTurns.current.delete(eventThreadId);
+      if (pendingTurn.current?.threadId === eventThreadId) pendingTurn.current = null;
+      clearThreadRunning(eventThreadId);
+      if (visibleThreadId === eventThreadId) setBusy(false);
+    }
     if (event.method === "thread/compacted") {
       const params = (event.params ?? {}) as Record<string, unknown>;
       const turnId = String(params.turnId ?? "");

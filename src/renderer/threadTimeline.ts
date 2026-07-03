@@ -263,7 +263,11 @@ function demotePriorAgentMessages(items: ThreadHistoryItem[], turnId: string, ex
 
 function responseErrorMessage(response: RawItem | undefined): string {
   const error = (response?.error ?? response?.last_error) as RawItem | undefined;
-  return String(error?.message ?? error?.code ?? error?.type ?? "Provider가 이유를 알 수 없는 실패를 반환했습니다.");
+  const raw = String(error?.message ?? error?.code ?? error?.type ?? "Provider가 이유를 알 수 없는 실패를 반환했습니다.");
+  if (/token_revoked|invalidated oauth token|401 unauthorized/i.test(raw)) {
+    return `Codex 로그인 토큰이 만료되었거나 취소되었습니다. 설정 > 연결에서 Codex 계정을 로그아웃한 뒤 다시 로그인해 주세요. 원문: ${raw}`;
+  }
+  return raw;
 }
 
 function latestActivityTurnId(items: ThreadHistoryItem[]): string {
@@ -370,7 +374,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
         id: `response-error-${turnId}`,
         kind: "message",
         title: "Provider 응답 실패",
-        detail: "Provider가 실패했지만 상세 이유 이벤트를 전달하지 않았습니다. 로그인/토큰 만료, 모델 미지원, 사용량 한도, 네트워크 문제 중 하나일 수 있습니다. 터미널 로그나 Provider 연결 상태를 확인해 주세요.",
+        detail: "Provider가 실패했지만 상세 이유 이벤트를 전달하지 않았습니다. Codex라면 설정 > 연결에서 계정을 다시 로그인해 주세요. 그 외에는 로그인/토큰 만료, 모델 미지원, 사용량 한도, 네트워크 문제 중 하나일 수 있습니다.",
         status: "failed",
       });
     }

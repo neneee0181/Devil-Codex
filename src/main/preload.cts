@@ -87,6 +87,7 @@ const api: DevilCodexApi = {
   getFilePath: (file) => webUtils.getPathForFile(file),
   clipboardReadText: () => clipboard.readText(),
   clipboardWriteText: (input) => clipboard.writeText(input.text),
+  listTerminalShells: () => ipcRenderer.invoke("terminal:shells"),
   createTerminal: (input) => ipcRenderer.invoke("terminal:create", input),
   writeTerminal: (input) => ipcRenderer.invoke("terminal:write", input),
   resizeTerminal: (input) => ipcRenderer.invoke("terminal:resize", input),

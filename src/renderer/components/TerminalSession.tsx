@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Bot, ChevronDown, ChevronRight, ClipboardPaste, Copy, Eraser, Pin, PinOff, RotateCcw, Search, Trash2 } from "lucide-react";
+import type { TerminalShellId } from "../../shared/contracts";
 import "@xterm/xterm/css/xterm.css";
 
 type TerminalDock = "bottom" | "right";
@@ -31,6 +32,15 @@ const PREVIEW_LIMIT = 4200;
 const COMMAND_SETTLE_MS = 2200;
 const TERMINAL_BUFFER_LIMIT = 120_000;
 const terminalStates = new Map<string, TerminalViewState>();
+
+function storedTerminalShell(): TerminalShellId {
+  try {
+    const value = JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}")?.terminalShell;
+    return ["auto", "wsl", "git-bash", "pwsh", "powershell", "cmd"].includes(value) ? value : "auto";
+  } catch {
+    return "auto";
+  }
+}
 
 function stripAnsi(text: string): string {
   const withoutAnsi = text
@@ -157,12 +167,18 @@ export function TerminalSession({
   const [historyOpen, setHistoryOpen] = useState(saved?.historyOpen ?? dock === "bottom");
   const [historyQuery, setHistoryQuery] = useState("");
   const [entries, setEntries] = useState<CommandEntry[]>(saved?.entries ?? []);
+  const [shellId, setShellId] = useState<TerminalShellId>(() => storedTerminalShell());
   const shellRef = useRef(shell);
   const historyOpenRef = useRef(historyOpen);
   const entriesRef = useRef(entries);
   useEffect(() => { shellRef.current = shell; }, [shell]);
   useEffect(() => { historyOpenRef.current = historyOpen; }, [historyOpen]);
   useEffect(() => { entriesRef.current = entries; }, [entries]);
+  useEffect(() => {
+    const onSettingsChanged = (): void => setShellId(storedTerminalShell());
+    window.addEventListener("devil-codex:settings-changed", onSettingsChanged);
+    return () => window.removeEventListener("devil-codex:settings-changed", onSettingsChanged);
+  }, []);
 
   const rememberState = (): void => {
     terminalStates.set(stateKey, {
@@ -433,7 +449,7 @@ export function TerminalSession({
       resize();
       scheduleResize([0, 80, 180]);
       try {
-        const session = await window.devilCodex.createTerminal({ cwd: workspace, cols: view.cols || 100, rows: view.rows || 24, key: terminalKey });
+        const session = await window.devilCodex.createTerminal({ cwd: workspace, cols: view.cols || 100, rows: view.rows || 24, key: terminalKey, shellId });
         if (disposed) {
           if (!terminalKey) void window.devilCodex.closeTerminal({ id: session.id });
           return;
@@ -451,8 +467,8 @@ export function TerminalSession({
         }
         pending.length = 0;
         lastSize.current = { cols: view.cols, rows: view.rows };
-        setShell(session.shell);
-        onShell(session.shell);
+        setShell(session.shellLabel ?? session.shell);
+        onShell(session.shellLabel ?? session.shell);
         view.focus();
         scheduleResize();
       } catch (reason) {
@@ -488,7 +504,7 @@ export function TerminalSession({
       pasteClipboard.current = () => undefined;
       copySelection.current = () => false;
     };
-  }, [active, workspace, onShell, stateKey, terminalKey]);
+  }, [active, workspace, onShell, stateKey, terminalKey, shellId]);
 
   useEffect(() => { rememberState(); }, [shell, entries, historyOpen, stateKey]);
 

@@ -37,7 +37,7 @@ function resetValue(window: Record<string, unknown> | undefined): string | numbe
   return typeof relative === "number" ? Date.now() + relative * 1000 : null;
 }
 
-function usageValue(window: Record<string, unknown>): { kind: "used" | "remaining"; value: unknown } | null {
+function usageValue(window: Record<string, unknown>, options: { genericPercentKind?: "used" | "remaining" } = {}): { kind: "used" | "remaining"; value: unknown } | null {
   const remaining = window.remaining_percent ?? window.percent_remaining ?? window.remainingPercent ?? window.percentRemaining ?? window.remaining_percentage ?? window.remainingPercentage;
   if (remaining != null) return { kind: "remaining", value: remaining };
   const used = window.used_percent
@@ -50,12 +50,13 @@ function usageValue(window: Record<string, unknown>): { kind: "used" | "remainin
     ?? window.usage_percent
     ?? window.usagePercent
     ?? window.usage_percentage
-    ?? window.usagePercentage
-    ?? window.percent
+    ?? window.usagePercentage;
+  if (used != null) return { kind: "used", value: used };
+  const genericPercent = window.percent
     ?? window.percentage
     ?? window.ratio
     ?? window.fraction;
-  if (used != null) return { kind: "used", value: used };
+  if (genericPercent != null) return { kind: options.genericPercentKind ?? "used", value: genericPercent };
   const consumed = Number(window.used ?? window.current ?? window.consumed ?? window.usage);
   const limit = Number(window.limit ?? window.total ?? window.maximum ?? window.max);
   return Number.isFinite(consumed) && Number.isFinite(limit) && limit > 0 ? { kind: "used", value: (consumed / limit) * 100 } : null;
@@ -90,9 +91,13 @@ function windowLabel(key: string, window: Record<string, unknown>): string {
 function usageWindowFrom(key: string, value: unknown): ProviderUsageWindow | null {
   if (!value || typeof value !== "object") return null;
   const window = value as Record<string, unknown>;
-  const usage = usageValue(window);
-  if (!usage) return null;
   const label = windowLabel(key, window);
+  // ChatGPT/Codex quota API reports 5-hour and 7-day generic percent fields as
+  // remaining quota, while the 30-day row is already a used value. Explicit
+  // used_percent / remaining_percent fields still win above.
+  const genericPercentKind = /5\s*시간|5h|7\s*일|7d/i.test(label) ? "remaining" : "used";
+  const usage = usageValue(window, { genericPercentKind });
+  if (!usage) return null;
   return usage.kind === "remaining"
     ? windowEntryFromRemaining(label, usage.value, resetValue(window))
     : windowEntry(label, usage.value, resetValue(window));
