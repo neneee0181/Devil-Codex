@@ -3102,10 +3102,12 @@ function App(): React.JSX.Element {
       const next = await window.devilCodex.getWorkspaceChanges({ cwd: workspace });
       setChanges(next);
       const contextPercent = contextUsage ? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100) : null;
-      const quota = quickUsage.report?.entries
-        .find((entry) => entry.connected && entry.windows.length > 0)
-        ?.windows.map((window) => `${window.label}: ${Math.round(window.usedPercent)}% 사용`)
-        .join(" · ") ?? "확인 불가";
+      const quotaEntry = quickUsage.report?.entries.find((entry) => entry.connected && entry.windows.length > 0);
+      const quota = quotaEntry
+        ? quotaEntry.windows.map((window) => quotaEntry.provider === "codex"
+          ? `${window.label}: ${Math.round(window.remainingPercent)}% 남음`
+          : `${window.label}: ${Math.round(window.usedPercent)}% 사용`).join(" · ")
+        : "확인 불가";
       const statusText = [
         `채팅 ID: ${thread?.id ?? "새 채팅"}`,
         `작업 경로: ${workspace || "없음"}`,
@@ -4113,7 +4115,7 @@ function AccountUsageInline({ entries, state, preferredProvider, onDetails }: { 
       {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
-        <span>{Math.round(window.usedPercent)}% 사용</span>
+        <span>{entry.provider === "codex" ? `${Math.round(window.remainingPercent)}% 남음` : `${Math.round(window.usedPercent)}% 사용`}</span>
         <time>{compactUsageReset(window.resetsAt)}</time>
       </div>)}
     </> : <p>{message}</p>}

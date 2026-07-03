@@ -10,12 +10,12 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-03T20:47:00+09:00
+Last: 2026-07-03T21:18:00+09:00
 Replace, do not append. Keep <800B.
 History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
-- Releasing `0.1.22`: terminal shell profiles added; Codex 5h/7d generic quota percent is parsed as remaining; token_revoked/invalidated OAuth failures show re-login guidance and response.failed clears running UI state.
+- Releasing `0.1.23`: Codex provider quota display now renders `remainingPercent` as `% 남음` in Settings provider cards, the account usage popover, and workspace status text so it matches stock Codex remaining usage; Claude/other providers still render `% 사용`.
 - Fixed Claude transcript ordering: JSONL import classifies assistant text before tool_use/tool_result as activity "작업 메모" instead of standalone final agent messages, preventing duplicated/out-of-order narration after steering or sync.
 - Token-spend finding: Claude Code path calls `@anthropic-ai/claude-agent-sdk` directly; high usage is mostly resumed session context + selected prefixes + large tool/output history, not Codex proxy double-routing.
 - Provider usage UI now matches Claude CLI direction: quota rows display `% 사용` from `usedPercent`; Claude parser accepts more percent/ratio field names, carries parent context into nested windows so Fable model buckets can be labeled, and no longer fabricates a 0% Fable row when missing.

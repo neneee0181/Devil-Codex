@@ -170,12 +170,13 @@ function ModelUsageCard({ row }: { row: ModelUsageRow }): React.JSX.Element {
 function ProviderUsageCard({ entry }: { entry: ProviderUsageEntry }): React.JSX.Element {
   const account = entry.accountEmail || entry.accountLabel;
   return <div className="setting-card usage-provider-card"><header><span><strong>{entry.label}</strong><small>{[account, entry.connected ? "로그인됨" : "로그인 안 됨"].filter(Boolean).join(" · ")}</small></span><small>{formatUpdated(entry.updatedAt)}</small></header>
-    {entry.windows.length ? <div>{entry.windows.map((window) => <UsageWindow key={window.label} title={window.label} used={window.usedPercent} remaining={window.remainingPercent} resetsAt={window.resetsAt} />)}</div> : <p className={entry.error ? "usage-error" : "usage-unavailable"}>{entry.error ? `오류: ${entry.error}` : entry.unavailable ?? "표시할 사용량 데이터가 없습니다."}</p>}</div>;
+    {entry.windows.length ? <div>{entry.windows.map((window) => <UsageWindow key={window.label} title={window.label} used={window.usedPercent} remaining={window.remainingPercent} resetsAt={window.resetsAt} showRemaining={entry.provider === "codex"} />)}</div> : <p className={entry.error ? "usage-error" : "usage-unavailable"}>{entry.error ? `오류: ${entry.error}` : entry.unavailable ?? "표시할 사용량 데이터가 없습니다."}</p>}</div>;
 }
 
-function UsageWindow({ title, used, remaining, resetsAt }: { title: string; used: number; remaining: number; resetsAt?: string | number | null }): React.JSX.Element {
+function UsageWindow({ title, used, remaining, resetsAt, showRemaining = false }: { title: string; used: number; remaining: number; resetsAt?: string | number | null; showRemaining?: boolean }): React.JSX.Element {
   const level = remaining < 20 ? "danger" : remaining < 50 ? "warning" : "healthy";
-  return <div className={`usage-row ${level}`}><span><strong>{title}</strong><small>{formatReset(resetsAt)}</small></span><progress value={used} max="100" /><b>{Math.round(used)}% 사용</b></div>;
+  const value = showRemaining ? remaining : used;
+  return <div className={`usage-row ${level}`}><span><strong>{title}</strong><small>{formatReset(resetsAt)}</small></span><progress value={value} max="100" /><b>{Math.round(value)}% {showRemaining ? "남음" : "사용"}</b></div>;
 }
 
 function formatUpdated(value: number): string { return new Date(value).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }); }
