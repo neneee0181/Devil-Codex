@@ -426,10 +426,86 @@ function normalizedUserText(text: string): string {
 }
 
 function userTimelineKey(item: ThreadHistoryItem): string {
-  const attachments = (item.attachments ?? [])
-    .map((attachment) => `${attachment.kind}:${attachment.name}:${attachment.path ?? attachment.url ?? ""}:${attachment.size ?? ""}`)
-    .join("|");
-  return `user:${normalizedUserText(item.text)}:${attachments}`;
+  return `user:${normalizedUserText(item.text)}`;
+}
+
+function attachmentMergeKey(attachment: NonNullable<ThreadHistoryItem["attachments"]>[number]): string {
+  const locator = attachment.path ?? attachment.url ?? "";
+  if (locator) return `${attachment.kind}:loc:${locator}`;
+  const stem = attachment.name.trim().toLowerCase().replace(/\.[a-z0-9]+$/i, "");
+  return `${attachment.kind}:name:${stem}:${attachment.size ?? ""}`;
+}
+
+function mergeAttachments(
+  base: ThreadHistoryItem["attachments"],
+  overlay: ThreadHistoryItem["attachments"],
+): ThreadHistoryItem["attachments"] {
+  if (!base?.length) return overlay;
+  if (!overlay?.length) return base;
+  const result = [...base];
+  const seen = new Set(result.map(attachmentMergeKey));
+  for (const attachment of overlay) {
+    const key = attachmentMergeKey(attachment);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(attachment);
+  }
+  return result;
+}
+
+function userDisplayTextScore(text: string): number {
+  let score = text.trim().length ? 10 : 0;
+  if (/^\[(?:Devil Claude Code runtime tool instructions|플러그인 스킬|연결된 플러그인\/MCP 언급|이전 런타임에서 전달된 대화|첨부 파일 컨텍스트)\]/.test(text.trim())) score -= 20;
+  if (normalizedUserText(text) === text.replace(/\s+/g, " ").trim()) score += 5;
+  return score;
+}
+
+function mergeUserText(current: string, incoming: string): string {
+  const currentScore = userDisplayTextScore(current);
+  const incomingScore = userDisplayTextScore(incoming);
+  if (incomingScore > currentScore) return incoming;
+  if (currentScore > incomingScore) return current;
+  return current.length >= incoming.length ? current : incoming;
+}
+
+function mergeTimelineItem(current: ThreadHistoryItem, item: ThreadHistoryItem): ThreadHistoryItem {
+  if (current.kind === "activity" && item.kind === "activity") {
+    return {
+      ...current,
+      ...item,
+      text: item.text || current.text,
+      activities: mergeActivityEntries(current.activities, item.activities),
+      status: item.status ?? current.status,
+      contextUsage: item.contextUsage ?? current.contextUsage,
+      tokenUsage: item.tokenUsage ?? current.tokenUsage,
+      cumulativeTokenUsage: item.cumulativeTokenUsage ?? current.cumulativeTokenUsage,
+    };
+  }
+  if (current.kind === "user" && item.kind === "user") {
+    return {
+      ...current,
+      ...item,
+      text: mergeUserText(current.text, item.text),
+      attachments: mergeAttachments(current.attachments, item.attachments),
+      runtime: item.runtime ?? current.runtime,
+      provider: item.provider ?? current.provider,
+      accountId: item.accountId ?? current.accountId,
+      model: item.model ?? current.model,
+    };
+  }
+  if (current.kind === "agent" && item.kind === "agent") {
+    return {
+      ...current,
+      ...item,
+      text: item.text || current.text,
+      turnId: item.turnId ?? current.turnId,
+      runtime: item.runtime ?? current.runtime,
+      provider: item.provider ?? current.provider,
+      accountId: item.accountId ?? current.accountId,
+      model: item.model ?? current.model,
+    };
+  }
+  return item;
 }
 
 function dedupePreAnswerUserItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -509,15 +585,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
     const key = timelineItemKey(item);
     const index = indexes.get(key);
     if (index == null) { indexes.set(key, result.length); result.push(item); continue; }
-    const current = result[index];
-    if (current.kind === "activity" && item.kind === "activity") {
-      result[index] = {
-        ...current,
-        ...item,
-        activities: mergeActivityEntries(current.activities, item.activities),
-      status: item.status ?? current.status,
-      };
-    } else { result[index] = item; }
+    result[index] = mergeTimelineItem(result[index]!, item);
   }
   return dedupeTimelineItems(result);
 }
