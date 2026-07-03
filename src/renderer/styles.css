@@ -1038,6 +1038,16 @@ button:active:not(:disabled) { transform: scale(.96); }
 .terminal-wave-actions { display: flex; flex: 0 0 auto; gap: 3px; align-items: center; }
 .terminal-wave-actions button { display: grid; width: 29px; height: 29px; place-items: center; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #a9a9a9; padding: 0; }
 .terminal-wave-actions button:hover { border-color: #3d3d3d; background: #292929; color: #ededed; }
+.terminal-shell-picker { position: relative; flex: 0 0 auto; }
+.terminal-wave-actions .terminal-shell-trigger { grid-template-columns: 15px 13px; width: 43px; gap: 2px; }
+.terminal-shell-menu { position: absolute; z-index: 80; top: 34px; right: 0; display: grid; width: 236px; max-height: min(320px, calc(100vh - 120px)); overflow: auto; border: 1px solid #444; border-radius: 11px; background: #2d2d2df7; box-shadow: 0 18px 48px #0009; padding: 5px; backdrop-filter: blur(16px); cursor: default; }
+.terminal-wave-actions .terminal-shell-menu button { display: flex; width: 100%; height: auto; min-height: 42px; justify-content: space-between; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: #e6e6e6; padding: 7px 9px; text-align: left; }
+.terminal-wave-actions .terminal-shell-menu button:hover:not(:disabled), .terminal-wave-actions .terminal-shell-menu button.active { background: #3b3b3b; }
+.terminal-wave-actions .terminal-shell-menu button:disabled { color: #777; opacity: .7; }
+.terminal-shell-menu span { display: grid; min-width: 0; gap: 2px; }
+.terminal-shell-menu strong, .terminal-shell-menu small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-shell-menu strong { font-size: 12.5px; font-weight: 650; }
+.terminal-shell-menu small { color: #969696; font-size: 11px; }
 .terminal-wave-body { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .terminal-bottom.history-open .terminal-wave-body { grid-template-columns: minmax(0, 1fr) minmax(260px, 30%); }
 .terminal-right.history-open .terminal-wave-body { grid-template-rows: minmax(0, 1fr) minmax(160px, 38%); }

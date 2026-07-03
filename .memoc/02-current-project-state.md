@@ -229,6 +229,7 @@ See `.memoc/worklog/` for full shared activity history.
 - Composer `/` suggestions now include Codex plugin skills plus Claude MCP/plugin sources, and Claude JSONL import keeps tool-adjacent assistant narration inside the activity timeline instead of duplicating it as final chat.
 - Provider quota cards now display used percent like Claude CLI, and Claude usage parsing recognizes more usage-percent field names plus nested parent context for Fable buckets while avoiding fake 0% Fable rows.
 - Timeline merge dedupes final agent answers semantically by turn/text, preventing live item + synced history from rendering the same final answer twice.
+- Open terminal tabs now expose a shell picker in the terminal toolbar; selecting a profile reconnects that tab with Auto/WSL Bash/Git Bash/PowerShell/cmd instead of requiring Settings-only default shell changes.
 - Electron app was manually verified: runtime connection, thread creation, and a real `gpt-5.4` turn returned `clean timeline`.
 - Electron app was manually verified: app-server returned existing workspace threads and resumed a selected thread.
 - External proxy operation is not the desired end-user architecture; protocol adapters should live inside `devil-codex` where feasible.

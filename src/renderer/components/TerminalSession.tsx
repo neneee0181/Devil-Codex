@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Bot, ChevronDown, ChevronRight, ClipboardPaste, Copy, Eraser, Pin, PinOff, RotateCcw, Search, Trash2 } from "lucide-react";
-import type { TerminalShellId } from "../../shared/contracts";
+import { Bot, Check, ChevronDown, ChevronRight, ClipboardPaste, Copy, Eraser, Pin, PinOff, RotateCcw, Search, SquareTerminal, Trash2 } from "lucide-react";
+import type { TerminalShellId, TerminalShellProfile } from "../../shared/contracts";
 import "@xterm/xterm/css/xterm.css";
 
 type TerminalDock = "bottom" | "right";
@@ -18,6 +18,7 @@ type CommandEntry = {
 type TerminalViewState = {
   sessionId: string | null;
   shell: string;
+  shellId: TerminalShellId;
   buffer: string;
   entries: CommandEntry[];
   inputBuffer: string;
@@ -164,10 +165,12 @@ export function TerminalSession({
   const outputFrame = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [shell, setShell] = useState(saved?.shell ?? "연결 중...");
+  const [profiles, setProfiles] = useState<TerminalShellProfile[]>([]);
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(saved?.historyOpen ?? dock === "bottom");
   const [historyQuery, setHistoryQuery] = useState("");
   const [entries, setEntries] = useState<CommandEntry[]>(saved?.entries ?? []);
-  const [shellId, setShellId] = useState<TerminalShellId>(() => storedTerminalShell());
+  const [shellId, setShellId] = useState<TerminalShellId>(() => saved?.shellId ?? storedTerminalShell());
   const shellRef = useRef(shell);
   const historyOpenRef = useRef(historyOpen);
   const entriesRef = useRef(entries);
@@ -180,10 +183,31 @@ export function TerminalSession({
     return () => window.removeEventListener("devil-codex:settings-changed", onSettingsChanged);
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    void window.devilCodex.listTerminalShells().then((list) => {
+      if (alive) setProfiles(list);
+    }).catch(() => {
+      if (alive) setProfiles([]);
+    });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!shellMenuOpen) return;
+    const close = (event: PointerEvent): void => {
+      if ((event.target as Element | null)?.closest(".terminal-shell-picker")) return;
+      setShellMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [shellMenuOpen]);
+
   const rememberState = (): void => {
     terminalStates.set(stateKey, {
       sessionId: sessionId.current,
       shell: shellRef.current,
+      shellId,
       buffer: outputBuffer.current,
       entries: entriesRef.current,
       inputBuffer: inputBuffer.current,
@@ -191,6 +215,26 @@ export function TerminalSession({
       commandSeq: commandSeq.current,
       historyOpen: historyOpenRef.current,
     });
+  };
+
+  const switchShell = (nextShellId: TerminalShellId): void => {
+    setShellMenuOpen(false);
+    if (nextShellId === shellId) {
+      term.current?.focus();
+      return;
+    }
+    if (sessionId.current) {
+      void window.devilCodex.closeTerminal({ id: sessionId.current });
+      sessionId.current = null;
+    }
+    outputBuffer.current = "";
+    inputBuffer.current = "";
+    activeEntryId.current = null;
+    lastSize.current = { cols: 0, rows: 0 };
+    setShell("연결 중...");
+    onShell("연결 중...");
+    terminalStates.delete(stateKey);
+    setShellId(nextShellId);
   };
 
   const settleEntry = (id: string): void => {
@@ -506,7 +550,7 @@ export function TerminalSession({
     };
   }, [active, workspace, onShell, stateKey, terminalKey, shellId]);
 
-  useEffect(() => { rememberState(); }, [shell, entries, historyOpen, stateKey]);
+  useEffect(() => { rememberState(); }, [shell, shellId, entries, historyOpen, stateKey]);
 
   useEffect(() => {
     if (!active) return;
@@ -534,6 +578,17 @@ export function TerminalSession({
         <small title={workspace}>{workspace}</small>
       </div>
       <div className="terminal-wave-actions">
+        <div className="terminal-shell-picker" onPointerDown={(event) => event.stopPropagation()}>
+          <button type="button" className="terminal-shell-trigger" onClick={() => setShellMenuOpen((value) => !value)} aria-label="터미널 Shell 선택" title="터미널 Shell 선택"><SquareTerminal size={15} /><ChevronDown size={13} /></button>
+          {shellMenuOpen && <div className="terminal-shell-menu">
+            {(profiles.length ? profiles : [{ id: "auto" as TerminalShellId, label: "자동", available: true, detail: "shell 목록을 불러오는 중" }]).map((profile) => (
+              <button type="button" key={profile.id} className={profile.id === shellId ? "active" : ""} disabled={!profile.available} onClick={() => switchShell(profile.id)}>
+                <span><strong>{profile.label}</strong>{profile.detail && <small>{profile.detail}</small>}</span>
+                {profile.id === shellId && <Check size={14} />}
+              </button>
+            ))}
+          </div>}
+        </div>
         <button type="button" onClick={(event) => { event.stopPropagation(); setHistoryOpen((value) => !value); resizeTerminal.current(); }} aria-label={historyOpen ? "명령 기록 숨기기" : "명령 기록 보기"} title={historyOpen ? "명령 기록 숨기기" : "명령 기록 보기"}>{historyOpen ? <ChevronRight size={15} /> : <ChevronLeftIcon />}</button>
         <button type="button" onClick={(event) => { event.stopPropagation(); copySelection.current(); }} aria-label="선택 복사" title="선택 복사"><Copy size={15} /></button>
         <button type="button" onClick={(event) => { event.stopPropagation(); pasteClipboard.current(); }} aria-label="붙여넣기" title="붙여넣기"><ClipboardPaste size={15} /></button>
