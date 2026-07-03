@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray } from "electron";
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -1416,6 +1416,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const url = String(input?.url ?? "");
     if (!/^https?:\/\//i.test(url)) throw new Error("지원하지 않는 URL입니다.");
     await shell.openExternal(url);
+  });
+  ipcMain.handle("clipboard:read-text", () => clipboard.readText());
+  ipcMain.handle("clipboard:write-text", (_event, input: { text?: string }) => {
+    clipboard.writeText(String(input?.text ?? ""));
   });
   ipcMain.handle("terminal:shells", () => terminals().profiles());
   ipcMain.handle("terminal:create", (_event, input) => terminals().create(input.cwd, input.cols, input.rows, input.key, input.shellId));

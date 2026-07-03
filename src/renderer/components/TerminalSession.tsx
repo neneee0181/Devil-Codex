@@ -163,6 +163,7 @@ export function TerminalSession({
   const settleTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const pendingOutput = useRef(new Map<string, string>());
   const outputFrame = useRef<number | null>(null);
+  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState("");
   const [shell, setShell] = useState(saved?.shell ?? "연결 중...");
   const [profiles, setProfiles] = useState<TerminalShellProfile[]>([]);
@@ -235,6 +236,15 @@ export function TerminalSession({
     onShell("연결 중...");
     terminalStates.delete(stateKey);
     setShellId(nextShellId);
+  };
+
+  const showError = (message: string): void => {
+    if (errorTimer.current) clearTimeout(errorTimer.current);
+    setError(message);
+    errorTimer.current = setTimeout(() => {
+      setError("");
+      errorTimer.current = null;
+    }, 3200);
   };
 
   const settleEntry = (id: string): void => {
@@ -322,11 +332,25 @@ export function TerminalSession({
   };
 
   const copyText = (text: string): void => {
+    void (async () => {
+      try {
+        await window.devilCodex.clipboardWriteText({ text });
+        setError("");
+      } catch (reason) {
+        console.warn("[terminal] clipboard write failed", reason);
+        showError("텍스트를 클립보드에 복사할 수 없습니다.");
+      }
+    })();
+  };
+
+  const copyToClipboard = async (text: string, failureMessage: string): Promise<boolean> => {
     try {
-      window.devilCodex.clipboardWriteText({ text });
+      await window.devilCodex.clipboardWriteText({ text });
       setError("");
+      return true;
     } catch {
-      setError("텍스트를 클립보드에 복사할 수 없습니다.");
+      showError(failureMessage);
+      return false;
     }
   };
 
@@ -413,7 +437,7 @@ export function TerminalSession({
       let bridgeText: string | null = null;
       let bridgeError: unknown;
       try {
-        bridgeText = window.devilCodex.clipboardReadText();
+        bridgeText = await window.devilCodex.clipboardReadText();
         if (bridgeText) return bridgeText;
       } catch (reason) {
         bridgeError = reason;
@@ -433,7 +457,7 @@ export function TerminalSession({
       void (async () => {
         try { pasteText(await readClipboardText()); }
         catch {
-          setError("클립보드 텍스트를 읽을 수 없습니다.");
+          showError("클립보드 텍스트를 읽을 수 없습니다.");
           view.focus();
         }
       })();
@@ -441,16 +465,13 @@ export function TerminalSession({
     copySelection.current = () => {
       const selection = view.getSelection();
       if (!selection) return false;
-      try {
-        window.devilCodex.clipboardWriteText({ text: selection });
-        setError("");
+      void (async () => {
+        const copied = await copyToClipboard(selection, "선택한 터미널 텍스트를 복사할 수 없습니다.");
+        if (!copied) return;
         view.clearSelection();
         view.focus();
-        return true;
-      } catch {
-        setError("선택한 터미널 텍스트를 복사할 수 없습니다.");
-        return false;
-      }
+      })();
+      return true;
     };
     view.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -458,9 +479,11 @@ export function TerminalSession({
       const command = event.ctrlKey || event.metaKey;
       const pasteCombo = (command && key === "v") || (event.ctrlKey && event.shiftKey && key === "v") || (event.shiftKey && key === "insert");
       if (pasteCombo) {
-        return true;
+        event.preventDefault();
+        pasteClipboard.current();
+        return false;
       }
-      const copyCombo = command && key === "c";
+      const copyCombo = (command && key === "c") || (event.ctrlKey && event.shiftKey && key === "c");
       if (copyCombo && view.getSelection()) {
         event.preventDefault();
         copySelection.current();
@@ -481,10 +504,12 @@ export function TerminalSession({
       if (!selection) return;
       event.preventDefault();
       event.clipboardData?.setData("text/plain", selection);
-      window.devilCodex.clipboardWriteText({ text: selection });
-      setError("");
-      view.clearSelection();
-      view.focus();
+      void (async () => {
+        const copied = await copyToClipboard(selection, "선택한 터미널 텍스트를 복사할 수 없습니다.");
+        if (!copied) return;
+        view.clearSelection();
+        view.focus();
+      })();
     };
     hostEl.addEventListener("paste", onPaste, { capture: true });
     hostEl.addEventListener("copy", onCopy);
@@ -533,6 +558,8 @@ export function TerminalSession({
       if (sessionId.current && !terminalKey) void window.devilCodex.closeTerminal({ id: sessionId.current });
       settleTimers.current.forEach((timer) => clearTimeout(timer));
       settleTimers.current.clear();
+      if (errorTimer.current) clearTimeout(errorTimer.current);
+      errorTimer.current = null;
       if (outputFrame.current != null) cancelAnimationFrame(outputFrame.current);
       outputFrame.current = null;
       pendingOutput.current.clear();
