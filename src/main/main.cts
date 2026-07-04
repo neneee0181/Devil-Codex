@@ -1298,6 +1298,24 @@ function lastAgentText(items: ThreadHistoryItem[]): string {
   return "";
 }
 
+function waitForAppServerTurnTerminal(instance: CodexAppServer, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      instance.off("event", onEvent);
+      resolve();
+    };
+    const onEvent = (event: AppServerEvent): void => {
+      if (event.method === "turn/completed" || event.method === "turn/aborted" || event.method === "turn/interrupted") finish();
+    };
+    const timer = setTimeout(finish, Math.max(5_000, timeoutMs));
+    instance.on("event", onEvent);
+  });
+}
+
 async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<SubagentDelegateResult> {
   const taskId = crypto.randomUUID();
   const settings = await providerSettingsStore.load();
@@ -1338,6 +1356,7 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
       : { cwd, model };
     const thread = await instance.createThread(createInput);
     threadId = thread.id;
+    appServerThreadIds.set(instance, threadId);
     const sendInput = {
       threadId,
       cwd,
@@ -1346,7 +1365,9 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
       approvalPolicy: "never" as ThreadApprovalPolicy,
       sandboxMode: "workspace-write" as ThreadSandboxMode,
     };
+    const terminal = waitForAppServerTurnTerminal(instance, timeoutMs);
     await instance.sendTurn(sendInput);
+    await terminal;
     let history = await instance.readThread({ id: threadId }).catch(() => [] as ThreadHistoryItem[]);
     while (!lastAgentText(history) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1356,6 +1377,7 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
   } catch (error) {
     return { taskId, threadId, status: "failed", error: error instanceof Error ? error.message : String(error), provider, accountId, model, runtime };
   } finally {
+    appServerThreadIds.delete(instance);
     instance.dispose();
   }
 }

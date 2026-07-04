@@ -242,6 +242,9 @@ See `.memoc/worklog/` for full shared activity history.
 - Open terminal tabs now expose a shell picker in the terminal toolbar; selecting a profile reconnects that tab with Auto/WSL Bash/Git Bash/PowerShell/cmd instead of requiring Settings-only default shell changes.
 - Windows chat thread scrollbar is forced visible with dedicated `.app-shell.is-windows .thread-view` rules; `.thread-view` is no longer part of the shared thin-scrollbar group.
 - Devil subagent MCP now exposes `delegate_subagent` through a managed `devil_subagent` config block, stdio script, Electron control pipe, Settings toggle, and hidden provider/runtime delegate path.
+- `delegate_subagent` hidden Codex app-server now waits for terminal turn events before reading final text; previous `019f2de5...` test returned the first assistant "checking files" message because the hidden server was disposed too early.
+- `delegate_subagent` MCP results are rendered as `subagent` activity, hidden from the main sidebar, and auto-opened in the right `subagent:<id>` tab so the child chat can be viewed like existing spawned subagents.
+- Existing cached `delegate_subagent 실행` MCP cards are normalized on `history-cache` merge, so older threads such as `019f2de5...` can render as subagent activity without manually deleting cache.
 - Electron app was manually verified: runtime connection, thread creation, and a real `gpt-5.4` turn returned `clean timeline`.
 - Electron app was manually verified: app-server returned existing workspace threads and resumed a selected thread.
 - External proxy operation is not the desired end-user architecture; protocol adapters should live inside `devil-codex` where feasible.

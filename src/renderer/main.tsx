@@ -1096,6 +1096,8 @@ function App(): React.JSX.Element {
   const [sideChatsByThread, setSideChatsByThread] = useState<Record<string, Array<{ id: string; label: string }>>>({});
   const [sideChatCreatingDock, setSideChatCreatingDock] = useState<"right" | "bottom" | null>(null);
   const subagentIdsRef = useRef<Set<string>>(new Set());
+  const autoSubagentSeedKey = useRef<string>("");
+  const autoSubagentSeen = useRef<Set<string>>(new Set());
   useEffect(() => { for (const list of Object.values(sideChatsByThread)) for (const c of list) subagentIdsRef.current.add(c.id); }, [sideChatsByThread]);
   // Hide all side conversations from the main sidebar (spawned subagents are
   // already excluded from thread/list by the app-server's subAgent source).
@@ -1805,6 +1807,20 @@ function App(): React.JSX.Element {
     }
   }, [subagents, subagentNames]);
   const namedSubagents = useMemo(() => subagents.map((agent) => ({ ...agent, label: subagentNames[agent.id] || agent.label })), [subagents, subagentNames]);
+  useEffect(() => {
+    const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
+    const ids = new Set(namedSubagents.map((agent) => agent.id));
+    if (autoSubagentSeedKey.current !== key) {
+      autoSubagentSeedKey.current = key;
+      autoSubagentSeen.current = ids;
+      return;
+    }
+    for (const agent of namedSubagents) {
+      if (autoSubagentSeen.current.has(agent.id)) continue;
+      autoSubagentSeen.current.add(agent.id);
+      openSubagentTab(agent.id, agent.label);
+    }
+  }, [namedSubagents, thread, agentRuntime, workspace, projectDraft]);
   const sideChatList = namedSubagents;
   const environmentSources = useMemo(() => collectEnvironmentSources(items), [items]);
   // Persist right-panel tabs per main thread so returning restores open tabs.
@@ -3597,6 +3613,7 @@ function App(): React.JSX.Element {
   // Spawned subagent ("하위 에이전트") tab — Bot icon + the model's nickname.
   function openSubagentTab(id: string, label: string): void {
     subagentIdsRef.current.add(id);
+    hideThreadIdLocally(id);
     setSubagentNames((prev) => prev[id] ? prev : { ...prev, [id]: label });
     openUtility(`subagent:${id}`);
   }

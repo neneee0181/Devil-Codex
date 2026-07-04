@@ -175,6 +175,24 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
   return { images, text: texts.join("\n").trim() };
 }
 
+function delegateSubagentEntry(item: RawItem, id: string): ThreadActivityEntry | null {
+  const tool = String(item.tool ?? item.name ?? "");
+  if (tool !== "delegate_subagent") return null;
+  const { text } = mcpResultContent(item);
+  const agentThreadId = text.match(/^threadId:\s*([^\s]+)/m)?.[1] ?? "";
+  if (!agentThreadId) return null;
+  const provider = text.match(/^provider:\s*([^\n]+)/m)?.[1]?.trim();
+  const model = text.match(/^model:\s*([^\n]+)/m)?.[1]?.trim();
+  return {
+    id,
+    kind: "subagent",
+    title: provider || model ? `하위 에이전트: ${[provider, model].filter(Boolean).join(" · ")}` : "하위 에이전트",
+    detail: text,
+    status: String(item.status ?? "inProgress") as ThreadActivityEntry["status"],
+    subagent: { agentThreadId, source: "thread_spawn", role: provider || "subagent", nickname: provider || undefined },
+  };
+}
+
 function entryFromItem(item: RawItem): ThreadActivityEntry | null {
   const id = String(item.id ?? crypto.randomUUID());
   const type = String(item.type ?? "");
@@ -185,6 +203,8 @@ function entryFromItem(item: RawItem): ThreadActivityEntry | null {
     return { id, kind: "fileChange", title: `파일 ${files.length}개 수정`, files, status: String(item.status ?? "completed") === "failed" ? "failed" : "completed" };
   }
   if (type === "mcpToolCall" || type === "dynamicToolCall") {
+    const delegateEntry = delegateSubagentEntry(item, id);
+    if (delegateEntry) return delegateEntry;
     const { images, text } = mcpResultContent(item);
     return { id, kind: "mcp", title: `${String(item.tool ?? "도구")} 실행`, detail: text || undefined, images: images.length ? images : undefined, status: String(item.status ?? "inProgress") as ThreadActivityEntry["status"] };
   }
