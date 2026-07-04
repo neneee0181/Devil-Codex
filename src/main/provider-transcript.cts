@@ -27,6 +27,7 @@ type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessi
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
   type?: string;
+  subtype?: string;
   uuid?: string;
   sessionId?: string;
   cwd?: string;
@@ -34,6 +35,8 @@ type ClaudeJsonLine = {
   isSidechain?: boolean;
   version?: string;
   content?: unknown;
+  compactMetadata?: Record<string, unknown>;
+  compact_metadata?: Record<string, unknown>;
   attachment?: { content?: unknown; stdout?: unknown; command?: unknown };
   message?: { role?: string; content?: unknown };
 };
@@ -114,6 +117,33 @@ function claudeLineText(line: ClaudeJsonLine): string {
   const attachment = line.attachment;
   const attachmentText = typeof attachment?.content === "string" ? attachment.content : typeof attachment?.stdout === "string" ? attachment.stdout : "";
   return attachmentText.trim();
+}
+
+function claudeCompactMetadata(line: ClaudeJsonLine): Record<string, unknown> {
+  return line.compactMetadata ?? line.compact_metadata ?? {};
+}
+
+function claudeCompactNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function claudeCompactDetail(line: ClaudeJsonLine): string {
+  const meta = claudeCompactMetadata(line);
+  const pre = claudeCompactNumber(meta.preTokens ?? meta.pre_tokens);
+  const post = claudeCompactNumber(meta.postTokens ?? meta.post_tokens);
+  const duration = claudeCompactNumber(meta.durationMs ?? meta.duration_ms);
+  const parts = [
+    pre ? `압축 전 ${Math.round(pre).toLocaleString()} tokens` : "",
+    post ? `압축 후 ${Math.round(post).toLocaleString()} tokens` : "",
+    duration ? `${Math.round(duration)}ms` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function claudeCompactTitle(line: ClaudeJsonLine): string {
+  const trigger = String(claudeCompactMetadata(line).trigger ?? "");
+  return trigger === "manual" ? "컨텍스트가 수동으로 압축됨" : "컨텍스트가 자동으로 압축됨";
 }
 
 function claudeSessionFallbackText(lines: ClaudeJsonLine[]): string {
@@ -559,6 +589,17 @@ export class ProviderTranscriptStore {
     };
 
     lines.forEach((line, index) => {
+      if (line.type === "system" && line.subtype === "compact_boundary") {
+        const turnId = currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
+        ensureActivity(turnId, {
+          id: String(line.uuid ?? `${threadId}-claude-compact-${index}`),
+          kind: "compaction",
+          title: claudeCompactTitle(line),
+          detail: claudeCompactDetail(line),
+          status: "completed",
+        });
+        return;
+      }
       if (line.type !== "user" && line.type !== "assistant") return;
       const role = String(line.message?.role ?? line.type);
       const content = line.message?.content;

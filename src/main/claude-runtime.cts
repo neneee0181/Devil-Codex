@@ -4,13 +4,13 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 import { EventEmitter } from "node:events";
-import type { AppServerEvent, ApprovalDecision, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
+import type { AppServerEvent, ApprovalDecision, ContextUsage, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
 
 type ClaudeSdkMessage = Record<string, unknown>;
 type ClaudeSdkOptions = Record<string, unknown>;
 type ClaudeSdkContentBlock = Record<string, unknown>;
 type ClaudeSdkUserMessage = { type: "user"; message: { role: "user"; content: string | ClaudeSdkContentBlock[] }; parent_tool_use_id: null };
-type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; modelContextWindow?: number };
+type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
 export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; totalTokens: number };
 
 type TurnContext = {
@@ -266,17 +266,41 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   const record = raw as Record<string, unknown>;
   const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
   const cached = num(record.cache_read_input_tokens) + num(record.cache_creation_input_tokens);
-  const input = num(record.input_tokens) + cached;
+  const input = num(record.input_tokens);
   const output = num(record.output_tokens);
-  if (input + output <= 0) return undefined;
+  if (input + cached + output <= 0) return undefined;
   const models = message.modelUsage && typeof message.modelUsage === "object"
     ? Object.values(message.modelUsage as Record<string, { contextWindow?: unknown }>)
     : [];
   const contextWindow = models.reduce((max, model) => Math.max(max, typeof model.contextWindow === "number" ? model.contextWindow : 0), 0);
+  const promptInput = input + cached;
   return {
-    usage: { input_tokens: input, output_tokens: output, ...(cached ? { cached_input_tokens: cached } : {}), total_tokens: input + output },
+    usage: { input_tokens: input, output_tokens: output, ...(cached ? { cached_input_tokens: cached } : {}), total_tokens: promptInput + output },
+    ...(contextWindow > 0 && promptInput > 0 ? { contextUsage: { usedTokens: promptInput, maxTokens: contextWindow } } : {}),
     ...(contextWindow > 0 ? { modelContextWindow: contextWindow } : {}),
   };
+}
+
+function compactMetadata(message: ClaudeSdkMessage): Record<string, unknown> {
+  const raw = message.compact_metadata ?? message.compactMetadata;
+  return raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+}
+
+function compactNumber(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function compactDetail(meta: Record<string, unknown>): string {
+  const pre = compactNumber(meta.pre_tokens ?? meta.preTokens);
+  const post = compactNumber(meta.post_tokens ?? meta.postTokens);
+  const duration = compactNumber(meta.duration_ms ?? meta.durationMs);
+  const parts = [
+    pre ? `압축 전 ${Math.round(pre).toLocaleString()} tokens` : "",
+    post ? `압축 후 ${Math.round(post).toLocaleString()} tokens` : "",
+    duration ? `${Math.round(duration)}ms` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 type PermissionResultLike =
@@ -319,7 +343,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -378,7 +402,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     const result = await run.then(async () => {
       await normalizeClaudeSessionEntrypoint(input.cwd, nativeSessionId);
       const completedText = finalText || streamedText;
-      await Promise.resolve(input.onCompleted?.(completedText)).catch(() => undefined);
+      await Promise.resolve(input.onCompleted?.(completedText, { turnId })).catch(() => undefined);
       if (completedText && !this.hasStreamedAgentText(input.threadId, turnId)) {
         this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text: completedText } } });
       }
@@ -391,7 +415,11 @@ export class ClaudeCodeRuntime extends EventEmitter {
             id: turnId,
             status: "completed",
             durationMs: Date.now() - startedAt,
-            ...(usageSnapshot ? { usage: usageSnapshot.usage, ...(usageSnapshot.modelContextWindow ? { modelContextWindow: usageSnapshot.modelContextWindow } : {}) } : {}),
+            ...(usageSnapshot ? {
+              usage: usageSnapshot.usage,
+              ...(usageSnapshot.contextUsage ? { contextUsage: usageSnapshot.contextUsage } : {}),
+              ...(usageSnapshot.modelContextWindow ? { modelContextWindow: usageSnapshot.modelContextWindow } : {}),
+            } : {}),
           },
         },
       });
@@ -407,7 +435,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
         this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: `claude-error-${turnId}`, type: "error", message, status } } });
       } else if (finalText || streamedText) {
         const completedText = finalText || streamedText;
-        await Promise.resolve(input.onCompleted?.(completedText)).catch(() => undefined);
+        await Promise.resolve(input.onCompleted?.(completedText, { turnId })).catch(() => undefined);
         if (!this.hasStreamedAgentText(input.threadId, turnId)) {
           this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text: completedText } } });
         }
@@ -518,6 +546,43 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
     if (message.type === "system" && message.subtype === "permission_denied") {
       this.emitEvent({ method: "item/completed", params: { threadId: context.threadId, turnId: context.turnId, item: { id: message.tool_use_id, type: "mcpToolCall", tool: message.tool_name, status: "failed", result: { content: [{ type: "text", text: message.message }] } } } });
+      return;
+    }
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      const meta = compactMetadata(message);
+      const trigger = String(meta.trigger ?? "");
+      const title = trigger === "manual" ? "컨텍스트가 수동으로 압축됨" : "컨텍스트가 자동으로 압축됨";
+      const detail = compactDetail(meta);
+      this.emitEvent({
+        method: "item/completed",
+        params: {
+          threadId: context.threadId,
+          turnId: context.turnId,
+          item: {
+            id: String(message.uuid ?? `claude-compact-${crypto.randomUUID()}`),
+            type: "contextCompaction",
+            title,
+            detail,
+            status: "completed",
+          },
+        },
+      });
+      return;
+    }
+    if (message.type === "system" && message.subtype === "status" && message.status === "compacting") {
+      this.emitEvent({
+        method: "item/started",
+        params: {
+          threadId: context.threadId,
+          turnId: context.turnId,
+          item: {
+            id: `claude-compacting-${context.turnId}`,
+            type: "contextCompaction",
+            title: "컨텍스트 압축 중",
+            status: "inProgress",
+          },
+        },
+      });
       return;
     }
     if (message.type === "stream_event") {

@@ -146,10 +146,14 @@ export function pricingForProviderModel(provider: ProviderId | "unknown", model:
 export function estimateProviderUsageCost(provider: ProviderId | "unknown", model: string, usage: ProviderTokenUsage): { cost: number; pricedTokens: number } {
   const pricing = pricingForProviderModel(provider, model);
   if (!pricing) return { cost: 0, pricedTokens: 0 };
-  const cached = Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens);
-  const uncachedInput = Math.max(0, usage.inputTokens - cached);
+  const rawCached = usage.cachedInputTokens ?? 0;
+  const inputExcludesCache = rawCached > 0 && (usage.totalTokens ?? 0) >= usage.inputTokens + rawCached + usage.outputTokens;
+  const inputIncludesCache = rawCached > 0 && !inputExcludesCache && usage.inputTokens >= rawCached;
+  const cached = rawCached;
+  const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
+  const pricedTokens = Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens);
   const inputCost = uncachedInput * pricing.input / 1_000_000;
   const cachedCost = cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
   const outputCost = usage.outputTokens * pricing.output / 1_000_000;
-  return { cost: inputCost + cachedCost + outputCost, pricedTokens: usage.inputTokens + usage.outputTokens };
+  return { cost: inputCost + cachedCost + outputCost, pricedTokens };
 }

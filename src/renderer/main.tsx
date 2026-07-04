@@ -38,7 +38,7 @@ import { isPrimaryModifier, shortcut } from "./shortcuts";
 import "./styles.css";
 
 type AppView = "thread" | "search" | "archive" | "plugins" | "automations" | "settings";
-type NavigationEntry = { view: AppView; thread: ThreadRef | null; workspace: string; items: ThreadHistoryItem[]; projectDraft: boolean; environmentOpen: boolean; settingsSection: string; search: string };
+type NavigationEntry = { view: AppView; runtime: AgentRuntimeId; thread: ThreadRef | null; workspace: string; items: ThreadHistoryItem[]; projectDraft: boolean; environmentOpen: boolean; settingsSection: string; search: string };
 type TextPromptState = { title: string; label: string; initialValue: string; placeholder?: string; confirmLabel: string; resolve: (value: string | null) => void };
 type ProjectSortMode = "manual" | "created" | "updated";
 type SidebarLayoutMode = "project" | "recent" | "timeline" | "projectsDown";
@@ -776,8 +776,16 @@ function runtimeAgentLabel(runtime: AgentRuntimeId, provider: ProviderId | undef
   return `${base}(${providerDisplayName(provider, providers)})`;
 }
 
+function providerUsageInputBreakdown(usage: ProviderTokenUsage): { uncachedInput: number; cached: number; total: number } {
+  const cached = usage.cachedInputTokens ?? 0;
+  const inputExcludesCache = cached > 0 && (usage.totalTokens ?? 0) >= usage.inputTokens + cached + usage.outputTokens;
+  const inputIncludesCache = cached > 0 && !inputExcludesCache && usage.inputTokens >= cached;
+  const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
+  return { uncachedInput, cached, total: Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens) };
+}
+
 function providerTokenTotal(usage: ProviderTokenUsage): number {
-  return usage.totalTokens && usage.totalTokens > 0 ? usage.totalTokens : usage.inputTokens + usage.outputTokens;
+  return providerUsageInputBreakdown(usage).total;
 }
 
 function formatUsd(value: number): string {
@@ -835,9 +843,10 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     if (entry.status === "failed") row.failed += 1;
     row.durationMs += entry.durationMs ?? 0;
     if (entry.usage) {
-      row.inputTokens += entry.usage.inputTokens;
+      const usageBreakdown = providerUsageInputBreakdown(entry.usage);
+      row.inputTokens += usageBreakdown.uncachedInput;
       row.outputTokens += entry.usage.outputTokens;
-      row.cachedInputTokens += entry.usage.cachedInputTokens ?? 0;
+      row.cachedInputTokens += usageBreakdown.cached;
       row.reasoningOutputTokens += entry.usage.reasoningOutputTokens ?? 0;
       row.totalTokens += providerTokenTotal(entry.usage);
       const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
@@ -1124,6 +1133,7 @@ function App(): React.JSX.Element {
   const runtimeSnapshots = useRef<Partial<Record<AgentRuntimeId, RuntimeThreadSnapshot>>>({});
   const navigationBack = useRef<NavigationEntry[]>([]);
   const navigationForward = useRef<NavigationEntry[]>([]);
+  const [navigationState, setNavigationState] = useState({ canGoBack: false, canGoForward: false });
   useDismissShellPopovers(closePopovers);
   const quickUsage = useProviderUsage(accountUsageOpen || environmentOpen);
 
@@ -1260,7 +1270,9 @@ function App(): React.JSX.Element {
       const activeThreadId = threadRef.current?.id;
       if (!activeThreadId) return;
       if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
-      void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: threadRef.current?.runtime ?? agentRuntime, accountId: threadRef.current?.accountId }).then((history) => {
+      const activeRuntime = threadRef.current?.runtime ?? agentRuntime;
+      if (activeRuntime === "claude-code") return;
+      void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: activeRuntime, accountId: threadRef.current?.accountId }).then((history) => {
         const localHistory = threadHistoryCache.current.get(activeThreadId) ?? itemsRef.current;
         const merged = mergeTimelineItems(localHistory, history);
         threadHistoryCache.current.set(activeThreadId, merged);
@@ -2298,13 +2310,25 @@ function App(): React.JSX.Element {
 
   function navigationSnapshot(): NavigationEntry {
     saveCurrentThreadScrollPosition();
-    if (thread?.id) threadHistoryCache.current.set(thread.id, itemsRef.current);
-    return { view, thread, workspace, items, projectDraft, environmentOpen, settingsSection, search };
+    const currentThread = threadRef.current ?? thread;
+    if (currentThread?.id) threadHistoryCache.current.set(currentThread.id, itemsRef.current);
+    const runtimeForEntry = currentThread?.runtime ?? agentRuntime;
+    return { view, runtime: runtimeForEntry, thread: currentThread, workspace, items: itemsRef.current, projectDraft, environmentOpen, settingsSection, search };
   }
 
   function restoreNavigation(entry: NavigationEntry): void {
     activeResume.current = entry.thread?.id ?? null;
     if (entry.thread?.id) setInitializingThreadId(entry.thread.id);
+    const entryRuntime = entry.thread?.runtime ?? entry.runtime;
+    if (entryRuntime !== agentRuntime) {
+      runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
+      const currentPanelKey = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
+      panelByThread.current[currentPanelKey] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
+      bottomByThread.current[currentPanelKey] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
+      keepThreadOnRuntimeSwitch.current = true;
+      setAgentRuntimeState(entryRuntime);
+      localStorage.setItem(AGENT_RUNTIME_KEY, entryRuntime);
+    }
     threadRef.current = entry.thread;
     const restoredItems = entry.thread?.id ? threadHistoryCache.current.get(entry.thread.id) ?? entry.items : entry.items;
     setView(entry.view);
@@ -2326,7 +2350,7 @@ function App(): React.JSX.Element {
       setUtilityPanelOpen(false);
       setUtilityPanelExpanded(false);
     } else {
-      const panelKey = threadStateKey(entry.thread?.runtime ?? agentRuntime, entry.thread?.id, emptyThreadStateId(entry.workspace, entry.projectDraft));
+      const panelKey = threadStateKey(entryRuntime, entry.thread?.id, emptyThreadStateId(entry.workspace, entry.projectDraft));
       const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
       setUtilityTabs(panel.tabs);
       setUtilityActive(panel.active);
@@ -2341,11 +2365,19 @@ function App(): React.JSX.Element {
     if (entry.workspace) void refreshChanges(entry.workspace);
   }
 
+  function syncNavigationState(): void {
+    setNavigationState({
+      canGoBack: navigationBack.current.length > 0,
+      canGoForward: navigationForward.current.length > 0,
+    });
+  }
+
   function navigate(next: Partial<NavigationEntry>): void {
     const current = navigationSnapshot();
     navigationBack.current.push(current);
     navigationForward.current = [];
     restoreNavigation({ ...current, ...next });
+    syncNavigationState();
   }
 
   function goBack(): void {
@@ -2353,6 +2385,7 @@ function App(): React.JSX.Element {
     if (!previous) return;
     navigationForward.current.push(navigationSnapshot());
     restoreNavigation(previous);
+    syncNavigationState();
   }
 
   function goForward(): void {
@@ -2360,6 +2393,7 @@ function App(): React.JSX.Element {
     if (!next) return;
     navigationBack.current.push(navigationSnapshot());
     restoreNavigation(next);
+    syncNavigationState();
   }
 
   function newThread(scopedToProject = false): void {
@@ -3531,8 +3565,8 @@ function App(): React.JSX.Element {
         <WindowsTitlebar
           sidebarCollapsed={sidebarCollapsed}
           menuOpen={shellMenuOpen}
-          canGoBack={navigationBack.current.length > 0}
-          canGoForward={navigationForward.current.length > 0}
+          canGoBack={navigationState.canGoBack}
+          canGoForward={navigationState.canGoForward}
           onSidebar={() => { closePopovers(); setSidebarCollapsed((value) => !value); }}
           onBack={goBack}
           onForward={goForward}
@@ -3548,7 +3582,7 @@ function App(): React.JSX.Element {
         />
       )}
       <aside className="sidebar">
-        <div className="window-nav" aria-label="탐색"><button onClick={() => { closePopovers(); setSidebarCollapsed(true); }} aria-label="사이드바 닫기"><PanelLeftClose size={17} /></button><span className="sidebar-spacer" /><button onClick={goBack} disabled={navigationBack.current.length === 0} aria-label="뒤로"><ArrowLeft size={18} /></button><button onClick={goForward} disabled={navigationForward.current.length === 0} aria-label="앞으로"><ArrowRight size={18} /></button></div>
+        <div className="window-nav" aria-label="탐색"><button onClick={() => { closePopovers(); setSidebarCollapsed(true); }} aria-label="사이드바 닫기"><PanelLeftClose size={17} /></button><span className="sidebar-spacer" /><button onClick={goBack} disabled={!navigationState.canGoBack} aria-label="뒤로"><ArrowLeft size={18} /></button><button onClick={goForward} disabled={!navigationState.canGoForward} aria-label="앞으로"><ArrowRight size={18} /></button></div>
         <nav className="primary-nav">
           <button onClick={() => void newThread()} disabled={busy && !thread?.id}><MessageSquarePlus />새 채팅</button>
           <button className={commandPaletteOpen ? "selected" : ""} onClick={() => { closePopovers(); setCommandPaletteOpen(true); }}><Search />검색</button>
@@ -3660,8 +3694,8 @@ function App(): React.JSX.Element {
           <div className="topbar-left">
             {appInfo?.platform === "darwin" && sidebarCollapsed && (
               <MacCollapsedNav
-                canGoBack={navigationBack.current.length > 0}
-                canGoForward={navigationForward.current.length > 0}
+                canGoBack={navigationState.canGoBack}
+                canGoForward={navigationState.canGoForward}
                 onSidebar={() => { closePopovers(); setSidebarCollapsed(false); }}
                 onBack={goBack}
                 onForward={goForward}
@@ -4246,6 +4280,7 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
   const [usageExpanded, setUsageExpanded] = useState(false);
   const hiddenUsageModels = Math.max(0, usage.models.length - ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
   const visibleUsageModels = usageExpanded ? usage.models : usage.models.slice(0, ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
+  const usageHasClaudeCode = usage.models.some((row) => row.provider === "claude-code");
   useEffect(() => {
     if (!menu) return;
     const close = (event: PointerEvent): void => {
@@ -4318,7 +4353,7 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
           </div>
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
             <span>컨텍스트 상태</span>
-            <b>{usage.contextOverflow ? "다음 요청에서 압축 필요" : `${Math.round((usage.contextTokens / usage.maxTokens) * 100)}% 사용`}</b>
+            <b>{usage.contextOverflow ? usageHasClaudeCode ? "다음 요청에서 Claude Code 자동 압축" : "다음 요청에서 압축 필요" : `${Math.round((usage.contextTokens / usage.maxTokens) * 100)}% 사용`}</b>
           </div>
           <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.maxTokens)} max={usage.maxTokens} />
         </>}

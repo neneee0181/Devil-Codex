@@ -177,7 +177,13 @@ function entryFromItem(item: RawItem): ThreadActivityEntry | null {
       subagent: { agentThreadId: String(item.agentThreadId ?? item.agent_thread_id ?? ""), agentPath: agentPath || undefined, source: "thread_spawn", role: role || undefined },
     };
   }
-  if (type === "contextCompaction") return { id, kind: "compaction", title: "컨텍스트가 자동으로 압축됨", status: "completed" };
+  if (type === "contextCompaction") return {
+    id,
+    kind: "compaction",
+    title: String(item.title ?? "컨텍스트가 자동으로 압축됨"),
+    detail: String(item.detail ?? ""),
+    status: String(item.status ?? "completed") as ThreadActivityEntry["status"],
+  };
   if (type === "providerDiagnostics") return { id, kind: "diagnostic", title: String(item.title ?? "Provider 진단"), detail: String(item.detail ?? ""), status: String(item.status ?? "completed") as ThreadActivityEntry["status"] };
   if (type === "error") return { id, kind: "message", title: "Provider 응답 실패", detail: String(item.message ?? item.text ?? item.error ?? "Provider가 이유를 알 수 없는 실패를 반환했습니다."), status: "failed" };
   if (type === "plan") return { id, kind: "message", title: "계획", detail: String(item.text ?? ""), status: "completed" };

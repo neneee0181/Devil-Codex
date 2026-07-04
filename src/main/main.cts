@@ -1842,7 +1842,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           // Save the native session id as soon as it is known so a turn that
           // fails midway can still resume the same Claude session on retry.
           onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
-          onCompleted: (text) => providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId }),
+          onCompleted: (text, completed) => text.trim()
+            ? providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId })
+            : undefined,
         });
         await codexProxy.finishRuntimeRequest(requestLogId, { status: "completed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, ...(result.usage ? { usage: result.usage } : {}) });
         await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });

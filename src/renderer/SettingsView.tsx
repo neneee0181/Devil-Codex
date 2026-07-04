@@ -243,11 +243,14 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
 
 function addUsage(row: ModelUsageRow, usage: ProviderTokenUsage): void {
   const cached = usage.cachedInputTokens ?? 0;
-  row.inputTokens += usage.inputTokens;
+  const inputExcludesCache = cached > 0 && (usage.totalTokens ?? 0) >= usage.inputTokens + cached + usage.outputTokens;
+  const inputIncludesCache = cached > 0 && !inputExcludesCache && usage.inputTokens >= cached;
+  const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
+  row.inputTokens += uncachedInput;
   row.cachedInputTokens += cached;
   row.outputTokens += usage.outputTokens;
   row.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;
-  row.totalTokens += usage.inputTokens + usage.outputTokens;
+  row.totalTokens += Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens);
 }
 
 function providerFallbackLabel(provider: ProviderId): string {
