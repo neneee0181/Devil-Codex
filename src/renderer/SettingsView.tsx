@@ -185,7 +185,7 @@ function formatReset(value: string | number | null | undefined): string {
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
   const day = date.toLocaleDateString("ko-KR", { month: "short", day: "numeric" });
-  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: true }).replace(/^(오전|오후)\s+/, "$1\u00a0");
   return `${day} ${time} 초기화`;
 }
 

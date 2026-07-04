@@ -334,7 +334,8 @@ export const TurnActivity = memo(function TurnActivity({ item, onOpenFile }: { i
   const entries = visibleActivityEntries(item.activities ?? []);
   const hasRunningEntry = entries.some((entry) => entry.status === "inProgress");
   const running = item.status === "inProgress" || hasRunningEntry;
-  const failed = !running && item.status === "failed";
+  const interrupted = !running && item.status === "interrupted";
+  const failed = !running && (item.status === "failed" || interrupted);
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(running);
   const [tick, setTick] = useState(0);
@@ -358,9 +359,9 @@ export const TurnActivity = memo(function TurnActivity({ item, onOpenFile }: { i
     const labels = [files ? `파일 ${files}개 수정` : "", commands ? `명령어 ${commands}개 실행` : "", webSearches ? `웹 검색 ${webSearches}개` : "", tools ? `도구 ${tools}개 실행` : "", subagents ? `서브에이전트 ${subagents}개` : "", diagnostics ? `진단 ${diagnostics}개` : ""].filter(Boolean);
     return labels.join(" · ");
   }, [entries]);
-  const label = running ? `${durationLabel(elapsed)} 동안 작업 중` : failed ? `${durationLabel(elapsed)} 동안 작업 실패` : `${durationLabel(elapsed)} 동안 작업`;
+  const label = running ? `${durationLabel(elapsed)} 동안 작업 중` : interrupted ? `${durationLabel(elapsed)} 동안 작업 중단` : failed ? `${durationLabel(elapsed)} 동안 작업 실패` : `${durationLabel(elapsed)} 동안 작업`;
   const dots = ".".repeat((tick % 3) + 1);
-  const liveStatus = running ? `${thinkingStatusText(runningEntry)}${dots}` : failed ? "작업 실패" : "작업 완료";
+  const liveStatus = running ? `${thinkingStatusText(runningEntry)}${dots}` : interrupted ? "작업 중단됨" : failed ? "작업 실패" : "작업 완료";
 
   const motionTransition = reduceMotion ? { duration: 0 } : { duration: .22, ease: [.22, 1, .36, 1] as const };
 

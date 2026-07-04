@@ -370,13 +370,13 @@ function normalizeFinalAnswerActivity(items: ThreadHistoryItem[], turnId: string
   return changed ? next : items;
 }
 
-function finalizeRunningActivityEntries(entries: ThreadActivityEntry[] | undefined): ThreadActivityEntry[] | undefined {
+function finalizeRunningActivityEntries(entries: ThreadActivityEntry[] | undefined, status: ThreadActivityEntry["status"] = "completed"): ThreadActivityEntry[] | undefined {
   if (!entries?.length) return entries;
   let changed = false;
   const next = entries.map((entry) => {
     if (entry.status !== "inProgress") return entry;
     changed = true;
-    return { ...entry, status: "completed" as const };
+    return { ...entry, status };
   });
   return changed ? next : entries;
 }
@@ -406,10 +406,11 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
     const status = rawStatus === "failed" && hasFinalAnswer ? "completed" : rawStatus;
     const contextUsage = contextUsageFromRaw(turn, params);
     const tokenUsage = tokenUsageSnapshotFromRaw(turn, params);
+    const entryStatus: ThreadActivityEntry["status"] = status === "completed" ? "completed" : "failed";
     const completed = updateActivity(items, turnId, (activity) => ({
       ...activity,
       status,
-      activities: status === "completed" ? finalizeRunningActivityEntries(activity.activities) : activity.activities,
+      activities: finalizeRunningActivityEntries(activity.activities, entryStatus),
       durationMs: Number(turn.durationMs ?? (Date.now() - (activity.startedAt ?? Date.now()))),
       contextUsage: contextUsage ?? tokenUsage?.contextUsage ?? activity.contextUsage,
       ...(tokenUsage?.tokenUsage ? { tokenUsage: tokenUsage.tokenUsage } : {}),

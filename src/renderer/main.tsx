@@ -814,7 +814,7 @@ function compactUsageReset(value: string | number | null | undefined): string {
   const now = new Date();
   const sameYear = date.getFullYear() === now.getFullYear();
   const day = date.toLocaleDateString("ko-KR", sameYear ? { month: "short", day: "numeric" } : { year: "2-digit", month: "short", day: "numeric" });
-  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: true }).replace(/^(오전|오후)\s+/, "$1\u00a0");
   return `${day} ${time}`;
 }
 
