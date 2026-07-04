@@ -63,9 +63,9 @@ export function UtilityPanel({
   onBrowserAsk: (attachment: ThreadAttachment, text?: string) => void;
   onTerminalAsk: (text: string) => void;
   onTerminalOpenPath: (path: string) => void;
-  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string }>;
+  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string; auto?: boolean }>;
   onToggleExpanded: () => void;
-  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string }) => void;
+  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string; auto?: boolean }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
   onOpenSubagent: (id: string, label: string) => void;
   onNewSideChat: () => void;

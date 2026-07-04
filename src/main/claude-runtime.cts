@@ -157,10 +157,11 @@ function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: Thr
   if (sandboxMode === "danger-full-access" || approvalPolicy === "never") return "bypassPermissions";
   // Claude Code's own permission engine decides WHEN to ask; Devil only
   // supplies the answer UI via the canUseTool bridge (same modal as Codex
-  // approvals). read-only stays strict; the normal agent mode auto-accepts
-  // file edits and asks for risky commands, matching Claude Code's CLI feel.
+  // approvals). Keep the default mode aligned with the stock CLI instead of
+  // auto-accepting edits; fewer silent tool loops means less repeated cached
+  // context usage in long sessions.
   if (sandboxMode === "read-only") return "default";
-  return "acceptEdits";
+  return "default";
 }
 
 type ClaudeSdkModule = {
@@ -394,6 +395,10 @@ function compactDetail(meta: Record<string, unknown>): string {
 type PermissionResultLike =
   | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: unknown[] }
   | { behavior: "deny"; message: string; interrupt?: boolean };
+type UserDialogRequestLike = { dialogKind: string; payload: Record<string, unknown>; toolUseID?: string };
+type UserDialogResultLike = { behavior: "completed"; result: unknown } | { behavior: "cancelled" };
+type OnUserDialogLike = (request: UserDialogRequestLike, options: { signal: AbortSignal }) => Promise<UserDialogResultLike>;
+type OnAskUserQuestionToolLike = (input: Record<string, unknown>, options: { signal: AbortSignal }) => Promise<PermissionResultLike>;
 
 export class ClaudeCodeRuntime extends EventEmitter {
   private active = new Map<string, AbortController>();
@@ -471,7 +476,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onUserDialog?: OnUserDialogLike; supportedDialogKinds?: string[]; onAskUserQuestionTool?: OnAskUserQuestionToolLike; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -517,7 +522,12 @@ export class ClaudeCodeRuntime extends EventEmitter {
         settings: claudeCodeSettings(),
         permissionMode: mode,
         allowDangerouslySkipPermissions: mode === "bypassPermissions",
-        ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId) }),
+        ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId, input.onAskUserQuestionTool) }),
+        ...(input.onUserDialog && input.supportedDialogKinds?.length ? {
+          onUserDialog: input.onUserDialog,
+          supportedDialogKinds: input.supportedDialogKinds,
+          toolConfig: { askUserQuestion: { previewFormat: "markdown" } },
+        } : {}),
         mcpServers: parseMcpServers(input.mcpConfig),
         // Resume an existing native Claude session when it is already on disk.
         // For a brand-new Devil thread, reserve the same UUID as Claude's
@@ -615,8 +625,14 @@ export class ClaudeCodeRuntime extends EventEmitter {
   // Claude Code decides when a tool needs permission; Devil supplies the
   // answer UI. Emits the same requestApproval events the Codex app-server
   // uses, so the renderer reuses the existing approval dialog unchanged.
-  private canUseToolBridge(threadId: string, turnId: string): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
+  private canUseToolBridge(threadId: string, turnId: string, onAskUserQuestionTool?: OnAskUserQuestionToolLike): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
     return (toolName, input, options) => new Promise<PermissionResultLike>((resolve) => {
+      if (toolName === "AskUserQuestion" && onAskUserQuestionTool) {
+        void onAskUserQuestionTool(input, { signal: options.signal })
+          .then(resolve)
+          .catch(() => resolve({ behavior: "deny", message: "AskUserQuestion 모달 처리 중 오류가 발생했습니다.", interrupt: false }));
+        return;
+      }
       const requestId = `claude-approval-${crypto.randomUUID()}`;
       const summary = toolSummary(toolName, input);
       const changedPath = fileChangePath(toolName, input);

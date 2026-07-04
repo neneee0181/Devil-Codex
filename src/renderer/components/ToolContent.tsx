@@ -1,4 +1,4 @@
-import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, FolderOpen, Globe2, MessageSquarePlus, MoreVertical, Plus, RotateCcw, ScanLine, Search, Send, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, FolderOpen, Globe2, MessageSquarePlus, MoreVertical, Plus, RotateCcw, ScanLine, Search, Send, Sparkles, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -110,7 +110,93 @@ function accountKey(provider: ProviderInfo, account?: ProviderAccount): string {
   return `${provider.id}:${account?.id ?? "default"}`;
 }
 
-type SideChatPick = { provider: ProviderId; accountId?: string; model: string };
+type SideChatPick = { provider: ProviderId; accountId?: string; model: string; auto?: boolean };
+type SideChatModelCandidate = SideChatPick & { label: string; score: number };
+
+function pickLabel(providers: ProviderInfo[], pick: SideChatPick): string {
+  const provider = providers.find((item) => item.id === pick.provider);
+  const account = provider?.accounts.find((item) => item.id === pick.accountId);
+  const model = provider ? accountModels(provider, account).find((item) => item.id === pick.model) : undefined;
+  return `${provider?.label ?? pick.provider}${account ? ` · ${accountLabel(account)}` : ""} · ${model?.label ?? pick.model}`;
+}
+
+function hasUsableCredentials(provider: ProviderInfo, account: ProviderAccount | undefined): boolean {
+  if (provider.id === "codex") return true;
+  if (provider.kind === "login") return Boolean(account && provider.modelsLoaded);
+  if (!provider.keyRequired) return Boolean(account ? (account.models?.length ?? provider.models.length) > 0 : provider.modelsLoaded);
+  return Boolean(account && account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
+}
+
+function sideChatProviderCandidates(provider: ProviderInfo): Array<{ account?: ProviderAccount; models: ProviderModel[] }> {
+  const accounts = provider.accounts.length ? provider.accounts : [undefined];
+  return accounts.flatMap((account) => {
+    if (!hasUsableCredentials(provider, account)) return [];
+    const models = accountModels(provider, account);
+    return models.length ? [{ account, models }] : [];
+  });
+}
+
+function scoreSideChatModel(provider: ProviderInfo, model: ProviderModel, text: string): number {
+  const id = `${provider.id}:${model.id}`.toLowerCase();
+  const capability = model.capability;
+  const codeTask = /(code|코드|수정|버그|리팩|테스트|파일|구현|review|리뷰|diff|build|lint|typecheck)/i.test(text);
+  let score = 0;
+  if (capability?.tools === "native") score += 60;
+  else if (capability?.tools === "limited") score += 28;
+  else if (capability?.tools === "unknown") score += 8;
+  if (capability?.diagnostics === "good") score += 45;
+  else if (capability?.diagnostics === "limited") score += 22;
+  else if (capability?.diagnostics === "experimental") score += 6;
+  const providerScore: Partial<Record<ProviderId, number>> = {
+    codex: 44,
+    anthropic: 40,
+    openai: 38,
+    copilot: 34,
+    google: 28,
+    openrouter: 24,
+    xai: 22,
+    mistral: 20,
+    moonshot: 20,
+    deepseek: 16,
+    "openrouter-free": 6,
+    ollama: 4,
+    vllm: 4,
+    "lm-studio": 4,
+  };
+  score += providerScore[provider.id] ?? 14;
+  if (/\b(codex|code|codestral|kimi|sonnet|gpt-5|claude|opus|grok-code)\b/.test(id)) score += codeTask ? 22 : 12;
+  if (/\b(pro|large|reasoner|opus)\b/.test(id)) score += codeTask ? 12 : 6;
+  if (/\b(mini|haiku|flash|highspeed|fast|nano)\b/.test(id)) score += codeTask ? 3 : 12;
+  if (id.includes("free")) score -= 18;
+  if (id.includes("experimental")) score -= 8;
+  return score;
+}
+
+function sideChatModelCandidates(providers: ProviderInfo[], text: string, current: SideChatPick): SideChatModelCandidate[] {
+  const rows = providers.flatMap((provider) => sideChatProviderCandidates(provider).flatMap(({ account, models }) => models.map((model) => ({
+    provider: provider.id,
+    accountId: account?.id,
+    model: model.id,
+    label: pickLabel(providers, { provider: provider.id, accountId: account?.id, model: model.id }),
+    score: scoreSideChatModel(provider, model, text),
+  }))));
+  const seen = new Set<string>();
+  const ranked = rows
+    .sort((a, b) => b.score - a.score)
+    .filter((item) => {
+      const key = `${item.provider}:${item.accountId ?? "default"}:${item.model}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const currentCandidate: SideChatModelCandidate = {
+    ...current,
+    label: pickLabel(providers, current),
+    score: -1,
+  };
+  const recommended = ranked.filter((item) => !(item.provider === current.provider && item.accountId === current.accountId && item.model === current.model)).slice(0, 3);
+  return [...recommended, currentCandidate];
+}
 
 function SideChatModelPicker({ value, providers, onChange }: { value: SideChatPick; providers: ProviderInfo[]; onChange: (pick: SideChatPick) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
@@ -205,7 +291,11 @@ function SideChatModelPicker({ value, providers, onChange }: { value: SideChatPi
     setVisibleCounts((current) => ({ ...current, [accountKey(provider, account)]: Math.min(models.length, visibleCount(provider, account) + sideChatModelPageSize) }));
   };
   const choose = (provider: ProviderInfo, account: ProviderAccount | undefined, model: { id: string }): void => {
-    onChange({ provider: provider.id, accountId: account?.id, model: model.id });
+    onChange({ provider: provider.id, accountId: account?.id, model: model.id, auto: false });
+    close();
+  };
+  const setAuto = (): void => {
+    onChange({ ...value, auto: true });
     close();
   };
 
@@ -218,6 +308,10 @@ function SideChatModelPicker({ value, providers, onChange }: { value: SideChatPi
       <AnimatePresence>
         {open && <motion.div ref={menuRef} className="side-chat-model-menu" style={{ left: menuPos.left, top: menuPos.top }} initial={{ opacity: 0, y: 4, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 3, scale: .98 }} transition={{ duration: .14, ease: [.4, 0, .2, 1] }}>
           <div className="model-section-label">모델</div>
+          <button type="button" className={`model-option side-chat-auto-option ${value.auto !== false ? "active" : ""}`} onClick={setAuto}>
+            <span className="model-option-label"><strong>자동 추천</strong><small><i>fallback 2회</i><i>tool 우선</i></small></span>
+            {value.auto !== false && <Check size={15} />}
+          </button>
           {connected.length === 0 && <p className="model-provider-empty">설정 → 연결에서 사용 가능한 모델을 먼저 연결하세요.</p>}
           {connected.map((provider) => {
             const isExpanded = expanded.has(provider.id);
@@ -666,8 +760,9 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
   const [loaded, setLoaded] = useState(history !== undefined);
   const [draft, setDraft] = useState(() => readSideChatDraft(thread.id));
   const [sending, setSending] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
   // Picked model is persisted by the parent (per subagent) so it survives tab switches.
-  const picked = pick ?? { provider: target.provider, accountId: target.accountId, model: target.model };
+  const picked = pick ?? { provider: target.provider, accountId: target.accountId, model: target.model, auto: true };
   const attach = useAttachments();
   const fileInput = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -701,11 +796,28 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
     attach.clear();
     const baseAgentCount = (history ?? []).filter((m) => m.kind === "agent").length;
     try {
-      // Best-effort resume: a freshly created side-chat thread has no rollout yet
-      // (already loaded from createThread), so a failed resume is fine — proceed.
-      if (runtime === "codex" && picked.provider === "codex") await window.devilCodex.resumeThread({ id: thread.id, model: picked.model }).catch(() => undefined);
-      console.log("[devil-sidechat] send", { threadId: thread.id, ...picked });
-      await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: picked.model, runtime, provider: picked.provider, accountId: picked.accountId ?? accountId, subagent: true, attachments: images, attachmentDetails: atts });
+      const attempts = picked.auto === false ? [{ ...picked, label: pickLabel(providers, picked), score: 0 }] : sideChatModelCandidates(providers, text, picked);
+      let lastError: unknown;
+      for (let index = 0; index < attempts.length; index += 1) {
+        const attempt = attempts[index]!;
+        try {
+          setModelStatus(`${index === 0 ? "추천" : "fallback"}: ${attempt.label}`);
+          if (attempt.auto !== picked.auto || attempt.provider !== picked.provider || attempt.accountId !== picked.accountId || attempt.model !== picked.model) onPick({ provider: attempt.provider, accountId: attempt.accountId, model: attempt.model, auto: picked.auto !== false });
+          // Best-effort resume: a freshly created side-chat thread has no rollout yet
+          // (already loaded from createThread), so a failed resume is fine — proceed.
+          if (runtime === "codex" && attempt.provider === "codex") await window.devilCodex.resumeThread({ id: thread.id, model: attempt.model }).catch(() => undefined);
+          console.log("[devil-sidechat] send", { threadId: thread.id, ...attempt });
+          await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: attempt.model, runtime, provider: attempt.provider, accountId: attempt.accountId ?? accountId, subagent: true, attachments: images, attachmentDetails: atts });
+          lastError = undefined;
+          setModelStatus(`사용 모델: ${attempt.label}`);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (index === attempts.length - 1) throw error;
+          setModelStatus(`실패 후 fallback: ${attempt.label}`);
+        }
+      }
+      if (lastError) throw lastError;
       // Fallback: live events may not stream for a non-active thread; poll the
       // thread until the agent reply lands, then show the authoritative history.
       for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -717,6 +829,7 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
       onHistory([...seeded, { id: `err-${Date.now()}`, kind: "agent", text: `요청 실패: ${error instanceof Error ? error.message : String(error)}` }]);
     } finally {
       setSending(false);
+      window.setTimeout(() => setModelStatus(null), 3500);
     }
   };
 
@@ -724,6 +837,7 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
   const working = busy || sending;
   return <div className="side-chat">
     <header className="side-chat-head"><Bot size={15} /><strong>{thread.label}</strong>
+      {picked.auto !== false && <span className="side-chat-auto-badge" title="작업 성격과 provider capability를 기준으로 모델을 자동 추천하고 실패 시 fallback합니다."><Sparkles size={12} />자동</span>}
       <SideChatModelPicker value={picked} providers={providers} onChange={onPick} />
     </header>
     <div className="side-chat-body" ref={bodyRef}>
@@ -733,7 +847,7 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
             {item.attachments?.length ? <AttachmentGallery attachments={item.attachments} align={item.kind === "user" ? "end" : "start"} /> : null}
             {item.text && <MarkdownContent text={item.text} onOpenFile={() => undefined} />}
           </div>)}
-      {working && <div className="side-chat-working"><span className="side-chat-spinner" />작업 중…</div>}
+      {working && <div className="side-chat-working"><span className="side-chat-spinner" />{modelStatus ?? "작업 중…"}</div>}
     </div>
     <div className="side-chat-compose" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const files = Array.from(event.dataTransfer.files ?? []); if (files.length) { event.preventDefault(); attach.addFiles(files); } }}>
       {attach.attachments.length > 0 && <AttachmentGallery attachments={attach.attachments} onRemove={attach.remove} />}

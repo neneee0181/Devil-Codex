@@ -53,10 +53,10 @@ export function BottomDock({
   subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
-  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string }>;
+  subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string; auto?: boolean }>;
   onTerminalAsk: (text: string) => void;
   onTerminalOpenPath: (path: string) => void;
-  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string }) => void;
+  onSubagentPick: (id: string, pick: { provider: ProviderId; accountId?: string; model: string; auto?: boolean }) => void;
   onSubagentHistory: (id: string, items: ThreadHistoryItem[]) => void;
   onNewSideChat: () => void;
   sideChatCreating?: boolean;

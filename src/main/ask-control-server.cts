@@ -63,6 +63,26 @@ export class AskControlServer {
     resolver(answers);
   }
 
+  ask(questions: AskQuestionPayload[], signal?: AbortSignal): Promise<AskAnswerPayload[] | null> {
+    if (!questions.length) return Promise.resolve(null);
+    const id = randomUUID();
+    return new Promise<AskAnswerPayload[] | null>((resolve) => {
+      let settled = false;
+      const finish = (answers: AskAnswerPayload[] | null): void => {
+        if (settled) return;
+        settled = true;
+        this.pending.delete(id);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(answers);
+      };
+      const onAbort = (): void => finish(null);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pending.set(id, finish);
+      this.send("ask:request", { id, questions });
+      setTimeout(() => finish(null), ANSWER_TIMEOUT_MS);
+    });
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const send = (code: number, body: unknown): void => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
     try {
@@ -72,12 +92,7 @@ export class AskControlServer {
       const body = await readJson(req);
       const questions = normalizeQuestions(body.questions);
       if (!questions.length) return send(400, { error: "no questions" });
-      const id = randomUUID();
-      const answers = await new Promise<AskAnswerPayload[] | null>((resolve) => {
-        this.pending.set(id, resolve);
-        this.send("ask:request", { id, questions });
-        setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); resolve(null); } }, ANSWER_TIMEOUT_MS);
-      });
+      const answers = await this.ask(questions);
       send(200, { answers, cancelled: answers === null });
     } catch (error) {
       send(500, { error: error instanceof Error ? error.message : String(error) });

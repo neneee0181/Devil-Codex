@@ -263,3 +263,27 @@ Mac UI mostly polished; next target Windows. Focus: provider/API expansion.
 
 ## Resume
 .memoc/wiki/knowledge/topics/opencodex-port-plan.md
+
+## [2026-07-04T08:44:44] archived summary (993B)
+
+---
+memoc: true
+type: state
+scope: project-memory
+created: 2026-06-27T22:05:00
+updated: 2026-07-04T16:40:13+09:00
+status: active
+tags:
+  - memoc
+  - memoc/state
+---
+# Session Summary
+Last: 2026-07-04T17:39:00+09:00
+Replace, do not append. Keep <800B.
+History: worklog. Resume risks: 04-handoff.md.
+
+## Status
+- v0.1.35 prep: side-chat/subagent tabs default to auto model selection with fallback candidates. Ask-user MCP is now setting-gated (`ask_user_mcp_enabled`, default true): settings UI exposes "AI 질문 모달 MCP"; Codex/Claude MCP registration follows it; enabled turns inject guidance to use `devil_ask.ask_user` only for real ambiguous branch/trade-off decisions.
+
+## Verify
+- `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.electron.json`, `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/vite build`, `git diff --check` pass.

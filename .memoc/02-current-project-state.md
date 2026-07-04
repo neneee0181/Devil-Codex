@@ -15,6 +15,8 @@ Last synced: 2026-07-04
 
 ## Current Status
 
+- v0.1.35 prep: Ask-user MCP is now controlled by `ask_user_mcp_enabled` (default true). Settings → 구성 → Devil MCP 도구 exposes "AI 질문 모달 MCP"; Codex config registration and Claude `mcpConfig` include `devil_ask` only when enabled; enabled turns inject a model-only directive to call `devil_ask.ask_user` for genuinely ambiguous branch/trade-off decisions (architecture/data flow/security/cost/dependency/UX/deploy) and to continue with assumptions when context/defaults are sufficient. Verified with `tsc -p tsconfig.json --noEmit`, `tsc -p tsconfig.electron.json`, `vite build`, and `git diff --check`.
+- v0.1.35 prep: side-chat/subagent tabs now default to auto model selection. `ToolContent` ranks available provider/account models by tool capability, diagnostics, provider reliability, and prompt text, shows an `자동` badge, and retries recommended fallback candidates before the current model. Manual model picker choices set `auto:false`; the picker includes `자동 추천` to re-enable fallback. `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/vite build`, and `git diff --check` pass locally.
 - v0.1.35 prep: investigated session `019f2c07-e03f-7661-8424-08eda3694721`. Refresh-then-stop failed because renderer lost `activeTurnsByThread` and sent Codex app-server `turn/interrupt` without `turnId`; renderer now recovers the latest running activity turnId from visible/cache history and app-server refuses missing turnId locally as `no active turn to interrupt` instead of forwarding an invalid request. Steering duplicate rows came from native rollout `response_item` + `event_msg user_message` pairs plus history-cache user merge keys including attachment count; user merge key now ignores attachment count after stripping `첨부 파일:` footer so optimistic/native rows coalesce. `PATH="/opt/homebrew/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `PATH="/opt/homebrew/bin:$PATH" ./node_modules/.bin/vite build`, and `git diff --check` pass locally. Version/tag/push pending.
 - Claude Code auto-compact threshold UI follow-up (2026-07-04, v0.1.32 prep): confirmed `d88074f1-e828-4452-9e96-4d02849e6606` only had manual compaction (`trigger:"manual"`). SDK `getContextUsage()` exposes `autoCompactThreshold` and `isAutoCompactEnabled`; `ContextUsage` now preserves those values through live SDK parsing and history reload. Renderer context status/model picker/`/status` use auto-compact threshold as the current-context limit and show raw `maxTokens` separately, so Claude Code current context no longer looks like it should have auto-compacted solely because the raw window/cache-inclusive display is large. `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass locally. Commit/tag/push in progress.
 - Codex effort/serviceTier sync follow-up (2026-07-04, v0.1.31 prep): session `d88074f1-e828-4452-9e96-4d02849e6606` confirmed the root cause: Codex `turn/start` was sending `reasoning:{effort}` even though app-server expects top-level `effort`, so rollout `reasoning_effort` stayed null. `app-server.cts` now sends top-level `effort` and explicit `serviceTier` (`fast` -> `priority`, `standard` -> `default`) so a fast turn cannot leave the thread stuck on priority. `CodexSettingsStore` now reads/writes shared `model_reasoning_effort`/`service_tier`, preserving custom non-priority tiers when unrelated settings save; renderer adopts config values on boot. Native Claude API-limit synthetic messages now import as failed system rows instead of normal agent replies. Session check: manual compaction was present (`preTokens 90,184` -> `postTokens 7,159`), and the final failure was a Claude 429 session-limit error, not a code exception. `npx tsc -p tsconfig.json --noEmit`, `npm run build`, `git diff --check`, and settings round-trip pass locally. Commit/tag/push in progress.
@@ -159,12 +161,11 @@ Last synced: 2026-07-04
 ## Project Snapshot
 
 <!-- memoc:snapshot:start -->
-- Last synced: 2026-06-27T11:24:44
+- Last synced: 2026-07-04T08:44:44
 - Detected stack: Node.js, React, Electron, TypeScript
 
 ### Config Files
 
-- `.env.local`
 - `package.json`
 - `tsconfig.json`
 - `vite.config.ts`
@@ -176,7 +177,6 @@ Last synced: 2026-07-04
 - `assets`
 - `dist-electron`
 - `docs`
-- `release`
 - `scripts`
 - `src`
 - `vendor`

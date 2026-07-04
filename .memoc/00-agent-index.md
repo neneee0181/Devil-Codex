@@ -2,8 +2,8 @@
 memoc: true
 type: core
 scope: project-memory
-created: 2026-06-27T11:24:44
-updated: 2026-06-27T11:24:44
+created: 2026-07-04T08:44:44
+updated: 2026-07-04T08:44:44
 status: active
 tags:
   - memoc
@@ -22,12 +22,11 @@ This is the fast entry map for agents. Start here, then open only the docs relev
 ## Project Snapshot
 
 <!-- memoc:snapshot:start -->
-- Last synced: 2026-06-27T11:24:44
+- Last synced: 2026-07-04T08:44:44
 - Detected stack: Node.js, React, Electron, TypeScript
 
 ### Config Files
 
-- `.env.local`
 - `package.json`
 - `tsconfig.json`
 - `vite.config.ts`
@@ -39,7 +38,6 @@ This is the fast entry map for agents. Start here, then open only the docs relev
 - `assets`
 - `dist-electron`
 - `docs`
-- `release`
 - `scripts`
 - `src`
 - `vendor`

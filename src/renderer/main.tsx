@@ -1108,7 +1108,7 @@ function App(): React.JSX.Element {
   const [subagentHistory, setSubagentHistory] = useState<Record<string, ThreadHistoryItem[]>>({});
   const [subagentBusy, setSubagentBusy] = useState<Record<string, boolean>>({});
   // Per-subagent picked model so it doesn't reset when switching tabs.
-  const [subagentPick, setSubagentPick] = useState<Record<string, { provider: ProviderId; accountId?: string; model: string }>>({});
+  const [subagentPick, setSubagentPick] = useState<Record<string, { provider: ProviderId; accountId?: string; model: string; auto?: boolean }>>({});
   const [utilityPanelExpanded, setUtilityPanelExpanded] = useState(false);
   const [projectExpanded, setProjectExpanded] = useState(true);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);

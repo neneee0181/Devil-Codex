@@ -470,6 +470,8 @@ button:active:not(:disabled) { transform: scale(.96); }
 .side-chat-head { flex: 0 0 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #242424; font-weight: 600; font-size: 13px; color: #d2d2d2; }
 .side-chat-head svg { color: #e0294f; }
 .side-chat-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-chat-auto-badge { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; border: 1px solid #3a3120; border-radius: 999px; background: #2d271b; color: #e8c36d; padding: 3px 7px; font-size: 10.5px; font-weight: 700; }
+.side-chat-auto-badge svg { width: 12px; height: 12px; color: #e8c36d; }
 .side-chat-model-picker { position: relative; margin-left: auto; min-width: 0; flex: 0 1 170px; }
 .side-chat-model-trigger { display: flex; width: 100%; min-width: 0; height: 28px; gap: 6px; align-items: center; justify-content: space-between; border: 1px solid #333; border-radius: 8px; background: #1f1f1f; color: #cfcfcf; padding: 0 8px; font-size: 11.5px; font-weight: 600; }
 .side-chat-model-trigger:hover { background: #292929; border-color: #444; }
@@ -731,6 +733,8 @@ button:active:not(:disabled) { transform: scale(.96); }
 .model-section-label { color: #828282; padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
 .model-option { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 8px; border: 0; border-radius: 9px; background: transparent; color: #ededed; padding: 8px 10px; text-align: left; font-size: 13.5px; transition: background-color .12s; }
 .model-option:hover, .model-option.active { background: #313131; }
+.model-option.side-chat-auto-option { margin-bottom: 4px; border: 1px solid #3a3120; background: #2a2419; color: #f0d58a; }
+.model-option.side-chat-auto-option:hover, .model-option.side-chat-auto-option.active { background: #362d1c; border-color: #4f4023; }
 .model-option > svg { flex: 0 0 15px; color: #9fd0ff; }
 .model-option-label { display: grid; min-width: 0; gap: 4px; }
 .model-option-label strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

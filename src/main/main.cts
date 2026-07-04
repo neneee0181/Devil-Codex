@@ -27,7 +27,7 @@ import { registerDevilProvider, registerDevilBrowserMcp, unregisterDevilBrowserM
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
-import { AskControlServer } from "./ask-control-server.cjs";
+import { AskControlServer, type AskAnswerPayload, type AskQuestionPayload } from "./ask-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
@@ -190,9 +190,29 @@ app.setName("devil-codex");
 if (process.platform === "win32") app.setAppUserModelId("dev.devilcodex.app");
 
 const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
+const ASK_USER_MCP_DIRECTIVE = [
+  "[Ask-user MCP directive]",
+  "When work can proceed with a reasonable default or the repository context makes the answer clear, do not ask the user; state the assumption briefly and continue.",
+  "When a decision is genuinely ambiguous and changes the implementation path, data flow, architecture, security posture, cost, dependency choice, UX behavior, or deployment behavior, pause and call the `ask_user` tool from the `devil_ask` MCP server instead of asking in plain text.",
+  "Use this only for concrete trade-offs or branch points the user must decide. Keep questions specific, multiple-choice, and limited to the smallest number needed.",
+].join("\n");
+const MAX_MIRRORED_COMMAND_OUTPUT_CHARS = 20_000;
+const MAX_MIRRORED_FILE_DIFF_CHARS = 40_000;
+
+function truncateMirroredRolloutText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = `\n\n[Devil Codex truncated ${text.length - maxChars} chars from mirrored rollout output to reduce future context usage.]\n\n`;
+  const budget = Math.max(0, maxChars - marker.length);
+  const head = Math.floor(budget * 0.7);
+  const tail = budget - head;
+  return `${text.slice(0, head)}${marker}${tail > 0 ? text.slice(-tail) : ""}`;
+}
 
 function stripInternalDirectives(text: string): string {
-  return text.replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "").trimEnd();
+  return text
+    .replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "")
+    .replace(new RegExp(`\\n*---\\n${escapeRegExp(ASK_USER_MCP_DIRECTIVE)}\\s*$`), "")
+    .trimEnd();
 }
 
 function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -238,6 +258,7 @@ const askControlSecret = randomBytes(24).toString("hex");
 const browserControl = new BrowserControlServer(browserView, browserControlSecret);
 const desktopControl = new DesktopControlServer(new DesktopControlManager(), desktopControlSecret);
 const askControl = new AskControlServer((channel, payload) => sendToRenderer(channel, payload), askControlSecret);
+const CLAUDE_NATIVE_ASK_DIALOG_KINDS = ["askUserQuestion", "permission_ask_user_question"];
 let appServer: CodexAppServer | undefined;
 const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
@@ -249,6 +270,71 @@ const approvalRequestServers = new Map<string, CodexAppServer>();
 // A fresh/replaced server doesn't know an existing thread until it's resumed —
 // without this a restart or prune leaves "thread not found" on the next turn.
 const loadedThreads = new Set<string>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeClaudeAskQuestions(raw: unknown): AskQuestionPayload[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 4).map((entry) => {
+    const question = isRecord(entry) ? entry : {};
+    const options = Array.isArray(question.options) ? question.options.slice(0, 4).map((option) => {
+      const item = isRecord(option) ? option : {};
+      return {
+        label: String(item.label ?? ""),
+        description: item.description ? String(item.description) : undefined,
+      };
+    }).filter((option) => option.label) : [];
+    return {
+      question: String(question.question ?? ""),
+      header: question.header ? String(question.header).slice(0, 12) : undefined,
+      options,
+      multiSelect: Boolean(question.multiSelect),
+    };
+  }).filter((question) => question.question && question.options.length >= 2);
+}
+
+function answersByQuestion(answers: AskAnswerPayload[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const answer of answers) result[answer.question] = answer.answers.join(", ");
+  return result;
+}
+
+async function claudeAskUserQuestionDialogOutput(input: Record<string, unknown>, options: { signal: AbortSignal }): Promise<Record<string, unknown> | null> {
+  const questions = normalizeClaudeAskQuestions(input.questions);
+  if (!questions.length) return null;
+  const answers = await askControl.ask(questions, options.signal);
+  if (!answers) return null;
+  return {
+    questions: Array.isArray(input.questions) ? input.questions : questions,
+    answers: answersByQuestion(answers),
+  };
+}
+
+async function claudeAskUserQuestionPermissionResult(input: Record<string, unknown>, options: { signal: AbortSignal }): Promise<{ behavior: "allow"; updatedInput?: Record<string, unknown> } | { behavior: "deny"; message: string; interrupt?: boolean } | null> {
+  const output = await claudeAskUserQuestionDialogOutput(input, options);
+  if (!output) return { behavior: "deny", message: "사용자가 AskUserQuestion 대화상자에서 답변을 취소했거나 입력을 해석할 수 없습니다.", interrupt: false };
+  return {
+    behavior: "allow",
+    updatedInput: {
+      ...input,
+      answers: output.answers,
+    },
+  };
+}
+
+async function handleClaudeUserDialog(request: { dialogKind: string; payload: Record<string, unknown> }, options: { signal: AbortSignal }): Promise<{ behavior: "completed"; result: unknown } | { behavior: "cancelled" }> {
+  if (!CLAUDE_NATIVE_ASK_DIALOG_KINDS.includes(request.dialogKind)) return { behavior: "cancelled" };
+  const input = isRecord(request.payload.input) ? request.payload.input : request.payload;
+  const result = await claudeAskUserQuestionDialogOutput(input, options);
+  return result ? { behavior: "completed", result } : { behavior: "cancelled" };
+}
+
+async function handleClaudeAskUserQuestionTool(input: Record<string, unknown>, options: { signal: AbortSignal }): Promise<{ behavior: "allow"; updatedInput?: Record<string, unknown> } | { behavior: "deny"; message: string; interrupt?: boolean }> {
+  return await claudeAskUserQuestionPermissionResult(input, options)
+    ?? { behavior: "deny", message: "Claude Code AskUserQuestion 입력을 Devil Codex 질문 모달 스키마로 해석할 수 없습니다.", interrupt: false };
+}
 
 // Codex app-server reports auth/usage/model errors on stderr (emitted as
 // "diagnostic"), not as structured turn events — so a failed turn otherwise
@@ -316,8 +402,9 @@ function contextWindowMessage(usage: ContextUsage): string {
   return `Codex 컨텍스트 자동 압축 임계값에 도달했습니다 (${Math.round(usage.usedTokens)}/${Math.round(usage.maxTokens)} tokens, limit ${limit}). 압축을 먼저 실행한 뒤 같은 요청을 다시 보냅니다.`;
 }
 
-async function maybeStartContextCompaction(instance: CodexAppServer, input: { threadId: string; provider?: ProviderId; contextUsage?: ContextUsage; retriedAfterCompaction?: boolean }): Promise<boolean> {
-  if ((input.provider ?? "codex") !== "codex" || input.retriedAfterCompaction) return false;
+async function maybeStartContextCompaction(instance: CodexAppServer, input: { threadId: string; provider?: ProviderId; contextUsage?: ContextUsage; retriedAfterCompaction?: boolean; appServerBacked?: boolean }): Promise<boolean> {
+  if (!input.appServerBacked && (input.provider ?? "codex") !== "codex") return false;
+  if (input.retriedAfterCompaction) return false;
   const snapshot = await readCodexTokenSnapshot(input.threadId).catch(() => undefined);
   const usage = snapshot?.contextUsage ?? validContextUsage(input.contextUsage);
   if (!usage || !shouldStartContextCompaction(usage)) return false;
@@ -362,6 +449,11 @@ const codexProxy = new CodexProxyServer((message) => {
 
 function usesCodexProxy(provider?: string): boolean {
   return Boolean(provider && provider !== "codex");
+}
+
+function supportsAskUserBridge(input: { runtime?: AgentRuntimeId; provider?: ProviderId }): boolean {
+  if (requestedRuntime(input.runtime) !== "claude-code") return true;
+  return !input.provider || input.provider === "codex" || input.provider === "claude-code";
 }
 
 function routedProviderModel(provider: ProviderId, model: string, accountId?: string): string {
@@ -584,7 +676,7 @@ async function emitSyntheticFileChanges(input: { threadId: string; turnId?: stri
     success: input.status !== "failed",
     changes: Object.fromEntries(changes.map((file) => [
       file.absPath ?? file.path,
-      { type: "update", unified_diff: file.diff ?? "" },
+      { type: "update", unified_diff: truncateMirroredRolloutText(file.diff ?? "", MAX_MIRRORED_FILE_DIFF_CHARS) },
     ])),
   }]).catch((error) => console.warn("[devil-codex rollout mirror] fileChange", error instanceof Error ? error.message : error));
 }
@@ -608,7 +700,7 @@ function mirrorCommandExecution(input: { threadId: string; turnId?: string; item
       type: "exec_command_end",
       call_id: mirrorId,
       ...(input.turnId ? { turn_id: input.turnId } : {}),
-      stdout: output,
+      stdout: truncateMirroredRolloutText(output, MAX_MIRRORED_COMMAND_OUTPUT_CHARS),
       stderr: "",
       exit_code: status === "failed" ? 1 : 0,
       duration: { secs: 0, nanos: 0 },
@@ -1226,6 +1318,18 @@ async function setupDevilAskMcp(): Promise<void> {
   }
 }
 
+async function setAskUserMcpEnabled(enabled: boolean): Promise<void> {
+  if (!enabled) {
+    askControl.stop();
+    await unregisterDevilAskMcp();
+    restartAppServer();
+    console.log("[devil-codex ask] disabled");
+    return;
+  }
+  await setupDevilAskMcp();
+  restartAppServer();
+}
+
 async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   if (!enabled) {
     browserControl.stop();
@@ -1249,19 +1353,21 @@ async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean
   const { script, computerScript, askScript } = mcpScripts();
   const mcpServers: Record<string, unknown> = {};
 
-  try {
-    const askSock = await askControl.start();
-    mcpServers.devil_ask = {
-      command: process.execPath,
-      args: [askScript],
-      env: {
-        ELECTRON_RUN_AS_NODE: "1",
-        DEVIL_ASK_SOCK: askSock,
-        DEVIL_ASK_SECRET: askControlSecret,
-      },
-    };
-  } catch (error) {
-    console.warn("[devil-codex ask] Claude MCP disabled:", error instanceof Error ? error.message : error);
+  if (settings?.askUserMcpEnabled !== false) {
+    try {
+      const askSock = await askControl.start();
+      mcpServers.devil_ask = {
+        command: process.execPath,
+        args: [askScript],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          DEVIL_ASK_SOCK: askSock,
+          DEVIL_ASK_SECRET: askControlSecret,
+        },
+      };
+    } catch (error) {
+      console.warn("[devil-codex ask] Claude MCP disabled:", error instanceof Error ? error.message : error);
+    }
   }
 
   if (settings?.devilMcpEnabled || options?.browser || options?.computer) {
@@ -1305,9 +1411,10 @@ async function startCodexProxy(): Promise<void> {
   } catch (error) {
     console.error("[devil-codex proxy]", error instanceof Error ? error.message : error);
   }
-  await setupDevilAskMcp();
   try {
     const settings = await settingsStore.load();
+    if (settings.askUserMcpEnabled) await setupDevilAskMcp();
+    else await unregisterDevilAskMcp();
     await setDevilMcpEnabled(settings.devilMcpEnabled);
   } catch (error) {
     console.error("[devil-codex mcp] FAILED to configure:", error instanceof Error ? error.message : error);
@@ -1437,6 +1544,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const previous = await settingsStore.load();
     const next = await settingsStore.save(input);
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
+    if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
     return next;
   });
   ipcMain.handle("providers:load", () => providerSettingsStore.load());
@@ -1774,11 +1882,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // When the "English output" setting is on, force English responses for every
     // provider by appending a directive to the model-bound text only. Transcripts
     // store the raw input.text, so the visible user message stays untouched.
-    const { englishOutput } = await settingsStore.load();
+    const { englishOutput, askUserMcpEnabled } = await settingsStore.load();
     const englishDirective = englishOutput ? `\n\n---\n${ENGLISH_OUTPUT_DIRECTIVE}` : "";
+    const askDirective = askUserMcpEnabled && supportsAskUserBridge(input) ? `\n\n---\n${ASK_USER_MCP_DIRECTIVE}` : "";
     const turnInput = {
       ...input,
-      text: `${input.text}${attachmentEnrichment.context}${englishDirective}`,
+      text: `${input.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
     if (requestedRuntime(input.runtime) === "claude-code") {
@@ -1844,6 +1953,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           }),
           approvalPolicy: input.approvalPolicy,
           sandboxMode: input.sandboxMode,
+          ...(askUserMcpEnabled ? {
+            onUserDialog: handleClaudeUserDialog,
+            supportedDialogKinds: CLAUDE_NATIVE_ASK_DIALOG_KINDS,
+            onAskUserQuestionTool: handleClaudeAskUserQuestionTool,
+          } : {}),
           // Save the native session id as soon as it is known so a turn that
           // fails midway can still resume the same Claude session on retry.
           onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
@@ -1867,25 +1981,29 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       const accountLabel = await providerAccountLabel(input.provider, input.accountId);
       // External providers use app-server tools and native rollout storage so stock Codex can see the turn after reconcile.
       await providerReconciler.markPending({ threadId: input.threadId, actualProvider: input.provider, actualModel: input.model });
-      await providerTranscripts.recordProviderTurn({ threadId: input.threadId, provider: input.provider, model: input.model, accountId: input.accountId, accountLabel });
+      let externalInstance: CodexAppServer | undefined;
       try {
         // Existing thread: provider was flipped to "devil" → restart + resume so
         // the app-server routes this turn through the proxy. New thread: nothing
         // to patch (already created with modelProvider:"devil") → just proceed.
         const switched = await providerReconciler.prepareExternalTurn(input.threadId);
         if (switched) {
-          await (await restartThreadServer(input.threadId)).resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
+          externalInstance = await restartThreadServer(input.threadId);
+          await externalInstance.resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
         } else {
           // Thread server may be fresh (after a restart/prune) — resume so the
           // rollout is loaded before the turn, else "thread not found".
           await ensureThreadLoaded({ threadId: input.threadId, model: routedModel, cwd: input.cwd, modelProvider: "devil" });
+          externalInstance = await threadServerFor(input.threadId);
         }
+        if (await maybeStartContextCompaction(externalInstance, { ...input, appServerBacked: true })) return;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         await providerReconciler.discardPending(input.threadId);
         await providerTranscripts.markLatestProviderTurnSync(input.threadId, "failed", detail);
         throw error;
       }
+      await providerTranscripts.recordProviderTurn({ threadId: input.threadId, provider: input.provider, model: input.model, accountId: input.accountId, accountLabel });
       try {
         // Subagent side-chat turns continue a child thread; do not register them
         // as a top-level Devil sidebar conversation (matches stock Codex, where
@@ -1913,7 +2031,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, accountId: input.accountId, accountLabel, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy, cwd: input.cwd });
         codexProxy.setSidecarSettings(input.threadId, input.sidecars);
         await rememberTurnFileSnapshot(input.threadId, input.cwd);
-        await threadServer(input.threadId).sendTurn({ ...turnInput, model: routedModel });
+        await (externalInstance ?? threadServer(input.threadId)).sendTurn({ ...turnInput, model: routedModel });
       } catch (error) {
         await providerReconciler.discardPending(input.threadId);
         const detail = error instanceof Error ? error.message : String(error);

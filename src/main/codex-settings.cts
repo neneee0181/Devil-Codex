@@ -12,9 +12,10 @@ const defaults: CodexSettings = {
   reasoningEffort: "medium",
   responseSpeed: "standard",
   devilMcpEnabled: false,
+  askUserMcpEnabled: true,
   englishOutput: false,
 };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", englishOutput: "english_output" } as const;
 // NOTE: `model_reasoning_effort` and `service_tier` are shared with stock
 // Codex, which writes them from its own model picker. Devil now reads them in
 // load() and writes them in save() so the two apps stay in sync — the renderer
@@ -82,6 +83,7 @@ export class CodexSettingsStore {
         reasoningEffort: readReasoningEffort(source) ?? defaults.reasoningEffort,
         responseSpeed: readValue(source, keys.responseSpeed) === "priority" ? "fast" : defaults.responseSpeed,
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
+        askUserMcpEnabled: readBoolean(source, keys.askUserMcpEnabled) ?? defaults.askUserMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
     } catch (error) {
