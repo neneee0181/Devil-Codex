@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Blocks, Check, ChevronDown, Copy, FilePlus2, Info, Languages, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { ThreadAttachment, ThreadHistoryItem, WorkspaceChanges } from "../../shared/contracts";
@@ -47,7 +47,7 @@ function StreamingText({ text }: { text: string }): React.JSX.Element {
   return <div className="streaming-text">{text}</div>;
 }
 
-export function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, streaming, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; streaming?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
+export const TimelineCard = memo(function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, streaming, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; streaming?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
@@ -106,4 +106,4 @@ export function TimelineCard({ item, changes, showChanges, canRollback, rollback
     {item.kind === "agent" && <div className="timeline-actions"><button type="button" onClick={() => void copy()} aria-label="응답 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button><button type="button" aria-label="좋아요"><ThumbsUp size={16} /></button><button type="button" aria-label="싫어요"><ThumbsDown size={16} /></button></div>}
     {showChanges && <ChangesCard changes={changes} turnId={item.turnId} canRollback={canRollback} rollbackBusy={rollbackBusy} onRollback={onRollback} onReview={onReview} onOpenFile={onOpenFile} />}
   </motion.article>;
-}
+});

@@ -1,4 +1,4 @@
-import { type ReactNode, isValidElement, useEffect, useState } from "react";
+import { type ReactNode, isValidElement, memo, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
@@ -63,8 +63,9 @@ export function LocalImage({ path, onOpen }: { path: string; onOpen: (src: strin
   return <span className="markdown-image-loading">{loaded ? "이미지를 찾을 수 없습니다" : "이미지 불러오는 중…"}</span>;
 }
 
-export function MarkdownContent({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }): React.JSX.Element {
+export const MarkdownContent = memo(function MarkdownContent({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }): React.JSX.Element {
   const [viewer, setViewer] = useState<{ src: string; name: string } | null>(null);
+  const markdown = useMemo(() => richMarkdown(text), [text]);
   const openImage = (src: string, name: string): void => setViewer({ src, name });
   return <>
     <ReactMarkdown
@@ -88,7 +89,7 @@ export function MarkdownContent({ text, onOpenFile }: { text: string; onOpenFile
           return external ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(path.replace(/^file:\/\//, ""))}>{children}</button>;
         },
       }}
-    >{richMarkdown(text)}</ReactMarkdown>
+    >{markdown}</ReactMarkdown>
     {viewer && <AttachmentImageViewer viewer={{ attachment: { name: viewer.name, kind: "image", url: viewer.src }, src: viewer.src }} onClose={() => setViewer(null)} />}
   </>;
-}
+});

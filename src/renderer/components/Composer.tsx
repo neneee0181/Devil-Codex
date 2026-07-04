@@ -6,7 +6,7 @@ import type { ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEf
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
 import { ComposerSuggestions, suggestionsFor, type ComposerSuggestion, type SlashCommandId } from "./ComposerSuggestions";
 import type { CaretPosition } from "./composerCaret";
-import { editorSkills, editorText, getEditorCaretPosition, getEditorTextBeforeCaret, insertInlineSkill, insertPlainTextAtSelection, plainTextFromClipboard, removeEditorTrigger } from "./composerEditor";
+import { editorSnapshot, editorText, getEditorCaretPosition, getEditorTextBeforeCaret, insertInlineSkill, insertPlainTextAtSelection, plainTextFromClipboard, removeEditorTrigger } from "./composerEditor";
 import { AttachmentGallery } from "./AttachmentCards";
 
 type SuggestionTrigger = {
@@ -19,6 +19,7 @@ type SuggestionTrigger = {
 export type ComposerAttachment = ThreadAttachment;
 const APPROVAL_MODE_KEY = "devil-codex:approval-mode";
 const COMPOSER_DRAFTS_KEY = "devil-codex:composer-drafts";
+const DRAFT_SAVE_DEBOUNCE_MS = 350;
 type ComposerDraftSnapshot = { draft: string; goalMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
 
 function readComposerDrafts(): Record<string, ComposerDraftSnapshot> {
@@ -159,6 +160,8 @@ export function Composer({
   const editor = useRef<HTMLDivElement>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
+  const latestDraftsByKey = useRef<Record<string, Omit<ComposerDraftSnapshot, "updatedAt">>>({ [draftKey]: initialDraft });
+  const draftSaveTimer = useRef<number | null>(null);
   const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }, mcpServers) : [], [trigger, skillOptions, mcpServers, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const composerEmpty = draft.trim().length === 0 && skills.length === 0;
@@ -170,6 +173,7 @@ export function Composer({
   useLayoutEffect(() => {
     const next = readComposerDraft(draftKey);
     latestDraft.current = next;
+    latestDraftsByKey.current[draftKey] = next;
     setDraft(next.draft);
     setGoalMode(next.goalMode);
     setAttachments(next.attachments);
@@ -182,12 +186,29 @@ export function Composer({
   }, [draftKey]);
 
   useEffect(() => {
-    latestDraft.current = { draft, goalMode, attachments, skills };
-    writeComposerDraft(draftKey, latestDraft.current);
+    const snapshot = { draft, goalMode, attachments, skills };
+    latestDraft.current = snapshot;
+    latestDraftsByKey.current[draftKey] = snapshot;
+    if (draftSaveTimer.current !== null) window.clearTimeout(draftSaveTimer.current);
+    const saveKey = draftKey;
+    draftSaveTimer.current = window.setTimeout(() => {
+      draftSaveTimer.current = null;
+      writeComposerDraft(saveKey, latestDraftsByKey.current[saveKey] ?? snapshot);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+    return () => {
+      if (draftSaveTimer.current !== null) {
+        window.clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      }
+    };
   }, [draftKey, draft, goalMode, attachments, skills]);
 
   useEffect(() => () => {
-    writeComposerDraft(draftKey, latestDraft.current);
+    if (draftSaveTimer.current !== null) {
+      window.clearTimeout(draftSaveTimer.current);
+      draftSaveTimer.current = null;
+    }
+    writeComposerDraft(draftKey, latestDraftsByKey.current[draftKey] ?? latestDraft.current);
   }, [draftKey]);
 
   // Inject a browser screenshot/annotation into the composer so the user can ask
@@ -336,16 +357,19 @@ export function Composer({
     if (item.kind === "command") {
       if (editor.current) {
         removeEditorTrigger(editor.current, trigger.tokenLength);
-        setDraft(editorText(editor.current));
-        setSkills(editorSkills(editor.current));
+        const next = editorSnapshot(editor.current);
+        setDraft(next.text);
+        setSkills(next.skills);
       }
       runCommand(name as SlashCommandId);
     } else if (item.kind === "mcp" && editor.current && insertInlineSkill(editor.current, item.token ?? `mcp:${name}`, trigger.tokenLength, item.label.replace(/^\//, ""))) {
-      setSkills(editorSkills(editor.current));
-      setDraft(editorText(editor.current));
+      const next = editorSnapshot(editor.current);
+      setDraft(next.text);
+      setSkills(next.skills);
     } else if (editor.current && insertInlineSkill(editor.current, name, trigger.tokenLength, skillOptions.find((skill) => skill.name === name)?.name)) {
-      setSkills(editorSkills(editor.current));
-      setDraft(editorText(editor.current));
+      const next = editorSnapshot(editor.current);
+      setDraft(next.text);
+      setSkills(next.skills);
     }
     setTrigger(null);
     requestAnimationFrame(() => editor.current?.focus());
@@ -362,6 +386,7 @@ export function Composer({
 
   const clearDraft = (): void => {
     latestDraft.current = { draft: "", goalMode: false, attachments: [], skills: [] };
+    latestDraftsByKey.current[draftKey] = latestDraft.current;
     setDraft("");
     setAttachments([]);
     setSkills([]);
@@ -417,8 +442,9 @@ export function Composer({
       return;
     }
     if (!insertPlainTextAtSelection(event.currentTarget, text)) return;
-    setDraft(editorText(event.currentTarget));
-    setSkills(editorSkills(event.currentTarget));
+    const next = editorSnapshot(event.currentTarget);
+    setDraft(next.text);
+    setSkills(next.skills);
     updateTrigger(event.currentTarget);
   };
 
@@ -444,7 +470,12 @@ export function Composer({
           aria-multiline="true"
           data-empty={composerEmpty ? "true" : "false"}
           data-placeholder={busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
-          onInput={(event) => { setDraft(editorText(event.currentTarget)); setSkills(editorSkills(event.currentTarget)); updateTrigger(event.currentTarget); }}
+          onInput={(event) => {
+            const next = editorSnapshot(event.currentTarget);
+            setDraft(next.text);
+            setSkills(next.skills);
+            updateTrigger(event.currentTarget);
+          }}
           onClick={(event) => updateTrigger(event.currentTarget)}
           onKeyUp={(event) => { if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) updateTrigger(event.currentTarget); }}
           onKeyDown={onDraftKeyDown}

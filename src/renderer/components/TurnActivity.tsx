@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Activity, Bot, Check, ChevronRight, FilePenLine, FileSearch, Minimize2, Search, SquareTerminal, Wrench } from "lucide-react";
 import type { ThreadActivityEntry, ThreadHistoryItem } from "../../shared/contracts";
@@ -330,7 +330,7 @@ function thinkingStatusText(entry: ThreadActivityEntry | undefined): string {
   return "생각중";
 }
 
-export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; onOpenFile: (path: string) => void }): React.JSX.Element {
+export const TurnActivity = memo(function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; onOpenFile: (path: string) => void }): React.JSX.Element {
   const entries = visibleActivityEntries(item.activities ?? []);
   const hasRunningEntry = entries.some((entry) => entry.status === "inProgress");
   const running = item.status === "inProgress" || hasRunningEntry;
@@ -388,4 +388,4 @@ export function TurnActivity({ item, onOpenFile }: { item: ThreadHistoryItem; on
       </motion.div>}
     </AnimatePresence>
   </motion.section>;
-}
+});

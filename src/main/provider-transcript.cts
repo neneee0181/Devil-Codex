@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
@@ -20,7 +20,10 @@ type StoredShape = {
   providerTurns?: Record<string, ProviderTurnMeta[]>;
   deleted?: Record<string, number>;
   recovered?: boolean;
+  claudeImports?: Record<string, ClaudeImportState>;
 };
+type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; threadId: string };
+type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
   type?: string;
@@ -233,6 +236,8 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
 export class ProviderTranscriptStore {
   private recovery?: Promise<void>;
   private writes = Promise.resolve();
+  private cache: StoredShape | null = null;
+  private claudeImportSignature = "";
   private dir(): string { return join(app.getPath("userData"), "providers"); }
   private path(): string { return join(this.dir(), "transcripts.json"); }
 
@@ -363,7 +368,23 @@ export class ProviderTranscriptStore {
   }
 
   private async importClaudeProjects(): Promise<void> {
-    await this.mutate((all) => this.recoverClaudeProjects(all));
+    const files = await this.claudeJsonlFileStates().catch(() => [] as ClaudeJsonlFileState[]);
+    const signature = files.map((file) => `${file.path}:${file.size}:${file.mtimeMs}`).join("|");
+    if (signature && signature === this.claudeImportSignature) return;
+    const imports = await this.readLatest((all) => all.claudeImports ?? {});
+    const currentPaths = new Set(files.map((file) => file.path));
+    const unchanged = files.length > 0
+      && files.every((file) => {
+        const imported = imports[file.path];
+        return imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs;
+      })
+      && Object.keys(imports).every((path) => currentPaths.has(path));
+    if (unchanged) {
+      this.claudeImportSignature = signature;
+      return;
+    }
+    await this.mutate((all) => this.recoverClaudeProjects(all, files));
+    this.claudeImportSignature = signature;
   }
 
   private async mutate(change: (all: StoredShape) => void | Promise<void>): Promise<void> {
@@ -383,23 +404,29 @@ export class ProviderTranscriptStore {
   }
 
   private async save(all: StoredShape): Promise<void> {
+    this.cache = all;
     await mkdir(this.dir(), { recursive: true });
     await writeFile(this.path(), JSON.stringify(all), { mode: 0o600 });
   }
 
   private async load(): Promise<StoredShape> {
+    if (this.cache) return this.cache;
     try {
       const parsed = JSON.parse(await readFile(this.path(), "utf8")) as StoredShape | Record<string, ThreadHistoryItem[]>;
       if (parsed && typeof parsed === "object" && "items" in parsed && "meta" in parsed) {
         const shaped = parsed as StoredShape;
         shaped.providerTurns ??= {};
         shaped.deleted ??= {};
+        shaped.claudeImports ??= {};
         for (const summary of Object.values(shaped.meta ?? {})) summary.updatedAt = toUnixSeconds(summary.updatedAt);
+        this.cache = shaped;
         return shaped;
       }
-      return { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {}, providerTurns: {}, deleted: {} }; // migrate legacy flat shape
+      this.cache = { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {}, providerTurns: {}, deleted: {}, claudeImports: {} };
+      return this.cache; // migrate legacy flat shape
     } catch {
-      return { items: {}, meta: {}, providerTurns: {}, deleted: {} };
+      this.cache = { items: {}, meta: {}, providerTurns: {}, deleted: {}, claudeImports: {} };
+      return this.cache;
     }
   }
 
@@ -437,19 +464,26 @@ export class ProviderTranscriptStore {
     all.recovered = true;
   }
 
-  private async recoverClaudeProjects(all: StoredShape): Promise<void> {
-    const root = join(homedir(), ".claude", "projects");
-    let files: string[] = [];
-    try { files = await this.jsonlFiles(root); }
-    catch { return; }
+  private async recoverClaudeProjects(all: StoredShape, files: ClaudeJsonlFileState[]): Promise<void> {
+    all.claudeImports ??= {};
     const nativeSessionToThreadId = new Map<string, string>();
     for (const [id, summary] of Object.entries(all.meta)) {
       if (summary.claudeSessionId) nativeSessionToThreadId.set(summary.claudeSessionId, id);
     }
-    for (const path of files) {
-      const sessionId = basename(path).replace(/\.jsonl$/i, "");
+    const currentPaths = new Set(files.map((file) => file.path));
+    for (const path of Object.keys(all.claudeImports)) {
+      if (!currentPaths.has(path)) delete all.claudeImports[path];
+    }
+    for (const file of files) {
+      const { path, sessionId } = file;
       const threadId = nativeSessionToThreadId.get(sessionId) ?? sessionId;
       if (all.deleted?.[threadId]) continue;
+      const imported = all.claudeImports[path];
+      if (imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && all.meta[threadId]) continue;
+      if (!imported && all.meta[threadId] && all.items[threadId]) {
+        all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId };
+        continue;
+      }
       let source = "";
       try { source = await readFile(path, "utf8"); } catch { continue; }
       source = await normalizeClaudeEntrypointFile(path, source);
@@ -481,6 +515,7 @@ export class ProviderTranscriptStore {
         updatedAt,
         archived: all.meta[threadId]?.archived ?? false,
       };
+      all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId };
     }
   }
 
@@ -581,6 +616,16 @@ export class ProviderTranscriptStore {
       return entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [];
     }));
     return nested.flat();
+  }
+
+  private async claudeJsonlFileStates(): Promise<ClaudeJsonlFileState[]> {
+    const root = join(homedir(), ".claude", "projects");
+    const files = await this.jsonlFiles(root);
+    const states = await Promise.all(files.map(async (path) => {
+      const info = await stat(path);
+      return { path, size: info.size, mtimeMs: Math.trunc(info.mtimeMs), sessionId: basename(path).replace(/\.jsonl$/i, "") };
+    }));
+    return states.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   private historyFromRollout(lines: RolloutLine[], threadId: string): ThreadHistoryItem[] {

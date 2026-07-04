@@ -326,7 +326,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .new-thread-empty { display: grid; min-height: 320px; place-content: center; color: #868686; text-align: center; }
 .new-thread-empty h1 { margin: 0 0 8px; color: #dadada; font-size: 25px; letter-spacing: -.025em; }
 .new-thread-empty p { margin: 0; font-size: 13px; }
-.timeline { display: grid; width: 100%; min-width: 0; max-width: 850px; gap: 22px; margin: 0 auto; transform: translateZ(0); transition: max-width var(--chat-layout-duration) var(--chat-layout-ease), transform var(--chat-layout-duration) var(--chat-layout-ease); will-change: transform, max-width; }
+.timeline { display: grid; width: 100%; min-width: 0; max-width: 850px; gap: 22px; margin: 0 auto; transition: max-width var(--chat-layout-duration) var(--chat-layout-ease); }
 .timeline-item { min-width: 0; max-width: 100%; color: #e3e3e3; overflow-wrap: anywhere; word-break: break-word; }
 .timeline-item .item-label { color: #999999; font-size: 11px; font-weight: 650; }
 .item-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }

@@ -47,12 +47,50 @@ type ShellMenuKey = "file" | "edit" | "view" | "help";
 type SentModelState = { provider: ProviderId; accountId?: string; model: string };
 type NotificationSettings = { notificationsEnabled: boolean; notifyOnTurnComplete: boolean; notifyOnApproval: boolean; notifyOnAsk: boolean };
 
+const THREAD_STATE_RUNTIMES: AgentRuntimeId[] = ["codex", "claude-code"];
 const NOTIFICATION_DEFAULTS: NotificationSettings = {
   notificationsEnabled: true,
   notifyOnTurnComplete: true,
   notifyOnApproval: true,
   notifyOnAsk: true,
 };
+
+function emptyThreadStateId(workspace: string, projectDraft: boolean): string {
+  return `${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
+}
+
+function threadStateKey(runtime: AgentRuntimeId, threadId?: string | null, emptyStateId = "__none__"): string {
+  return `${runtime}:${threadId ?? emptyStateId}`;
+}
+
+function threadStateKeys(threadId: string): string[] {
+  return [...THREAD_STATE_RUNTIMES.map((runtime) => threadStateKey(runtime, threadId)), threadId];
+}
+
+function retargetThreadStateKey(key: string, fromThreadId: string, toThreadId: string): string {
+  for (const runtime of THREAD_STATE_RUNTIMES) {
+    const prefix = `${runtime}:`;
+    if (key === `${prefix}${fromThreadId}`) return `${prefix}${toThreadId}`;
+  }
+  return key === fromThreadId ? toThreadId : key;
+}
+
+function runWhenIdle(callback: () => void): void {
+  const requestIdle = (window as Window & {
+    requestIdleCallback?: (handler: IdleRequestCallback, options?: IdleRequestOptions) => number;
+  }).requestIdleCallback;
+  if (requestIdle) {
+    requestIdle(() => callback(), { timeout: 1800 });
+    return;
+  }
+  window.setTimeout(callback, 700);
+}
+
+function useStableEvent<T extends (...args: any[]) => unknown>(handler: T): T {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => { handlerRef.current = handler; });
+  return useMemo(() => ((...args: Parameters<T>) => handlerRef.current(...args)) as T, []);
+}
 
 function readNotificationSettings(): NotificationSettings {
   try {
@@ -111,6 +149,34 @@ const defaultChanges: WorkspaceChanges = {
   additions: 0,
   deletions: 0,
 };
+
+type ProjectThreadGroup = { cwd: string; name: string; threads: ThreadSummary[] };
+
+function sameThreadSummary(a: ThreadSummary, b: ThreadSummary): boolean {
+  return a.id === b.id
+    && a.cwd === b.cwd
+    && a.model === b.model
+    && a.runtime === b.runtime
+    && a.provider === b.provider
+    && a.accountId === b.accountId
+    && a.accountLabel === b.accountLabel
+    && a.claudeSessionId === b.claudeSessionId
+    && a.title === b.title
+    && a.preview === b.preview
+    && a.updatedAt === b.updatedAt
+    && a.archived === b.archived;
+}
+
+function sameThreadSummaryList(a: ThreadSummary[], b: ThreadSummary[]): boolean {
+  return a.length === b.length && a.every((item, index) => sameThreadSummary(item, b[index]));
+}
+
+function sameProjectThreadGroups(a: ProjectThreadGroup[], b: ProjectThreadGroup[]): boolean {
+  return a.length === b.length
+    && a.every((group, index) => group.cwd === b[index].cwd
+      && group.name === b[index].name
+      && sameThreadSummaryList(group.threads, b[index].threads));
+}
 
 const SIDE_CHAT_NAMES = ["Laplace", "Curie", "Euler", "Gauss", "Turing", "Lovelace", "Hopper", "Tesla", "Newton", "Fermi", "Bohr", "Pascal", "Fourier", "Riemann", "Noether", "Maxwell", "Planck", "Feynman", "Ada", "Hilbert"];
 const LAST_SENT_MODELS_KEY = "devil-codex:last-sent-models";
@@ -851,7 +917,7 @@ function App(): React.JSX.Element {
   const setAgentRuntime = (next: AgentRuntimeId): void => {
     if (next !== agentRuntime) {
       runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
-      const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+      const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
       panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
       bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
       skipNextPanelSave.current = true;
@@ -927,6 +993,7 @@ function App(): React.JSX.Element {
   const appShellRef = useRef<HTMLElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
+  const [projectDraft, setProjectDraft] = useState(false);
   const [subagentNames, setSubagentNames] = useState<Record<string, string>>({});
   // Side-chat / subagent thread ids: kept out of the main timeline AND the
   // sidebar, persisted so they stay hidden across reloads. The ref mirror is
@@ -942,7 +1009,7 @@ function App(): React.JSX.Element {
   // Hide all side conversations from the main sidebar (spawned subagents are
   // already excluded from thread/list by the app-server's subAgent source).
   const sideThreadSet = useMemo(() => new Set(Object.values(sideChatsByThread).flat().map((c) => c.id)), [sideChatsByThread]);
-  const sideChatKey = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+  const sideChatKey = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
   const sideChats = sideChatsByThread[sideChatKey] ?? [];
   const setSideChats = (updater: (prev: Array<{ id: string; label: string }>) => Array<{ id: string; label: string }>): void =>
     setSideChatsByThread((prev) => ({ ...prev, [sideChatKey]: updater(prev[sideChatKey] ?? []) }));
@@ -954,7 +1021,6 @@ function App(): React.JSX.Element {
   const [utilityPanelExpanded, setUtilityPanelExpanded] = useState(false);
   const [projectExpanded, setProjectExpanded] = useState(true);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
-  const [projectDraft, setProjectDraft] = useState(false);
   const [projectPinned, setProjectPinned] = useState(() => localStorage.getItem("devil-codex:project-pinned") === "true");
   const [projectAlias, setProjectAlias] = useState("");
   const [hiddenProjects, setHiddenProjects] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem("devil-codex:hidden-projects") || "[]"); } catch { return []; } });
@@ -1020,6 +1086,8 @@ function App(): React.JSX.Element {
   const [threadFindQuery, setThreadFindQuery] = useState("");
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const showScrollToBottomRef = useRef(false);
+  const lastScrollPositionWrite = useRef<{ threadId: string; top: number; atBottom: boolean; at: number } | null>(null);
   const threadViewRef = useRef<HTMLDivElement>(null);
   const composerWrapRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(240);
@@ -1097,7 +1165,7 @@ function App(): React.JSX.Element {
     threadHistoryCache.current.set(snapshot.thread.id, nextItems);
     setProjectDraft(snapshot.projectDraft);
     activeResume.current = snapshot.thread.id;
-    const panelKey = `${snapshot.thread.runtime ?? agentRuntime}:${snapshot.thread.id}`;
+    const panelKey = threadStateKey(snapshot.thread.runtime ?? agentRuntime, snapshot.thread.id);
     const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
     setUtilityTabs(panel.tabs);
     setUtilityActive(panel.active);
@@ -1290,12 +1358,20 @@ function App(): React.JSX.Element {
     });
   }
 
+  function setScrollToBottomVisible(visible: boolean): void {
+    if (showScrollToBottomRef.current === visible) return;
+    showScrollToBottomRef.current = visible;
+    setShowScrollToBottom(visible);
+  }
+
   function rememberThreadScrollPosition(threadId: string, top: number, atBottom: boolean): void {
     if (!threadId || !Number.isFinite(top)) return;
-    threadScrollPositions.current = {
-      ...threadScrollPositions.current,
-      [threadId]: { top: Math.max(0, top), atBottom, updatedAt: Date.now() },
-    };
+    const normalizedTop = Math.max(0, top);
+    const now = Date.now();
+    const last = lastScrollPositionWrite.current;
+    if (last?.threadId === threadId && last.atBottom === atBottom && Math.abs(last.top - normalizedTop) < 24 && now - last.at < 400) return;
+    lastScrollPositionWrite.current = { threadId, top: normalizedTop, atBottom, at: now };
+    threadScrollPositions.current[threadId] = { top: normalizedTop, atBottom, updatedAt: now };
     scheduleThreadScrollPersist();
   }
 
@@ -1310,13 +1386,13 @@ function App(): React.JSX.Element {
   function syncThreadScrollState(node = threadViewRef.current): void {
     if (!node) {
       stickToThreadBottom.current = true;
-      setShowScrollToBottom(false);
+      setScrollToBottomVisible(false);
       return;
     }
     const hiddenBelow = node.scrollHeight - node.scrollTop - node.clientHeight;
     const atBottom = hiddenBelow <= 140;
     stickToThreadBottom.current = atBottom;
-    setShowScrollToBottom(!atBottom && itemsRef.current.length > 0);
+    setScrollToBottomVisible(!atBottom && itemsRef.current.length > 0);
     if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, node.scrollTop, atBottom);
   }
 
@@ -1326,7 +1402,7 @@ function App(): React.JSX.Element {
     const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
     node.scrollTop = maxTop;
     stickToThreadBottom.current = true;
-    setShowScrollToBottom(false);
+    setScrollToBottomVisible(false);
     if (threadRef.current?.id) rememberThreadScrollPosition(threadRef.current.id, maxTop, true);
   }
 
@@ -1366,7 +1442,7 @@ function App(): React.JSX.Element {
       if (!node || threadRef.current?.id !== restore.threadId) return;
       const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
       node.scrollTop = Math.min(restore.top, maxTop);
-      setShowScrollToBottom(!restore.atBottom && itemsRef.current.length > 0);
+      setScrollToBottomVisible(!restore.atBottom && itemsRef.current.length > 0);
       rememberThreadScrollPosition(restore.threadId, node.scrollTop, restore.atBottom);
     };
     requestAnimationFrame(() => {
@@ -1439,7 +1515,7 @@ function App(): React.JSX.Element {
         node.scrollTop = Math.min(saved.top, maxTop);
         if (itemsRef.current.length === 0 && maxTop <= 0) return;
         stickToThreadBottom.current = false;
-        setShowScrollToBottom(itemsRef.current.length > 0);
+        setScrollToBottomVisible(itemsRef.current.length > 0);
         if (maxTop >= saved.top || itemsRef.current.length > 0) {
           pendingScrollRestoreThread.current = null;
           syncThreadScrollState(node);
@@ -1586,6 +1662,10 @@ function App(): React.JSX.Element {
     }
     return result;
   }, [items, changes.branch]);
+  const timelineDefaultChanges = useMemo<WorkspaceChanges>(() => ({ ...defaultChanges, branch: changes.branch }), [changes.branch]);
+  const onTimelineRollback = useStableEvent((turnId: string) => { void rollbackTurn(turnId); });
+  const onTimelineReview = useStableEvent(() => openUtility("review"));
+  const onTimelineOpenFile = useStableEvent((path: string) => openWorkspaceFile(path));
   const visibleSearchResults = useMemo(() => searchResults.filter((summary) => !hiddenThreadIds.includes(summary.id) && !sideThreadSet.has(summary.id)), [searchResults, hiddenThreadIds, sideThreadSet]);
   // Subagents spawned in this thread, for the environment "하위 에이전트" list.
   const subagents = useMemo(() => {
@@ -1618,17 +1698,17 @@ function App(): React.JSX.Element {
       skipNextPanelSave.current = false;
       return;
     }
-    const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+    const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
     panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
-  }, [utilityTabs, utilityActive, utilityPanelOpen, utilityPanelExpanded, thread, agentRuntime]);
+  }, [utilityTabs, utilityActive, utilityPanelOpen, utilityPanelExpanded, thread, agentRuntime, workspace, projectDraft]);
   useEffect(() => {
     if (skipNextBottomSave.current) {
       skipNextBottomSave.current = false;
       return;
     }
-    const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+    const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
     bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
-  }, [bottomTabs, bottomActive, terminalOpen, terminalHeight, thread, agentRuntime]);
+  }, [bottomTabs, bottomActive, terminalOpen, terminalHeight, thread, agentRuntime, workspace, projectDraft]);
   useEffect(() => {
     if (view !== "search" || !search.trim()) { setSearchResults([]); setSearchBusy(false); return; }
     const timer = window.setTimeout(() => {
@@ -2246,7 +2326,7 @@ function App(): React.JSX.Element {
       setUtilityPanelOpen(false);
       setUtilityPanelExpanded(false);
     } else {
-      const panelKey = `${entry.thread?.runtime ?? agentRuntime}:${entry.thread?.id ?? "__none__"}`;
+      const panelKey = threadStateKey(entry.thread?.runtime ?? agentRuntime, entry.thread?.id, emptyThreadStateId(entry.workspace, entry.projectDraft));
       const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
       setUtilityTabs(panel.tabs);
       setUtilityActive(panel.active);
@@ -2313,8 +2393,14 @@ function App(): React.JSX.Element {
       for (const summary of loaded) pendingThreads.current.delete(summary.id);
       const currentCwdKey = cwdKey(cwd);
       const pending = [...pendingThreads.current.values()].filter((summary) => cwdKey(summary.cwd) === currentCwdKey && !loaded.some((item) => item.id === summary.id));
-      setThreads([...pending, ...loaded].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt));
-      for (const summary of loaded.slice(0, 4)) window.setTimeout(() => { void prefetchThreadHistory(summary.id, summary.accountId); }, 0);
+      const nextThreads = [...pending, ...loaded].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt);
+      setThreads((current) => sameThreadSummaryList(current, nextThreads) ? current : nextThreads);
+      const prefetchTargets = loaded.slice(0, 2).filter((summary) => !threadHistoryCache.current.has(summary.id) && !prefetchingThreadHistory.current.has(summary.id));
+      if (prefetchTargets.length) {
+        runWhenIdle(() => {
+          for (const summary of prefetchTargets) void prefetchThreadHistory(summary.id, summary.accountId);
+        });
+      }
     } catch (error) {
       if (options?.quiet) return;
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 목록 오류", text: String(error) }]);
@@ -2343,7 +2429,7 @@ function App(): React.JSX.Element {
       const groups = [...map.values()]
         .map(({ cwd, threads }) => ({ cwd, name: basenamePath(cwd), threads: [...new Map(threads.map((thread) => [thread.id, thread])).values()] }))
         .sort((a, b) => Math.max(...b.threads.map((t) => t.updatedAt)) - Math.max(...a.threads.map((t) => t.updatedAt)));
-      setProjects(groups);
+      setProjects((current) => sameProjectThreadGroups(current, groups) ? current : groups);
     } catch {
       // listing all projects is best-effort; ignore failures
     }
@@ -2962,17 +3048,26 @@ function App(): React.JSX.Element {
       return next;
     });
     setSideChatsByThread((current) => {
-      const from = current[fromThreadId];
-      if (!from?.length) return current;
-      const next = { ...current, [toThreadId]: [...from, ...(current[toThreadId] ?? [])] };
-      delete next[fromThreadId];
-      return next;
+      let changed = false;
+      const next = { ...current };
+      for (const fromKey of threadStateKeys(fromThreadId)) {
+        const from = next[fromKey];
+        if (!from?.length) continue;
+        const toKey = retargetThreadStateKey(fromKey, fromThreadId, toThreadId);
+        next[toKey] = [...from, ...(next[toKey] ?? [])];
+        delete next[fromKey];
+        changed = true;
+      }
+      return changed ? next : current;
     });
-    if (panelByThread.current[fromThreadId] && !panelByThread.current[toThreadId]) {
-      panelByThread.current[toThreadId] = panelByThread.current[fromThreadId];
-    }
-    if (bottomByThread.current[fromThreadId] && !bottomByThread.current[toThreadId]) {
-      bottomByThread.current[toThreadId] = bottomByThread.current[fromThreadId];
+    for (const fromKey of threadStateKeys(fromThreadId)) {
+      const toKey = retargetThreadStateKey(fromKey, fromThreadId, toThreadId);
+      if (panelByThread.current[fromKey] && !panelByThread.current[toKey]) {
+        panelByThread.current[toKey] = panelByThread.current[fromKey];
+      }
+      if (bottomByThread.current[fromKey] && !bottomByThread.current[toKey]) {
+        bottomByThread.current[toKey] = bottomByThread.current[fromKey];
+      }
     }
     const scrollState = threadScrollPositions.current[fromThreadId];
     if (scrollState && !threadScrollPositions.current[toThreadId]) {
@@ -3192,7 +3287,7 @@ function App(): React.JSX.Element {
   function openView(next: AppView): void {
     closePopovers();
     if (next === "settings") {
-      const key = `${thread?.runtime ?? agentRuntime}:${thread?.id ?? "__none__"}`;
+      const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
       panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
       bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
       skipNextPanelSave.current = true;
@@ -3612,10 +3707,11 @@ function App(): React.JSX.Element {
               {loadingThreadId === thread?.id && <span className="thread-load-bar" aria-label="대화 불러오는 중" />}
               {loadingThreadId === thread?.id ? <div className="thread-loading-state"><span><Loader2 size={18} /></span><strong>대화 불러오는 중</strong><p>이전 메시지를 정리해서 표시하고 있습니다.</p></div> : timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const changeMeta = item.turnId ? turnChangeMeta.get(item.turnId) : undefined;
-                const itemChanges = changeMeta?.changes ?? { ...defaultChanges, branch: changes.branch };
+                const itemChanges = changeMeta?.changes ?? timelineDefaultChanges;
+                const showItemChanges = item.kind === "agent" && itemChanges.files.length > 0;
                 const canRollbackTurn = changeMeta?.canRollback ?? false;
                 const streaming = item.kind === "agent" && Boolean(item.turnId && runningTurnIds.has(item.turnId));
-                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={item.kind === "agent" && itemChanges.files.length > 0} canRollback={canRollbackTurn} rollbackBusy={rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={(turnId) => void rollbackTurn(turnId)} onReview={() => openUtility("review")} onOpenFile={openWorkspaceFile} />;
+                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={showItemChanges} canRollback={canRollbackTurn} rollbackBusy={showItemChanges && rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={onTimelineRollback} onReview={onTimelineReview} onOpenFile={onTimelineOpenFile} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>

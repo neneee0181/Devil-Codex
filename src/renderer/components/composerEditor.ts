@@ -108,6 +108,7 @@ export function removeEditorTrigger(editor: HTMLDivElement, triggerLength: numbe
 }
 
 export function editorText(editor: HTMLDivElement): string {
+  if (!editor.querySelector(".composer-inline-skill")) return editor.innerText.replace(/\u00a0/g, " ").trim();
   const copy = editor.cloneNode(true) as HTMLDivElement;
   copy.querySelectorAll(".composer-inline-skill").forEach((node) => node.remove());
   return copy.innerText.replace(/\u00a0/g, " ").trim();
@@ -115,4 +116,13 @@ export function editorText(editor: HTMLDivElement): string {
 
 export function editorSkills(editor: HTMLDivElement): string[] {
   return [...editor.querySelectorAll<HTMLElement>(".composer-inline-skill[data-skill]")].map((node) => node.dataset.skill ?? "").filter(Boolean);
+}
+
+export function editorSnapshot(editor: HTMLDivElement): { text: string; skills: string[] } {
+  const skillNodes = [...editor.querySelectorAll<HTMLElement>(".composer-inline-skill[data-skill]")];
+  const skills = skillNodes.map((node) => node.dataset.skill ?? "").filter(Boolean);
+  if (!skillNodes.length) return { text: editor.innerText.replace(/\u00a0/g, " ").trim(), skills };
+  const copy = editor.cloneNode(true) as HTMLDivElement;
+  copy.querySelectorAll(".composer-inline-skill").forEach((node) => node.remove());
+  return { text: copy.innerText.replace(/\u00a0/g, " ").trim(), skills };
 }

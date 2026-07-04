@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-01T00:00:00+09:00
+updated: 2026-07-04T09:02:00+09:00
 status: active
 tags:
   - memoc
@@ -11,10 +11,11 @@ tags:
 ---
 # Current Project State
 
-Last synced: 2026-07-02
+Last synced: 2026-07-04
 
 ## Current Status
 
+- Post-v0.1.26 local release prep (2026-07-04): pulled `origin/main`, installed newly locked Claude SDK deps, and rebuilt ignored `dist/` + `dist-electron/`. Provider quota bug root cause was stale built `dist-electron/provider-usage.cjs` running old percent logic while source already had remaining-percent parsing; built smoke check against `~/.codex/auth.json` returned current Codex `5시간 used=26 remaining=74`, `7일 used=100 remaining=0`. Mac lag fixes: composer input uses cheaper single-pass snapshots/no-clone reads and 350ms draft-save debounce; thread list history prefetch waits for idle and only loads top 2 uncached histories; thread scroll no longer React-updates/storage-writes on every tiny scroll movement and the full timeline no longer forces a promoted GPU layer. Runtime-switch slowness root cause was measured: Claude import parsed 259.5MB of `~/.claude/projects` JSONL on every `summaries()`/`read()` (~1.8s). `ProviderTranscriptStore` now keeps an in-memory store cache and skips unchanged Claude JSONLs by mtime/size (~2ms stat path). Follow-up perf pass skips no-op thread/project polling state updates and memoizes timeline/Markdown/activity rendering so unrelated App state changes do not reparse old messages. Bottom dock state keys include runtime plus `new-chat`/`project-draft` cwd scope when no thread id exists, and UI-state moves handle runtime-prefixed keys. `package.json`/`package-lock.json` bumped to `0.1.26`; `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass locally. Commit/tag/push in progress.
 - Post-v0.1.15 local hotfix (2026-07-03): right/bottom review tabs now auto-refresh workspace changes and the selected diff while visible, polling quietly at ~0.9s during active AI work and ~1.8s while idle. Terminal command-history cleanup now preserves CR/CRLF as newlines and applies backspace/delete edits so Windows `cmd dir` output no longer collapses lines or shows input edit artifacts like `c\b \bcls`. Devil-created Claude Code JSONLs were recorded as `entrypoint:"sdk-cli"` while stock CLI sessions use `entrypoint:"cli"`; new sends now normalize the just-created native session JSONL back to `cli` for resume-list compatibility. `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass locally. Not committed/pushed/versioned yet.
 - Post-v0.1.14 local hotfix (2026-07-02): user decided `CAVEMAN MODE ACTIVE` hook-only sessions should remain because stock Claude CLI shows them too; previously moved hook-only JSONLs were restored to `~/.claude/projects`, and code no longer quarantines hook-only sessions or rewrites Claude JSONL `entrypoint`. Composer clear now uses `replaceChildren()` and resets per draft key, uncached thread opens clear initializing state after navigation so first-run loading UI is visible, visible chat timeline + terminal command-history output updates are batched with `requestAnimationFrame`, and streaming agent text renders lightweight pre-wrap text until turn completion before switching back to Markdown. Per-turn change metadata is precomputed to reduce rerender work while streaming. `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass locally. Not committed/pushed/versioned yet.
 - Post-v0.1.13 local hotfix (2026-07-02): fixed keyed terminal reuse by wrapping `node-pty` methods explicitly before storing records, so thread switches no longer hit `existing.resize is not a function`. Claude Code JSONL import now keeps every `~/.claude/projects/**/*.jsonl` CLI session that has no visible user/assistant messages by creating metadata from hook/attachment text and deriving missing cwd from the Claude project folder key; future Devil-created Claude sessions set `CLAUDE_CODE_ENTRYPOINT=cli` to better match stock Claude Code session pickers. `npx tsc -p tsconfig.json --noEmit`, `npm run build`, and `git diff --check` pass locally. Not committed/pushed/versioned yet.
