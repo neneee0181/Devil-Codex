@@ -965,6 +965,19 @@ function App(): React.JSX.Element {
   };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
+  // config.toml (shared with stock Codex) is the source of truth for effort and
+  // speed; localStorage is only a fast-boot cache. Adopt the config values once
+  // they load so a change made in stock Codex shows up here after a relaunch.
+  const adoptedCodexDefaults = useRef(false);
+  useEffect(() => {
+    const loaded = codexSettings.settings;
+    if (!loaded || adoptedCodexDefaults.current) return;
+    adoptedCodexDefaults.current = true;
+    setReasoningEffortState(loaded.reasoningEffort);
+    localStorage.setItem("devil-codex:reasoning-effort", loaded.reasoningEffort);
+    setResponseSpeedState(loaded.responseSpeed);
+    localStorage.setItem("devil-codex:response-speed", loaded.responseSpeed);
+  }, [codexSettings.settings]);
   const syncStockCodexDefaults = (patch: Partial<Pick<CodexSettings, "model" | "reasoningEffort" | "responseSpeed">>): void => {
     const current = codexSettings.settings;
     if (!current) return;

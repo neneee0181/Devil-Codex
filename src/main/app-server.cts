@@ -84,6 +84,13 @@ function turnPermissionFields(approvalPolicy: ThreadApprovalPolicy, sandboxMode:
   return { approvalPolicy, sandboxPolicy: stockSandboxPolicy(sandboxMode, cwd) };
 }
 
+// Response speed maps to the catalog service tier: fast → "priority",
+// standard → "default" (the same values stock Codex writes to config.toml's
+// `service_tier`, confirmed against model/list on the bundled binary).
+function serviceTierFor(responseSpeed: ResponseSpeed | undefined): string {
+  return responseSpeed === "fast" ? "priority" : "default";
+}
+
 function isPermissionParameterError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /approvalPolicy|approval_policy|sandboxMode|sandbox_mode|sandbox|unknown field|unknown parameter|invalid params|invalid request/i.test(message);
@@ -185,6 +192,9 @@ export class CodexAppServer extends EventEmitter {
       cwd: input.cwd,
       model: input.model,
       ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+      // thread/start supports serviceTier (no effort field; effort is sent
+      // per-turn via turn/start instead).
+      ...(input.responseSpeed ? { serviceTier: serviceTierFor(input.responseSpeed) } : {}),
     };
     let result: { thread?: { id?: string } };
     try {
@@ -402,14 +412,20 @@ export class CodexAppServer extends EventEmitter {
       { type: "text", text: input.text, text_elements: [] },
       ...(input.attachments ?? []).map((url) => ({ type: "image", url })),
     ];
-    const speedParams = input.responseSpeed === "fast" ? { service_tier: "priority", serviceTier: "priority" } : {};
+    // turn/start expects top-level `effort`/`serviceTier` (TurnStartParams in the
+    // app-server JSON schema). The earlier `reasoning: { effort }` shape was
+    // silently dropped as an unknown field, so the selected effort never applied
+    // (rollout turn_context recorded reasoning_effort: null). Tier overrides also
+    // persist "for this turn and subsequent turns", so "standard" must send an
+    // explicit "default" — omitting it would leave a thread stuck on priority
+    // after a single fast turn.
     const baseParams = {
       threadId: input.threadId,
       cwd: input.cwd,
       model: input.model,
       input: items,
-      reasoning: { effort: input.reasoningEffort ?? "medium" },
-      ...speedParams,
+      effort: input.reasoningEffort ?? "medium",
+      serviceTier: serviceTierFor(input.responseSpeed),
     };
     const requestedApprovalPolicy = input.approvalPolicy ?? "on-request";
     const requestedSandbox = input.sandboxMode ?? "workspace-write";

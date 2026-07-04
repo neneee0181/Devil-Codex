@@ -14,12 +14,28 @@ const defaults: CodexSettings = {
   devilMcpEnabled: false,
   englishOutput: false,
 };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
-// NOTE: stock Codex owns `service_tier` (response speed) and
-// `model_reasoning_effort`; Devil must never strip or rewrite them. An earlier
-// "legacy cleanup" deleted service_tier on every load(), which kept resetting
-// the stock app's speed setting and rewrote config.toml far more often than
-// necessary.
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", englishOutput: "english_output" } as const;
+// NOTE: `model_reasoning_effort` and `service_tier` are shared with stock
+// Codex, which writes them from its own model picker. Devil now reads them in
+// load() and writes them in save() so the two apps stay in sync — the renderer
+// has always called save() on effort/speed changes expecting exactly that.
+// (An earlier "legacy cleanup" deleted service_tier on every load(), which
+// kept resetting the stock app's speed setting; the rule is read/rewrite the
+// keys faithfully, never strip them outside save().)
+// service_tier mapping: fast ↔ "priority", standard ↔ "default". A custom
+// non-priority tier set by stock (e.g. "flex") is preserved on save while the
+// speed stays "standard", so Devil never clobbers a tier it doesn't model.
+const reasoningEffortValues = new Set<CodexSettings["reasoningEffort"]>(["low", "medium", "high", "xhigh"]);
+
+function readReasoningEffort(source: string): CodexSettings["reasoningEffort"] | undefined {
+  const value = readValue(source, keys.reasoningEffort) as CodexSettings["reasoningEffort"] | undefined;
+  return value && reasoningEffortValues.has(value) ? value : undefined;
+}
+
+function serviceTierValue(responseSpeed: CodexSettings["responseSpeed"], previousTier: string | undefined): string {
+  if (responseSpeed === "fast") return "priority";
+  return previousTier && previousTier !== "priority" ? previousTier : "default";
+}
 
 function readValue(source: string, key: string): string | undefined {
   const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, "m"));
@@ -63,8 +79,8 @@ export class CodexSettingsStore {
         model: readValue(source, keys.model) ?? defaults.model,
         approvalPolicy: readValue(source, keys.approvalPolicy) ?? defaults.approvalPolicy,
         sandboxMode: readValue(source, keys.sandboxMode) ?? defaults.sandboxMode,
-        reasoningEffort: defaults.reasoningEffort,
-        responseSpeed: defaults.responseSpeed,
+        reasoningEffort: readReasoningEffort(source) ?? defaults.reasoningEffort,
+        responseSpeed: readValue(source, keys.responseSpeed) === "priority" ? "fast" : defaults.responseSpeed,
         devilMcpEnabled: readBoolean(source, keys.devilMcpEnabled) ?? defaults.devilMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
       };
@@ -82,9 +98,13 @@ export class CodexSettingsStore {
     // Remove the managed keys from anywhere, then re-emit them as a block at the
     // very top. TOML root keys must precede the first [table]; appending at the
     // end would slot them under a managed MCP table and break config parsing.
+    const previousTier = readValue(source, keys.responseSpeed);
     for (const key of Object.values(keys)) source = stripKeyLine(source, key);
     const block = (Object.entries(keys) as Array<[keyof CodexSettings, string]>)
-      .map(([field, key]) => `${key} = ${formatValue(next[field])}`)
+      .map(([field, key]) => {
+        const value = field === "responseSpeed" ? serviceTierValue(next.responseSpeed, previousTier) : next[field];
+        return `${key} = ${formatValue(value)}`;
+      })
       .join("\n");
     source = `${block}\n${source.replace(/^[\r\n]+/, "")}`;
     source = preserveDesktopAppearanceTheme(source, previous);

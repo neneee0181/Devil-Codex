@@ -33,6 +33,9 @@ type ClaudeJsonLine = {
   cwd?: string;
   timestamp?: string;
   isSidechain?: boolean;
+  isApiErrorMessage?: boolean;
+  apiErrorStatus?: number;
+  error?: string;
   version?: string;
   content?: unknown;
   compactMetadata?: Record<string, unknown>;
@@ -74,6 +77,16 @@ function claudeContentParts(content: unknown): Record<string, unknown>[] {
 
 function claudeHasToolUse(content: unknown): boolean {
   return claudeContentParts(content).some((part) => String(part.type ?? "") === "tool_use");
+}
+
+function isClaudeApiErrorLine(line: ClaudeJsonLine): boolean {
+  return Boolean(line.isApiErrorMessage || line.error || line.apiErrorStatus);
+}
+
+function claudeApiErrorTitle(line: ClaudeJsonLine): string {
+  const status = typeof line.apiErrorStatus === "number" && line.apiErrorStatus > 0 ? ` ${line.apiErrorStatus}` : "";
+  const code = typeof line.error === "string" && line.error ? ` (${line.error})` : "";
+  return `Claude Code 오류${status}${code}`;
 }
 
 function isClaudeLocalCommandText(text: string): boolean {
@@ -641,7 +654,9 @@ export class ProviderTranscriptStore {
       const text = claudeTextContent(content);
       const hasTool = claudeHasToolUse(content);
       if (text && !isClaudeHookNoiseText(text)) {
-        if (hasTool || hasLaterToolBeforeNextUser(index)) {
+        if (isClaudeApiErrorLine(line)) {
+          items.push({ id, kind: "system", title: claudeApiErrorTitle(line), text, turnId, status: "failed", runtime: "claude-code", provider: "claude-code" });
+        } else if (hasTool || hasLaterToolBeforeNextUser(index)) {
           ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
         } else {
           items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
