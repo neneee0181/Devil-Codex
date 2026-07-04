@@ -455,7 +455,8 @@ export class CodexAppServer extends EventEmitter {
 
   async interruptTurn(input: { threadId: string; turnId?: string }): Promise<void> {
     await this.ensureConnected();
-    await this.request("turn/interrupt", { threadId: input.threadId, ...(input.turnId ? { turnId: input.turnId } : {}) });
+    if (!input.turnId) throw new Error("no active turn to interrupt");
+    await this.request("turn/interrupt", { threadId: input.threadId, turnId: input.turnId });
   }
 
   async respondApproval(input: { requestId: string | number; decision: ApprovalDecision }): Promise<void> {

@@ -57,7 +57,7 @@ function normalizedUserText(value: string | undefined): string {
 }
 
 function itemMergeKey(item: ThreadHistoryItem): string {
-  if (item.kind === "user") return `user:${normalizedUserText(item.text)}:${item.attachments?.length ?? 0}`;
+  if (item.kind === "user") return `user:${normalizedUserText(item.text)}`;
   if (item.kind === "agent") return `agent:${item.turnId ?? ""}:${normalizedText(item.text)}`;
   if (item.kind === "system") return `system:${item.title ?? ""}:${normalizedText(item.text)}`;
   if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;

@@ -468,6 +468,18 @@ function removeAgentMessagesForTurn(items: ThreadHistoryItem[], turnId: string):
   return next.length === items.length ? items : next;
 }
 
+function latestInterruptibleTurnId(items: ThreadHistoryItem[]): string {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (item.kind === "activity" && item.status === "inProgress" && item.turnId) return item.turnId;
+  }
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (item.kind === "activity" && item.activities?.some((entry) => entry.status === "inProgress") && item.turnId) return item.turnId;
+  }
+  return "";
+}
+
 function timelineItemKey(item: ThreadHistoryItem): string {
   if (item.kind === "user") return userTimelineKey(item);
   if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;
@@ -2124,7 +2136,8 @@ function App(): React.JSX.Element {
   // the queue. The interrupt's turn/completed triggers startQueuedTurn, which
   // sends it first — same thread, so the model keeps full history and redirects.
   function interruptForSteer(threadId: string): void {
-    const turnId = activeTurnsByThread.current.get(threadId);
+    const history = threadRef.current?.id === threadId ? itemsRef.current : threadHistoryCache.current.get(threadId) ?? [];
+    const turnId = activeTurnsByThread.current.get(threadId) ?? latestInterruptibleTurnId(history);
     if (turnId) steeringInterruptedTurns.current.add(turnId);
     void window.devilCodex.interruptTurn({ threadId, runtime: pendingForThread(threadId)?.runtime ?? threadRef.current?.runtime ?? agentRuntime, turnId }).catch((error) => {
       if (/no active turn to interrupt/i.test(String(error))) {
@@ -2361,7 +2374,8 @@ function App(): React.JSX.Element {
 
   function stopTurn(): void {
     const threadId = thread?.id ?? activeTurn.current?.threadId;
-    const turnId = threadId ? activeTurnsByThread.current.get(threadId) : activeTurn.current?.turnId;
+    const history = threadId && threadRef.current?.id === threadId ? itemsRef.current : threadId ? threadHistoryCache.current.get(threadId) ?? [] : [];
+    const turnId = threadId ? activeTurnsByThread.current.get(threadId) ?? activeTurn.current?.turnId ?? latestInterruptibleTurnId(history) : activeTurn.current?.turnId;
     if (!threadId) return;
     clearQueuedTurns(threadId);
     compactionRetries.current.delete(threadId);
