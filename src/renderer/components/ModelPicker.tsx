@@ -45,6 +45,14 @@ function formatTokens(value: number): string {
   return String(Math.round(value));
 }
 
+function contextLimit(contextUsage: ContextUsage | undefined): number | undefined {
+  if (!contextUsage?.maxTokens) return undefined;
+  if (contextUsage.scope !== "last-request" && contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold && contextUsage.autoCompactThreshold > 0) {
+    return contextUsage.autoCompactThreshold;
+  }
+  return contextUsage.maxTokens;
+}
+
 function selectableApiProvider(provider: ProviderInfo): boolean {
   // Hosted API providers ship valid default models in the catalog, so a usable
   // credential is enough — don't also require a live model refresh, which can
@@ -115,7 +123,8 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
   const selected = active ? accountModels(active, activeAccount).find((item) => item.id === model) : undefined;
   const effortLabel = efforts.find((item) => item.value === reasoningEffort)?.label ?? "중간";
   const speedLabel = speeds.find((item) => item.value === responseSpeed)?.label ?? "표준";
-  const contextPercent = contextUsage ? Math.min(100, Math.max(0, Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100))) : 0;
+  const contextLimitTokens = contextLimit(contextUsage);
+  const contextPercent = contextUsage && contextLimitTokens ? Math.min(100, Math.max(0, Math.round((contextUsage.usedTokens / contextLimitTokens) * 100))) : 0;
   const authedFor = (provider: ProviderInfo): boolean => provider.authProvider ? auth[provider.authProvider] : false;
   const visibleAccountsFor = (provider: ProviderInfo): ProviderAccount[] => provider.kind === "login" && !authedFor(provider) ? [] : provider.accounts;
   const connected = providers.filter((provider) => provider.kind === "login"
@@ -201,13 +210,16 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
     <div className="model-picker" ref={root} data-popover-root>
       {contextUsage && (
         <div className="model-context-wrap">
-          <button type="button" className="model-context-meter" aria-label={`컨텍스트 창 ${contextPercent}% 참`} style={{ "--context-percent": `${contextPercent}%` } as CSSProperties}>
+          <button type="button" className="model-context-meter" aria-label={`컨텍스트 ${contextPercent}% 참`} style={{ "--context-percent": `${contextPercent}%` } as CSSProperties}>
             <span />
           </button>
           <div className="model-context-tooltip" role="tooltip">
-            <small>{contextUsage.scope === "last-request" ? "마지막 요청:" : contextUsage.source === "renderer-estimate" ? "컨텍스트 추정:" : "컨텍스트 창:"}</small>
+            <small>{contextUsage.scope === "last-request" ? "마지막 요청:" : contextUsage.source === "renderer-estimate" ? "컨텍스트 추정:" : contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold ? "자동압축 기준:" : "컨텍스트 창:"}</small>
             <strong>{contextPercent}% 참</strong>
-            <span>{formatTokens(contextUsage.usedTokens)}/{formatTokens(contextUsage.maxTokens)} 개의 토큰 사용</span>
+            <span>{formatTokens(contextUsage.usedTokens)}/{formatTokens(contextLimitTokens ?? contextUsage.maxTokens)} 개의 토큰 사용</span>
+            {contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold && contextUsage.maxTokens !== contextUsage.autoCompactThreshold && (
+              <span>최대 {formatTokens(contextUsage.maxTokens)}</span>
+            )}
           </div>
         </div>
       )}

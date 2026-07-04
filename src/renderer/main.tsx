@@ -743,6 +743,7 @@ type ThreadUsageSummary = {
   contextUsage?: ContextUsage;
   contextTokens?: number;
   maxTokens?: number;
+  contextLimitTokens?: number;
   contextOverflow: boolean;
   models: ThreadUsageModel[];
 };
@@ -754,19 +755,53 @@ function compactTokenCount(value: number): string {
   return `${Math.round(value).toLocaleString()}`;
 }
 
+function contextUsageLimit(contextUsage: ContextUsage | undefined): number | undefined {
+  if (!contextUsage?.maxTokens) return undefined;
+  if (contextUsage.scope !== "last-request" && contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold && contextUsage.autoCompactThreshold > 0) {
+    return contextUsage.autoCompactThreshold;
+  }
+  return contextUsage.maxTokens;
+}
+
+function contextUsagePercent(contextUsage: ContextUsage | undefined): number | null {
+  const limit = contextUsageLimit(contextUsage);
+  if (!contextUsage?.usedTokens || !limit) return null;
+  return Math.round((contextUsage.usedTokens / limit) * 100);
+}
+
+function contextUsageOverflow(contextUsage: ContextUsage | undefined): boolean {
+  const limit = contextUsageLimit(contextUsage);
+  return Boolean(contextUsage?.usedTokens && limit && contextUsage.scope !== "last-request" && contextUsage.usedTokens >= limit);
+}
+
 function contextUsageTitle(contextUsage: ContextUsage | undefined): string {
   if (contextUsage?.scope === "last-request") return "마지막 요청 컨텍스트";
   if (contextUsage?.source === "renderer-estimate") return "현재 대화 추정치";
+  if (contextUsage?.autoCompactEnabled && contextUsage.autoCompactThreshold) return "현재 컨텍스트 / 자동압축";
   return "현재 컨텍스트";
+}
+
+function contextUsageDisplay(contextUsage: ContextUsage | undefined): string {
+  if (!contextUsage?.usedTokens || !contextUsage.maxTokens) return "알 수 없음";
+  const percent = contextUsagePercent(contextUsage);
+  const used = formatTokenShort(contextUsage.usedTokens);
+  if (contextUsage.scope !== "last-request" && contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold) {
+    return `${used} / ${formatTokenShort(contextUsage.autoCompactThreshold)} (${percent ?? 0}%, 최대 ${formatTokenShort(contextUsage.maxTokens)})`;
+  }
+  return `${used} / ${formatTokenShort(contextUsage.maxTokens)} (${percent ?? 0}%)`;
 }
 
 function contextUsageStatus(contextUsage: ContextUsage | undefined, overflow: boolean, usageHasClaudeCode: boolean): string {
   if (!contextUsage?.usedTokens || !contextUsage.maxTokens) return "알 수 없음";
-  const percent = Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100);
+  const percent = contextUsagePercent(contextUsage) ?? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100);
   if (contextUsage.scope === "last-request") return contextUsage.includesCache ? `캐시 포함 · ${percent}% 상당` : `${percent}% 상당`;
   if (contextUsage.source === "renderer-estimate") return overflow
     ? usageHasClaudeCode ? "추정 임계값 초과 · Claude Code 자동 압축 켜짐" : "추정 임계값 초과"
     : `추정 ${percent}% 사용`;
+  if (contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold) {
+    return overflow ? `자동압축 임계값 도달 · ${percent}%` : `자동압축 기준 ${percent}%`;
+  }
+  if (contextUsage.autoCompactEnabled === false) return `${percent}% 사용 · 자동압축 꺼짐`;
   if (overflow) return usageHasClaudeCode ? "임계값 초과 · Claude Code 자동 압축 켜짐" : "다음 요청에서 압축 필요";
   return usageHasClaudeCode ? `${percent}% 사용 · Claude Code 자동 압축 켜짐` : `${percent}% 사용`;
 }
@@ -875,6 +910,7 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     rows.set(key, row);
   }
   const models = [...rows.values()].sort((a, b) => b.estimatedCost - a.estimatedCost || b.totalTokens - a.totalTokens || b.requests - a.requests);
+  const contextLimit = contextUsageLimit(input.contextUsage);
   return {
     requests: models.reduce((sum, row) => sum + row.requests, 0),
     completed: models.reduce((sum, row) => sum + row.completed, 0),
@@ -885,7 +921,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     contextUsage: input.contextUsage,
     contextTokens: input.contextUsage?.usedTokens,
     maxTokens: input.contextUsage?.maxTokens,
-    contextOverflow: Boolean(input.contextUsage?.usedTokens && input.contextUsage?.maxTokens && input.contextUsage.scope !== "last-request" && input.contextUsage.usedTokens > input.contextUsage.maxTokens),
+    contextLimitTokens: contextLimit,
+    contextOverflow: contextUsageOverflow(input.contextUsage),
     models,
   };
 }
@@ -3280,7 +3317,6 @@ function App(): React.JSX.Element {
     try {
       const next = await window.devilCodex.getWorkspaceChanges({ cwd: workspace });
       setChanges(next);
-      const contextPercent = contextUsage ? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100) : null;
       const quotaEntry = quickUsage.report?.entries.find((entry) => entry.connected && entry.windows.length > 0);
       const quota = quotaEntry
         ? quotaEntry.windows.map((window) => quotaEntry.provider === "codex"
@@ -3291,7 +3327,7 @@ function App(): React.JSX.Element {
         `채팅 ID: ${thread?.id ?? "새 채팅"}`,
         `작업 경로: ${workspace || "없음"}`,
         `모델: ${modelDisplayName({ provider: providers.settings?.provider ?? "codex", model: thread?.model || model })}`,
-        `${contextUsageTitle(contextUsage)}: ${contextUsage ? `${formatTokenShort(contextUsage.usedTokens)} / ${formatTokenShort(contextUsage.maxTokens)} (${contextPercent}%)` : "알 수 없음"}`,
+        `${contextUsageTitle(contextUsage)}: ${contextUsageDisplay(contextUsage)}`,
         `현재 스레드 사용량: ${threadUsage.requests}회 요청 · ${threadUsageCostLabel(threadUsage.estimatedCost, threadUsage.pricedTokens, threadUsage.totalTokens)}`,
         `속도: ${responseSpeedLabel(responseSpeed)}`,
         `추론 수준: ${reasoningEffortLabel(reasoningEffort)}`,
@@ -4396,16 +4432,22 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
           <span><Target />현재 스레드</span>
           <strong>{usage.requests > 0 ? `${usage.requests}회 요청` : usageState === "error" ? "불러오기 실패" : "불러오는 중"}</strong>
         </div>
-        {usage.contextTokens && usage.maxTokens && <>
+        {usage.contextTokens && usage.maxTokens && usage.contextLimitTokens && <>
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
             <span>{contextUsageTitle(usage.contextUsage)}</span>
-            <b>{compactTokenCount(usage.contextTokens)} / {compactTokenCount(usage.maxTokens)}</b>
+            <b>{compactTokenCount(usage.contextTokens)} / {compactTokenCount(usage.contextLimitTokens)}</b>
           </div>
+          {usage.contextUsage?.autoCompactEnabled && usage.contextUsage.autoCompactThreshold && usage.contextUsage.maxTokens !== usage.contextUsage.autoCompactThreshold && (
+            <div className="environment-usage-context">
+              <span>최대 컨텍스트 창</span>
+              <b>{compactTokenCount(usage.contextUsage.maxTokens)}</b>
+            </div>
+          )}
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
             <span>컨텍스트 상태</span>
             <b>{contextUsageStatus(usage.contextUsage, usage.contextOverflow, usageHasClaudeCode)}</b>
           </div>
-          <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.maxTokens)} max={usage.maxTokens} />
+          <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.contextLimitTokens)} max={usage.contextLimitTokens} />
         </>}
         {usage.requests > 0 ? <>
           <div className="environment-usage-summary">

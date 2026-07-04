@@ -320,6 +320,12 @@ function contextUsageFromSdkControl(value: unknown): ContextUsage | undefined {
   if (!totalTokens || !maxTokens) return undefined;
   const rawMaxTokens = compactNumber(raw.rawMaxTokens ?? raw.raw_max_tokens);
   const percentage = compactNumber(raw.percentage);
+  const autoCompactThreshold = compactNumber(raw.autoCompactThreshold ?? raw.auto_compact_threshold);
+  const autoCompactEnabled = typeof raw.isAutoCompactEnabled === "boolean"
+    ? raw.isAutoCompactEnabled
+    : typeof raw.autoCompactEnabled === "boolean"
+      ? raw.autoCompactEnabled
+      : undefined;
   const categories = Array.isArray(raw.categories)
     ? raw.categories.flatMap((category) => {
       if (!category || typeof category !== "object") return [];
@@ -340,6 +346,8 @@ function contextUsageFromSdkControl(value: unknown): ContextUsage | undefined {
     includesCache: false,
     ...(rawMaxTokens ? { rawMaxTokens } : {}),
     ...(percentage ? { percentage } : {}),
+    ...(autoCompactThreshold ? { autoCompactThreshold } : {}),
+    ...(typeof autoCompactEnabled === "boolean" ? { autoCompactEnabled } : {}),
     ...(categories?.length ? { categories } : {}),
   };
 }

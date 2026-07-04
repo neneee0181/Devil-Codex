@@ -96,11 +96,23 @@ function compactNumber(value: number): string {
   return String(Math.round(value));
 }
 
+function contextLimit(contextUsage: ContextUsage | undefined): number | undefined {
+  if (!contextUsage?.maxTokens) return undefined;
+  if (contextUsage.scope !== "last-request" && contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold && contextUsage.autoCompactThreshold > 0) {
+    return contextUsage.autoCompactThreshold;
+  }
+  return contextUsage.maxTokens;
+}
+
 function contextUsageDetail(context: SlashCommandContext): string {
   if (!context.contextUsage || context.contextUsage.maxTokens <= 0) return "채팅 ID, 컨텍스트 사용량, 속도 제한을 표시합니다";
-  const percent = Math.round((context.contextUsage.usedTokens / context.contextUsage.maxTokens) * 100);
-  const label = context.contextUsage.scope === "last-request" ? "마지막 요청" : context.contextUsage.source === "renderer-estimate" ? "컨텍스트 추정" : "컨텍스트";
-  return `${label} ${percent}% · ${compactNumber(context.contextUsage.usedTokens)} / ${compactNumber(context.contextUsage.maxTokens)}`;
+  const limit = contextLimit(context.contextUsage) ?? context.contextUsage.maxTokens;
+  const percent = Math.round((context.contextUsage.usedTokens / limit) * 100);
+  const label = context.contextUsage.scope === "last-request" ? "마지막 요청" : context.contextUsage.source === "renderer-estimate" ? "컨텍스트 추정" : context.contextUsage.autoCompactEnabled && context.contextUsage.autoCompactThreshold ? "자동압축 기준" : "컨텍스트";
+  const suffix = context.contextUsage.autoCompactEnabled && context.contextUsage.autoCompactThreshold && context.contextUsage.maxTokens !== context.contextUsage.autoCompactThreshold
+    ? ` · 최대 ${compactNumber(context.contextUsage.maxTokens)}`
+    : "";
+  return `${label} ${percent}% · ${compactNumber(context.contextUsage.usedTokens)} / ${compactNumber(limit)}${suffix}`;
 }
 
 const codexCommands: SlashCommand[] = [

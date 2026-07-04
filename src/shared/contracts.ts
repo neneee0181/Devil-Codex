@@ -89,6 +89,8 @@ export interface ContextUsage {
   outputTokens?: number;
   rawMaxTokens?: number;
   percentage?: number;
+  autoCompactThreshold?: number;
+  autoCompactEnabled?: boolean;
   categories?: Array<{ name: string; tokens: number; color?: string; isDeferred?: boolean }>;
 }
 

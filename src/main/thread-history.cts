@@ -80,6 +80,12 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
         const outputTokens = finiteNumber(candidate.outputTokens ?? candidate.output_tokens);
         const rawMaxTokens = finiteNumber(candidate.rawMaxTokens ?? candidate.raw_max_tokens);
         const percentage = finiteNumber(candidate.percentage);
+        const autoCompactThreshold = finiteNumber(candidate.autoCompactThreshold ?? candidate.auto_compact_threshold);
+        const autoCompactEnabled = typeof candidate.autoCompactEnabled === "boolean"
+          ? candidate.autoCompactEnabled
+          : typeof candidate.isAutoCompactEnabled === "boolean"
+            ? candidate.isAutoCompactEnabled
+            : undefined;
         const categories = Array.isArray(candidate.categories)
           ? candidate.categories.flatMap((category) => {
             if (!category || typeof category !== "object") return [];
@@ -103,6 +109,8 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
           ...(outputTokens ? { outputTokens } : {}),
           ...(rawMaxTokens ? { rawMaxTokens } : {}),
           ...(percentage ? { percentage } : {}),
+          ...(autoCompactThreshold ? { autoCompactThreshold } : {}),
+          ...(typeof autoCompactEnabled === "boolean" ? { autoCompactEnabled } : {}),
           ...(categories?.length ? { categories } : {}),
         };
       }
