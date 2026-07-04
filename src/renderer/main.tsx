@@ -1196,6 +1196,7 @@ function App(): React.JSX.Element {
   const scrollPersistFrame = useRef<number | null>(null);
   const projectHeaderMenuRef = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef<ThreadHistoryItem[]>([]);
+  const itemsOwnerRef = useRef<string | null>(null);
   const threadRef = useRef<ThreadRef | null>(null);
   const threadHistoryCache = useRef(new Map<string, ThreadHistoryItem[]>());
   const prefetchingThreadHistory = useRef(new Set<string>());
@@ -1235,6 +1236,10 @@ function App(): React.JSX.Element {
   }
 
   useEffect(() => { itemsRef.current = items; }, [items]);
+
+  function visibleItemsForThread(threadId: string): ThreadHistoryItem[] | null {
+    return itemsOwnerRef.current === threadId ? itemsRef.current : null;
+  }
   useEffect(() => window.devilCodex.onAsk((request) => {
     const first = request.questions[0];
     notifyInBackground("notifyOnAsk", "Devil Codex 질문", first?.question ?? "AI가 사용자 입력을 기다리고 있습니다.", "critical", true);
@@ -1261,6 +1266,7 @@ function App(): React.JSX.Element {
     const nextItems = cached ? mergeTimelineItems(snapshot.items, cached) : snapshot.items;
     setItems(nextItems);
     itemsRef.current = nextItems;
+    itemsOwnerRef.current = snapshot.thread.id;
     threadHistoryCache.current.set(snapshot.thread.id, nextItems);
     setProjectDraft(snapshot.projectDraft);
     activeResume.current = snapshot.thread.id;
@@ -1293,6 +1299,7 @@ function App(): React.JSX.Element {
       threadRef.current = null;
       setItems([]);
       itemsRef.current = [];
+      itemsOwnerRef.current = null;
       setProjectDraft(false);
     }
     pendingThreads.current.clear();
@@ -1330,6 +1337,8 @@ function App(): React.JSX.Element {
         setProjectDraft(false);
         setThread(null);
         setItems([]);
+        itemsRef.current = [];
+        itemsOwnerRef.current = null;
         await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
       } else {
         await connect();
@@ -1362,11 +1371,12 @@ function App(): React.JSX.Element {
       const activeRuntime = threadRef.current?.runtime ?? agentRuntime;
       if (activeRuntime === "claude-code") return;
       void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: activeRuntime, accountId: threadRef.current?.accountId }).then((history) => {
-        const localHistory = threadHistoryCache.current.get(activeThreadId) ?? itemsRef.current;
+        const localHistory = threadHistoryCache.current.get(activeThreadId) ?? visibleItemsForThread(activeThreadId) ?? [];
         const merged = mergeTimelineItems(localHistory, history);
         threadHistoryCache.current.set(activeThreadId, merged);
         if (threadRef.current?.id === activeThreadId) {
           itemsRef.current = merged;
+          itemsOwnerRef.current = activeThreadId;
           setItems(merged);
         }
       }).catch(() => undefined);
@@ -1960,7 +1970,7 @@ function App(): React.JSX.Element {
   function appendItemToThread(threadId: string, item: ThreadHistoryItem): void {
     if (!threadId) return;
     if (threadRef.current?.id === threadId) {
-      setItems((current) => { const next = [...current, item]; itemsRef.current = next; threadHistoryCache.current.set(threadId, next); return next; });
+      setItems((current) => { const next = [...current, item]; itemsRef.current = next; itemsOwnerRef.current = threadId; threadHistoryCache.current.set(threadId, next); return next; });
     } else {
       threadHistoryCache.current.set(threadId, [...(threadHistoryCache.current.get(threadId) ?? []), item]);
     }
@@ -2224,6 +2234,7 @@ function App(): React.JSX.Element {
         }
         itemsRef.current = next;
         if (visibleThreadId) threadHistoryCache.current.set(visibleThreadId, next);
+        if (visibleThreadId) itemsOwnerRef.current = visibleThreadId;
         return next;
       });
     });
@@ -2371,7 +2382,7 @@ function App(): React.JSX.Element {
       }
       if (threadId) window.setTimeout(() => {
         void (async () => {
-          const localHistory = threadHistoryCache.current.get(threadId) ?? itemsRef.current;
+          const localHistory = threadHistoryCache.current.get(threadId) ?? visibleItemsForThread(threadId) ?? [];
           const cachedAccountId = threadRef.current?.id === threadId ? threadRef.current.accountId : undefined;
           const cachedRuntime = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : pendingForThread(threadId)?.runtime ?? agentRuntime;
           await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
@@ -2386,6 +2397,7 @@ function App(): React.JSX.Element {
           if (threadRef.current?.id === threadId && recoveredHistory !== localHistory) {
             setItems(recoveredHistory);
             itemsRef.current = recoveredHistory;
+            itemsOwnerRef.current = threadId;
           }
         })().catch(() => undefined);
       }, 120);
@@ -2439,6 +2451,8 @@ function App(): React.JSX.Element {
       setProjectDraft(false);
       setThread(null);
       setItems([]);
+      itemsRef.current = [];
+      itemsOwnerRef.current = null;
       if (status.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
     } catch (error) {
       setRuntime((current) => ({ ...current, state: "error", detail: `Codex app-server 연결 실패: ${String(error)}` }));
@@ -2452,9 +2466,12 @@ function App(): React.JSX.Element {
   function navigationSnapshot(): NavigationEntry {
     saveCurrentThreadScrollPosition();
     const currentThread = threadRef.current ?? thread;
-    if (currentThread?.id) threadHistoryCache.current.set(currentThread.id, itemsRef.current);
+    const snapshotItems = currentThread?.id
+      ? (itemsOwnerRef.current === currentThread.id ? itemsRef.current : threadHistoryCache.current.get(currentThread.id) ?? [])
+      : itemsRef.current;
+    if (currentThread?.id && itemsOwnerRef.current === currentThread.id) threadHistoryCache.current.set(currentThread.id, snapshotItems);
     const runtimeForEntry = currentThread?.runtime ?? agentRuntime;
-    return { view, runtime: runtimeForEntry, thread: currentThread, workspace, items: itemsRef.current, projectDraft, environmentOpen, settingsSection, search };
+    return { view, runtime: runtimeForEntry, thread: currentThread, workspace, items: snapshotItems, projectDraft, environmentOpen, settingsSection, search };
   }
 
   function restoreNavigation(entry: NavigationEntry): void {
@@ -2477,6 +2494,7 @@ function App(): React.JSX.Element {
     setWorkspace(entry.workspace);
     setItems(restoredItems);
     itemsRef.current = restoredItems;
+    itemsOwnerRef.current = entry.thread?.id ?? null;
     setProjectDraft(entry.projectDraft);
     setEnvironmentOpen(entry.environmentOpen);
     setSettingsSection(entry.settingsSection);
@@ -2801,6 +2819,7 @@ function App(): React.JSX.Element {
           setItems((current) => {
             const nextItems = running ? mergeTimelineItems(merged, current) : merged;
             itemsRef.current = nextItems;
+            itemsOwnerRef.current = summary.id;
             threadHistoryCache.current.set(summary.id, nextItems);
             return nextItems;
           });
@@ -2943,6 +2962,8 @@ function App(): React.JSX.Element {
       threadRef.current = nextThread;
       setThread(nextThread);
       setItems(initialItems);
+      itemsRef.current = initialItems;
+      itemsOwnerRef.current = created.id;
       setThreads([summary]);
       navigate({ view: "thread", thread: nextThread, workspace, projectDraft: false, items: initialItems, environmentOpen: false });
     } catch (error) {
@@ -3080,6 +3101,7 @@ function App(): React.JSX.Element {
     const visibleTurnItems = modelNotice ? [modelNotice, userItem] : [userItem];
     const optimisticItems = editedVisibleItems ?? (options.forceNewThread ? [userItem] : [...itemsRef.current, ...visibleTurnItems]);
     itemsRef.current = optimisticItems;
+    itemsOwnerRef.current = existingThreadId ?? (replacingFromEdit ? thread?.id ?? null : null);
     setItems(optimisticItems);
     if (existingThreadId) threadHistoryCache.current.set(existingThreadId, optimisticItems);
     setBusy(true);
@@ -3088,6 +3110,7 @@ function App(): React.JSX.Element {
       const visibleThread: ThreadRef = { ...activeThread, runtime: composerRuntime, provider, model: sendModel, accountId: sendAccountId };
       threadRef.current = visibleThread;
       setThread(visibleThread);
+      itemsOwnerRef.current = activeThread.id;
       threadHistoryCache.current.set(activeThread.id, optimisticItems);
       rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
@@ -3176,6 +3199,8 @@ function App(): React.JSX.Element {
       setThread(null);
       setThreads([]);
       setItems([]);
+      itemsRef.current = [];
+      itemsOwnerRef.current = null;
       setProjectDraft(false);
     }
   }
@@ -3218,6 +3243,8 @@ function App(): React.JSX.Element {
     if (thread?.id === summary.id) {
       setThread(null);
       setItems([]);
+      itemsRef.current = [];
+      itemsOwnerRef.current = null;
     }
   }
 
@@ -3527,6 +3554,8 @@ function App(): React.JSX.Element {
       void window.devilCodex.archiveThread({ id: activeSummary.id, accountId: activeSummary.accountId }).then(async () => {
         setThread(null);
         setItems([]);
+        itemsRef.current = [];
+        itemsOwnerRef.current = null;
         await Promise.all([refreshThreads(), refreshProjects()]);
       }).catch((error) => setExternalError(`채팅 보관 실패: ${String(error)}`));
       return;

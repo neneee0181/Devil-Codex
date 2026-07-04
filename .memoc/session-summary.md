@@ -10,21 +10,22 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-05T12:00:00+09:00
+Last: 2026-07-05T13:45:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- `v0.1.39` tagged/pushed; Build installers action queued (28713852459).
-- Codex-mode delegate_subagent verified OK; Claude-mode parity fixed (5668ff4).
+- Preparing `v0.1.40`: local fixes verified, version bumped.
 
 ## Changed
-- Tool-name match now accepts `mcp__devil_subagent__delegate_subagent` (timeline/history/cache).
-- Subagent tab derives runtime from child provider, not parent.
-- claude-code delegate child: transcript persisted, sessionId pinned, archived meta.
-- Claude jsonl import rebuilds subagent cards from tool_result.
+- User-visible history strips Ask-user directive blocks and internal continuation summaries.
+- Claude JSONL import skips "This session is being continued..." user summary rows.
+- Renderer tracks the owner thread for visible `itemsRef`; navigation/sync no longer caches another thread's items under the active id.
+- `mergeCachedActivities` no longer injects cached user/agent/system rows when native rollout already has conversation items.
+- App-server thread title/preview compaction strips Ask-user directive text.
+- Delegate subagents now create/send hidden Codex turns with `danger-full-access` and prepend a short no-`apply_patch` execution note, while still using caller-supplied provider/model dynamically.
 
 ## Open Tasks
-- Manual: Claude 모드 부모에서 delegate → 탭/락/재열기 확인.
+- Manual after install: reopen `64616d2f...`/`019f2e2f...`; foreign user bubbles/internal directives should not appear. Run a delegate with a non-DeepSeek provider/model to confirm dynamic picker/path.
 
 ## Resume
 - Passed: tsc noEmit, build, diff-check.

@@ -95,6 +95,7 @@ function isClaudeLocalCommandText(text: string): boolean {
     || normalized.startsWith("<command-name>")
     || normalized.startsWith("<command-message>")
     || normalized.startsWith("<local-command-stdout>")
+    || normalized.startsWith("This session is being continued from a previous conversation that ran out of context.")
     || normalized.startsWith("<local-command-stderr>");
 }
 

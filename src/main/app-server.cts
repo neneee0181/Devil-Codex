@@ -44,6 +44,15 @@ const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 const STOCK_ROLLOUT_PERMISSION_SYNC_MAX_BYTES = 50 * 1024 * 1024;
 const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
 const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
+const ASK_USER_DIRECTIVE_MARKER = "[Ask-user MCP directive]";
+
+function stripInternalDirectives(value: string): string {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\n*---\n\[Ask-user MCP directive\][\s\S]*?(?=\n---\n|\n#|\n\d+\. |\n[A-Z][^\n]*:\n|$)/g, "")
+    .replace(ASK_USER_DIRECTIVE_MARKER, "")
+    .trim();
+}
 
 function stripEditedContinuationTitle(value: string): string {
   const text = value.replace(/\s+/g, " ").trim();
@@ -56,7 +65,7 @@ function stripEditedContinuationTitle(value: string): string {
 }
 
 function compactThreadText(value: unknown, fallback: string, maxLength: number): string {
-  const text = stripEditedContinuationTitle(String(value ?? "").trim()) || fallback;
+  const text = stripEditedContinuationTitle(stripInternalDirectives(String(value ?? "").trim())) || fallback;
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }

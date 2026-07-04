@@ -210,14 +210,25 @@ function truncateMirroredRolloutText(text: string, maxChars: number): string {
 }
 
 function stripInternalDirectives(text: string): string {
-  return text
+  const withoutDirectiveBlocks = text
+    .replace(/\r\n/g, "\n")
     .replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "")
     .replace(new RegExp(`\\n*---\\n${escapeRegExp(ASK_USER_MCP_DIRECTIVE)}\\s*$`), "")
+    .replace(/\n*---\n\[Ask-user MCP directive\][\s\S]*?(?=\n---\n|\n#|\n\d+\. |\n[A-Z][^\n]*:\n|$)/g, "")
     .trimEnd();
+  return withoutDirectiveBlocks;
+}
+
+function isInternalContinuationSummary(text: string): boolean {
+  return text.trimStart().startsWith("This session is being continued from a previous conversation that ran out of context.");
 }
 
 function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  return items.map((item) => item.kind === "user" ? { ...item, text: stripInternalDirectives(item.text) } : item);
+  return items.flatMap((item) => {
+    if (item.kind !== "user") return [item];
+    if (isInternalContinuationSummary(item.text)) return [];
+    return [{ ...item, text: stripInternalDirectives(item.text) }];
+  });
 }
 
 async function attachCodexTokenUsage(threadId: string, items: ThreadHistoryItem[]): Promise<ThreadHistoryItem[]> {
@@ -1326,6 +1337,13 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
   const cwd = input.cwd || baseServerCwd();
   const timeoutMs = input.timeoutMs ?? 300_000;
   const deadline = Date.now() + timeoutMs;
+  const delegatedTask = [
+    "[Devil subagent execution note]",
+    "Use the available shell/PowerShell command tool for filesystem changes and verification.",
+    "Do not call apply_patch in this delegated runtime; if a file must change, write it with shell commands and verify the result.",
+    "",
+    input.task,
+  ].join("\n");
 
   if (runtime === "claude-code" || provider === "claude-code") {
     const thread = claudeRuntime.createThread({ cwd, model });
@@ -1336,13 +1354,13 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
       const result = await claudeRuntime.sendTurn({
         threadId: thread.id,
         cwd,
-        text: input.task,
+        text: delegatedTask,
         model,
         resume: false,
         nativeSessionId: thread.id,
         mcpConfig: await claudeMcpConfig(),
         approvalPolicy: "never",
-        sandboxMode: "workspace-write",
+        sandboxMode: "danger-full-access",
         onCompleted: (text) => { finalText = text.trim(); },
       });
       // Persist the child conversation so the "subagent:<id>" tab (which reads
@@ -1372,18 +1390,18 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
   let threadId = "";
   try {
     const createInput = usesCodexProxy(provider)
-      ? { cwd, model: routedProviderModel(provider, model, accountId), modelProvider: "devil" }
-      : { cwd, model };
+      ? { cwd, model: routedProviderModel(provider, model, accountId), modelProvider: "devil", approvalPolicy: "never" as ThreadApprovalPolicy, sandboxMode: "danger-full-access" as ThreadSandboxMode }
+      : { cwd, model, approvalPolicy: "never" as ThreadApprovalPolicy, sandboxMode: "danger-full-access" as ThreadSandboxMode };
     const thread = await instance.createThread(createInput);
     threadId = thread.id;
     appServerThreadIds.set(instance, threadId);
     const sendInput = {
       threadId,
       cwd,
-      text: input.task,
+      text: delegatedTask,
       model: createInput.model,
       approvalPolicy: "never" as ThreadApprovalPolicy,
-      sandboxMode: "workspace-write" as ThreadSandboxMode,
+      sandboxMode: "danger-full-access" as ThreadSandboxMode,
     };
     const terminal = waitForAppServerTurnTerminal(instance, timeoutMs);
     await instance.sendTurn(sendInput);

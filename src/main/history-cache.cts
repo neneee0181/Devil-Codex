@@ -141,6 +141,7 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
   }
   const hasCachedConversationItems = cached.some((item) => item.kind === "user" || item.kind === "agent" || item.kind === "system");
   if (!cachedByTurnId.size && !standaloneCompactions.length && !runtimeShareItems.length && !hasCachedConversationItems) return native;
+  const nativeHasConversationItems = native.some((item) => item.kind === "user" || item.kind === "agent" || item.kind === "system");
 
   const nativeTurnIds = new Set<string>();
   const merged = native.map((item) => {
@@ -165,5 +166,5 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
       merged.unshift(item);
     }
   }
-  return insertMissingCachedItems(merged, cached);
+  return nativeHasConversationItems ? merged : insertMissingCachedItems(merged, cached);
 }
