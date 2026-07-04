@@ -10,20 +10,19 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-04T09:42:23
+Last: 2026-07-05T00:00:00+09:00
 Replace, do not append. Keep <800B.
-History: worklog. Resume risks: 04-handoff.md.
 
 ## Status
-- Codex-mode token drain investigated. Rollout logs show caching works, but huge command outputs made last request context ~180k-224k tokens, so cached input still burned rate-limit budget.
+- Pulled `origin/main` to `v0.1.36`.
+- Windows chat scrollbar fix pending manual check.
+- Devil subagent MCP added: `devil_subagent` config + stdio script + named pipe + Settings toggle + hidden app-server/Claude delegate path.
 
 ## Changed
-- `src/main/main.cts`: capped mirrored rollout command stdout/diffs and added auto-compaction preflight for Codex proxy-backed external provider turns.
-- Ask MCP: Claude native SDK dialog returns proper AskUserQuestion output; Claude Code external direct-provider turns no longer receive unusable ask_user directive.
-- Earlier same session: Ask MCP toggle/guidance and Claude SDK AskUserQuestion modal bridge.
+- Styles; subagent MCP script/server; main/config/settings/contracts/UI/package.
 
 ## Open Tasks
-- Runtime/manual test after version bump: verify Codex external-provider long thread compacts before sending, large command outputs are truncated in mirrored rollout, and Claude native AskUserQuestion opens Devil modal.
+- Manual: long-thread scrollbar visible; restart app, confirm `devil_subagent` listed and short DeepSeek delegation returns.
 
 ## Resume
-- If token drain persists, inspect whether stock app-server native command output itself needs UI/tool-output truncation beyond Devil mirrored rollout truncation.
+- Passed: tsc noEmit, build, diff-check, MCP `tools/list`.

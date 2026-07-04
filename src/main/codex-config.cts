@@ -213,3 +213,36 @@ export async function unregisterDevilAskMcp(): Promise<void> {
   if (!source.includes(ASK_BEGIN)) return;
   await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), source);
 }
+
+// Devil subagent MCP — lets a running model delegate a bounded task to one of
+// Devil Codex's configured providers (for example DeepSeek) through Electron.
+const SUBAGENT_BEGIN = "# >>> devil-codex subagent mcp (managed) >>>";
+const SUBAGENT_END = "# <<< devil-codex subagent mcp (managed) <<<";
+
+export async function registerDevilSubagentMcp(input: { execPath: string; script: string; sock: string; secret: string }): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  const cleaned = stripManagedMcpTables(source, SUBAGENT_BEGIN, SUBAGENT_END, ["devil_subagent"]).trimEnd();
+  const block = [
+    SUBAGENT_BEGIN,
+    `[mcp_servers.devil_subagent]`,
+    `command = ${toml(input.execPath)}`,
+    `args = [${toml(input.script)}]`,
+    `startup_timeout_sec = 60`,
+    // Subagent calls can run a model turn, so allow a few minutes.
+    `tool_timeout_sec = 900`,
+    `[mcp_servers.devil_subagent.env]`,
+    `ELECTRON_RUN_AS_NODE = "1"`,
+    `DEVIL_SUBAGENT_SOCK = ${toml(input.sock)}`,
+    `DEVIL_SUBAGENT_SECRET = ${toml(input.secret)}`,
+    SUBAGENT_END,
+    "",
+  ].join("\n");
+  const next = preserveDesktopAppearanceTheme(`${cleaned ? cleaned + "\n\n" : ""}${block}`, source);
+  await writeConfigIfChanged(next, source);
+}
+
+export async function unregisterDevilSubagentMcp(): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  if (!source.includes(SUBAGENT_BEGIN)) return;
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedMcpTables(source, SUBAGENT_BEGIN, SUBAGENT_END, ["devil_subagent"]), source), source);
+}

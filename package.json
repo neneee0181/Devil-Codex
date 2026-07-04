@@ -1,6 +1,6 @@
 {
   "name": "devil-codex",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "private": true,
   "description": "High-fidelity multi-provider Codex desktop client",
   "main": "dist-electron/main.cjs",
@@ -100,6 +100,10 @@
         {
           "from": "scripts/devil-ask-mcp.cjs",
           "to": "scripts/devil-ask-mcp.cjs"
+        },
+        {
+          "from": "scripts/devil-subagent-mcp.cjs",
+          "to": "scripts/devil-subagent-mcp.cjs"
         }
       ],
       "target": [
@@ -143,6 +147,10 @@
         {
           "from": "scripts/devil-ask-mcp.cjs",
           "to": "scripts/devil-ask-mcp.cjs"
+        },
+        {
+          "from": "scripts/devil-subagent-mcp.cjs",
+          "to": "scripts/devil-subagent-mcp.cjs"
         }
       ],
       "target": [

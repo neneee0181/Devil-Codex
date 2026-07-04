@@ -23,11 +23,12 @@ import { CodexProxyServer } from "./proxy/proxy-server.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
-import { registerDevilProvider, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp } from "./codex-config.cjs";
+import { registerDevilProvider, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
 import { AskControlServer, type AskAnswerPayload, type AskQuestionPayload } from "./ask-control-server.cjs";
+import { SubagentControlServer, type SubagentDelegatePayload, type SubagentDelegateResult } from "./subagent-control-server.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
@@ -255,9 +256,11 @@ const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(
 const browserControlSecret = randomBytes(24).toString("hex");
 const desktopControlSecret = randomBytes(24).toString("hex");
 const askControlSecret = randomBytes(24).toString("hex");
+const subagentControlSecret = randomBytes(24).toString("hex");
 const browserControl = new BrowserControlServer(browserView, browserControlSecret);
 const desktopControl = new DesktopControlServer(new DesktopControlManager(), desktopControlSecret);
 const askControl = new AskControlServer((channel, payload) => sendToRenderer(channel, payload), askControlSecret);
+const subagentControl = new SubagentControlServer(delegateSubagentFromMcp, subagentControlSecret);
 const CLAUDE_NATIVE_ASK_DIALOG_KINDS = ["askUserQuestion", "permission_ask_user_question"];
 let appServer: CodexAppServer | undefined;
 const MAX_THREAD_APP_SERVERS = 8;
@@ -1286,6 +1289,77 @@ async function externalThreadTitle(threadId: string, fallbackText: string): Prom
   return titleFromText(native.find((item) => item.kind === "user")?.text ?? fallbackText);
 }
 
+function lastAgentText(items: ThreadHistoryItem[]): string {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === "agent" && typeof item.text === "string" && item.text.trim()) return item.text.trim();
+    if (item.kind === "system" && typeof item.text === "string" && item.text.trim()) return item.text.trim();
+  }
+  return "";
+}
+
+async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<SubagentDelegateResult> {
+  const taskId = crypto.randomUUID();
+  const settings = await providerSettingsStore.load();
+  const provider = input.provider ?? settings.provider;
+  const accountId = input.accountId ?? settings.accountId;
+  const model = input.model ?? settings.model;
+  const runtime = input.runtime ?? (provider === "claude-code" ? "claude-code" : "codex");
+  const cwd = input.cwd || baseServerCwd();
+  const timeoutMs = input.timeoutMs ?? 300_000;
+  const deadline = Date.now() + timeoutMs;
+
+  if (runtime === "claude-code" || provider === "claude-code") {
+    const thread = claudeRuntime.createThread({ cwd, model });
+    try {
+      let finalText = "";
+      const result = await claudeRuntime.sendTurn({
+        threadId: thread.id,
+        cwd,
+        text: input.task,
+        model,
+        resume: false,
+        mcpConfig: await claudeMcpConfig(),
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write",
+        onCompleted: (text) => { finalText = text.trim(); },
+      });
+      return { taskId, threadId: thread.id, status: "completed", result: finalText, provider: "claude-code", accountId, model, runtime, ...(result.sessionId ? {} : {}) };
+    } catch (error) {
+      return { taskId, threadId: thread.id, status: "failed", error: error instanceof Error ? error.message : String(error), provider: "claude-code", accountId, model, runtime };
+    }
+  }
+
+  const instance = createAppServer(false);
+  let threadId = "";
+  try {
+    const createInput = usesCodexProxy(provider)
+      ? { cwd, model: routedProviderModel(provider, model, accountId), modelProvider: "devil" }
+      : { cwd, model };
+    const thread = await instance.createThread(createInput);
+    threadId = thread.id;
+    const sendInput = {
+      threadId,
+      cwd,
+      text: input.task,
+      model: createInput.model,
+      approvalPolicy: "never" as ThreadApprovalPolicy,
+      sandboxMode: "workspace-write" as ThreadSandboxMode,
+    };
+    await instance.sendTurn(sendInput);
+    let history = await instance.readThread({ id: threadId }).catch(() => [] as ThreadHistoryItem[]);
+    while (!lastAgentText(history) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      history = await instance.readThread({ id: threadId }).catch(() => history);
+    }
+    return { taskId, threadId, status: "completed", result: lastAgentText(history), provider, accountId, model, runtime };
+  } catch (error) {
+    return { taskId, threadId, status: "failed", error: error instanceof Error ? error.message : String(error), provider, accountId, model, runtime };
+  } finally {
+    instance.dispose();
+  }
+}
+
 function terminals(): TerminalManager {
   if (!terminalManager) terminalManager = new TerminalManager((payload) => sendToRenderer("terminal:data", payload));
   return terminalManager;
@@ -1293,7 +1367,7 @@ function terminals(): TerminalManager {
 
 // Start the local Codex Responses proxy and register it as a non-default Codex
 // model provider so external-model turns can run through the app-server.
-function mcpScripts(): { script: string; computerScript: string; askScript: string } {
+function mcpScripts(): { script: string; computerScript: string; askScript: string; subagentScript: string } {
   const scriptDir = app.isPackaged
     ? join(process.resourcesPath, "scripts")
     : join(__dirname, "..", "scripts");
@@ -1301,6 +1375,7 @@ function mcpScripts(): { script: string; computerScript: string; askScript: stri
     script: join(scriptDir, "devil-browser-mcp.cjs"),
     computerScript: join(scriptDir, "devil-computer-mcp.cjs"),
     askScript: join(scriptDir, "devil-ask-mcp.cjs"),
+    subagentScript: join(scriptDir, "devil-subagent-mcp.cjs"),
   };
 }
 
@@ -1330,6 +1405,29 @@ async function setAskUserMcpEnabled(enabled: boolean): Promise<void> {
   restartAppServer();
 }
 
+async function setupDevilSubagentMcp(): Promise<void> {
+  try {
+    const sock = await subagentControl.start();
+    const { subagentScript } = mcpScripts();
+    await registerDevilSubagentMcp({ execPath: process.execPath, script: subagentScript, sock, secret: subagentControlSecret });
+    console.log(`[devil-codex subagent] control server on ${sock}, MCP script ${subagentScript}`);
+  } catch (error) {
+    console.error("[devil-codex subagent] FAILED to configure:", error instanceof Error ? error.message : error);
+  }
+}
+
+async function setSubagentMcpEnabled(enabled: boolean): Promise<void> {
+  if (!enabled) {
+    subagentControl.stop();
+    await unregisterDevilSubagentMcp();
+    restartAppServer();
+    console.log("[devil-codex subagent] disabled");
+    return;
+  }
+  await setupDevilSubagentMcp();
+  restartAppServer();
+}
+
 async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   if (!enabled) {
     browserControl.stop();
@@ -1350,7 +1448,7 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
 
 async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean }): Promise<string | undefined> {
   const settings = await settingsStore.load().catch(() => null);
-  const { script, computerScript, askScript } = mcpScripts();
+  const { script, computerScript, askScript, subagentScript } = mcpScripts();
   const mcpServers: Record<string, unknown> = {};
 
   if (settings?.askUserMcpEnabled !== false) {
@@ -1367,6 +1465,23 @@ async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean
       };
     } catch (error) {
       console.warn("[devil-codex ask] Claude MCP disabled:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  if (settings?.subagentMcpEnabled !== false) {
+    try {
+      const subagentSock = await subagentControl.start();
+      mcpServers.devil_subagent = {
+        command: process.execPath,
+        args: [subagentScript],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          DEVIL_SUBAGENT_SOCK: subagentSock,
+          DEVIL_SUBAGENT_SECRET: subagentControlSecret,
+        },
+      };
+    } catch (error) {
+      console.warn("[devil-codex subagent] Claude MCP disabled:", error instanceof Error ? error.message : error);
     }
   }
 
@@ -1415,6 +1530,8 @@ async function startCodexProxy(): Promise<void> {
     const settings = await settingsStore.load();
     if (settings.askUserMcpEnabled) await setupDevilAskMcp();
     else await unregisterDevilAskMcp();
+    if (settings.subagentMcpEnabled) await setupDevilSubagentMcp();
+    else await unregisterDevilSubagentMcp();
     await setDevilMcpEnabled(settings.devilMcpEnabled);
   } catch (error) {
     console.error("[devil-codex mcp] FAILED to configure:", error instanceof Error ? error.message : error);
@@ -1545,6 +1662,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const next = await settingsStore.save(input);
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
     if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
+    if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
     return next;
   });
   ipcMain.handle("providers:load", () => providerSettingsStore.load());
@@ -2144,8 +2262,10 @@ app.on("before-quit", () => {
   browserControl.stop(); // free 49874 so the next launch binds cleanly
   desktopControl.stop();
   askControl.stop();
+  subagentControl.stop();
   void unregisterDevilBrowserMcp();
   void unregisterDevilAskMcp();
+  void unregisterDevilSubagentMcp();
   // Keep the managed provider block in ~/.codex/config.toml. Rollouts created
   // through it must remain recognisable to stock Codex after Devil exits.
   void codexProxy.stop();
