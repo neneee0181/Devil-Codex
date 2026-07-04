@@ -16,8 +16,10 @@ export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cache
 type TurnContext = {
   threadId: string;
   turnId: string;
-  itemId: string;
-  onDelta: (delta: string) => void;
+  fallbackItemId: string;
+  currentTextItemId?: string;
+  onTextDelta: (itemId: string, delta: string) => void;
+  onFinalText: (text: string) => void;
   onSessionId: (sessionId: string) => void;
   onUsage: (snapshot: TurnUsageSnapshot) => void;
 };
@@ -207,6 +209,13 @@ function toolResultText(part: Record<string, unknown>): string {
   return "";
 }
 
+function assistantContentText(message: Record<string, unknown>): string {
+  return messageContent({ message })
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => String(part.text))
+    .join("");
+}
+
 function parseMcpServers(config: string | undefined): Record<string, unknown> | undefined {
   if (!config) return undefined;
   try {
@@ -315,7 +324,8 @@ export class ClaudeCodeRuntime extends EventEmitter {
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
     const startedAt = Date.now();
-    let text = "";
+    let streamedText = "";
+    let finalText = "";
     let nativeSessionId = input.nativeSessionId;
     let usageSnapshot: TurnUsageSnapshot | undefined;
     const abortController = new AbortController();
@@ -329,8 +339,9 @@ export class ClaudeCodeRuntime extends EventEmitter {
     const context: TurnContext = {
       threadId: input.threadId,
       turnId,
-      itemId,
-      onDelta: (delta) => { text += delta; },
+      fallbackItemId: itemId,
+      onTextDelta: (_itemId, delta) => { streamedText += delta; },
+      onFinalText: (text) => { finalText = text; },
       onSessionId: (sessionId) => {
         normalizeClaudeSessionEntrypointSoon(input.cwd, sessionId);
         if (sessionId === nativeSessionId) return;
@@ -366,8 +377,11 @@ export class ClaudeCodeRuntime extends EventEmitter {
 
     const result = await run.then(async () => {
       await normalizeClaudeSessionEntrypoint(input.cwd, nativeSessionId);
-      await Promise.resolve(input.onCompleted?.(text)).catch(() => undefined);
-      this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text } } });
+      const completedText = finalText || streamedText;
+      await Promise.resolve(input.onCompleted?.(completedText)).catch(() => undefined);
+      if (completedText && !this.hasStreamedAgentText(input.threadId, turnId)) {
+        this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text: completedText } } });
+      }
       this.emitEvent({
         method: "turn/completed",
         params: {
@@ -391,9 +405,12 @@ export class ClaudeCodeRuntime extends EventEmitter {
       if (!interrupted) {
         const message = cleanErrorMessage(error instanceof Error ? error.message : error);
         this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: `claude-error-${turnId}`, type: "error", message, status } } });
-      } else if (text) {
-        await Promise.resolve(input.onCompleted?.(text)).catch(() => undefined);
-        this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text } } });
+      } else if (finalText || streamedText) {
+        const completedText = finalText || streamedText;
+        await Promise.resolve(input.onCompleted?.(completedText)).catch(() => undefined);
+        if (!this.hasStreamedAgentText(input.threadId, turnId)) {
+          this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text: completedText } } });
+        }
       }
       this.emitEvent({ method: "turn/completed", params: { threadId: input.threadId, turnId, turn: { id: turnId, status, durationMs: Date.now() - startedAt } } });
       if (!interrupted) throw error;
@@ -489,9 +506,13 @@ export class ClaudeCodeRuntime extends EventEmitter {
         const fallback = denials.length ? denials.map((d) => `${String(d.tool_name ?? "tool")}: ${JSON.stringify(d.tool_input ?? {})}`).join("\n") : "";
         const detail = errors || fallback || message.subtype;
         this.emitEvent({ method: "item/completed", params: { threadId: context.threadId, turnId: context.turnId, item: { id: `claude-result-error-${crypto.randomUUID()}`, type: "error", message: detail, status: "failed" } } });
-      } else if (typeof message.result === "string" && message.result && !this.hasStreamedAgentText(context.threadId, context.turnId)) {
-        context.onDelta(message.result);
-        this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId: context.itemId, delta: message.result } });
+      } else if (typeof message.result === "string" && message.result) {
+        context.onFinalText(message.result);
+        if (!this.hasStreamedAgentText(context.threadId, context.turnId)) {
+          const itemId = context.currentTextItemId ?? context.fallbackItemId;
+          context.onTextDelta(itemId, message.result);
+          this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId, delta: message.result } });
+        }
       }
       return;
     }
@@ -506,12 +527,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       const event = (message.event ?? {}) as Record<string, unknown>;
       if (event.type === "content_block_start") {
         const block = (event.content_block ?? {}) as Record<string, unknown>;
-        // Separate consecutive narration blocks (text → tool → text) so the
-        // streamed bubble does not glue two sentences together.
-        if (block.type === "text" && this.hasStreamedAgentText(context.threadId, context.turnId)) {
-          context.onDelta("\n\n");
-          this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId: context.itemId, delta: "\n\n" } });
-        }
+        if (block.type === "text") context.currentTextItemId = `claude-message-${crypto.randomUUID()}`;
         return;
       }
       if (event.type !== "content_block_delta") return;
@@ -521,14 +537,21 @@ export class ClaudeCodeRuntime extends EventEmitter {
         return;
       }
       if (typeof delta.text === "string" && delta.text) {
-        context.onDelta(delta.text);
+        const itemId = context.currentTextItemId ?? context.fallbackItemId;
+        context.onTextDelta(itemId, delta.text);
         this.markStreamedAgentText(context.threadId, context.turnId);
-        this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId: context.itemId, delta: delta.text } });
+        this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId, delta: delta.text } });
       }
       return;
     }
     if ((message.type === "assistant" || message.type === "user") && !message.parent_tool_use_id) {
-      this.handleMessageContent(message.message as Record<string, unknown>, context.threadId, context.turnId);
+      const sdkMessage = message.message as Record<string, unknown>;
+      if (message.type === "assistant") {
+        const stopReason = String(sdkMessage.stop_reason ?? "");
+        const text = assistantContentText(sdkMessage);
+        if (text && stopReason && stopReason !== "tool_use") context.onFinalText(text);
+      }
+      this.handleMessageContent(sdkMessage, context.threadId, context.turnId);
     }
   }
 
