@@ -2,7 +2,7 @@ import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEve
 import { AnimatePresence } from "motion/react";
 import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
-import type { ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
+import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
 import { ComposerSuggestions, suggestionsFor, type ComposerSuggestion, type SlashCommandId } from "./ComposerSuggestions";
 import type { CaretPosition } from "./composerCaret";
@@ -108,7 +108,9 @@ export function Composer({
   reasoningEffort,
   responseSpeed,
   projectContext,
+  hasActiveThread,
   skillOptions,
+  claudeSlashCommands,
   mcpServers,
   inject,
   onModelChange,
@@ -136,7 +138,9 @@ export function Composer({
   reasoningEffort: ReasoningEffort;
   responseSpeed: ResponseSpeed;
   projectContext?: { name: string; branch: string };
+  hasActiveThread: boolean;
   skillOptions: Array<{ name: string; description: string }>;
+  claudeSlashCommands?: ClaudeSlashCommandInfo[];
   mcpServers: McpServerInfo[];
   inject?: { attachments?: ComposerAttachment[]; text?: string; nonce: number } | null;
   onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void;
@@ -162,7 +166,26 @@ export function Composer({
   const latestDraft = useRef<Omit<ComposerDraftSnapshot, "updatedAt">>(initialDraft);
   const latestDraftsByKey = useRef<Record<string, Omit<ComposerDraftSnapshot, "updatedAt">>>({ [draftKey]: initialDraft });
   const draftSaveTimer = useRef<number | null>(null);
-  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, { model, reasoningEffort, responseSpeed, approvalMode, petVisible, runtime: agentRuntime }, mcpServers) : [], [trigger, skillOptions, mcpServers, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime]);
+  const provider = providers.find((item) => item.id === providerId);
+  const providerAccount = provider?.accounts.find((account) => account.id === accountId);
+  const modelCount = providerAccount?.models?.length || provider?.models.length || 0;
+  const modelsLoaded = Boolean(providerAccount?.modelsLoaded || provider?.modelsLoaded || modelCount > 0);
+  const suggestions = useMemo(() => trigger ? suggestionsFor(trigger.sigil, trigger.query, skillOptions, {
+    model,
+    reasoningEffort,
+    responseSpeed,
+    approvalMode,
+    petVisible,
+    runtime: agentRuntime,
+    workspace: projectContext?.name,
+    hasActiveThread,
+    contextUsage,
+    modelCount,
+    modelsLoaded,
+    skillCount: skillOptions.length,
+    mcpServerCount: mcpServers.length,
+    mcpToolCount: mcpServers.reduce((total, server) => total + server.tools.length, 0),
+  }, mcpServers, claudeSlashCommands ?? []) : [], [trigger, skillOptions, mcpServers, claudeSlashCommands, model, reasoningEffort, responseSpeed, approvalMode, petVisible, agentRuntime, projectContext?.name, hasActiveThread, contextUsage, modelCount, modelsLoaded]);
   const attachmentsReady = attachments.every((item) => item.kind !== "image" || Boolean(item.url));
   const composerEmpty = draft.trim().length === 0 && skills.length === 0;
   const setApprovalMode = (value: ApprovalMode): void => {
@@ -362,6 +385,12 @@ export function Composer({
         setSkills(next.skills);
       }
       runCommand(name as SlashCommandId);
+    } else if (item.kind === "claude-command" && editor.current) {
+      removeEditorTrigger(editor.current, trigger.tokenLength);
+      insertPlainTextAtSelection(editor.current, item.token ?? `/${name} `);
+      const next = editorSnapshot(editor.current);
+      setDraft(next.text);
+      setSkills(next.skills);
     } else if (item.kind === "mcp" && editor.current && insertInlineSkill(editor.current, item.token ?? `mcp:${name}`, trigger.tokenLength, item.label.replace(/^\//, ""))) {
       const next = editorSnapshot(editor.current);
       setDraft(next.text);

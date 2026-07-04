@@ -4,12 +4,16 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
 import { EventEmitter } from "node:events";
-import type { AppServerEvent, ApprovalDecision, ContextUsage, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
+import type { AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, ContextUsage, RuntimeStatus, ThreadApprovalPolicy, ThreadRef, ThreadSandboxMode } from "./contracts.cjs";
 
 type ClaudeSdkMessage = Record<string, unknown>;
 type ClaudeSdkOptions = Record<string, unknown>;
 type ClaudeSdkContentBlock = Record<string, unknown>;
 type ClaudeSdkUserMessage = { type: "user"; message: { role: "user"; content: string | ClaudeSdkContentBlock[] }; parent_tool_use_id: null };
+type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
+  initializationResult?: () => Promise<{ commands?: unknown[] }>;
+  supportedCommands?: () => Promise<unknown[]>;
+};
 type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
 export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; totalTokens: number };
 
@@ -157,7 +161,7 @@ function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: Thr
 }
 
 type ClaudeSdkModule = {
-  query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => AsyncIterable<ClaudeSdkMessage>;
+  query: (input: { prompt: AsyncIterable<ClaudeSdkUserMessage>; options: ClaudeSdkOptions }) => ClaudeSdkQuery;
   getSessionInfo?: (sessionId: string, options?: { dir?: string }) => Promise<unknown>;
 };
 
@@ -224,6 +228,19 @@ function parseMcpServers(config: string | undefined): Record<string, unknown> | 
   } catch {
     return undefined;
   }
+}
+
+function normalizeSlashCommand(value: unknown): ClaudeSlashCommandInfo | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  if (!name) return undefined;
+  const description = typeof record.description === "string" ? record.description.trim() : "";
+  const argumentHint = typeof record.argumentHint === "string" ? record.argumentHint.trim() : "";
+  const aliases = Array.isArray(record.aliases)
+    ? record.aliases.filter((alias): alias is string => typeof alias === "string" && alias.trim().length > 0).map((alias) => alias.trim())
+    : [];
+  return { name, description, ...(argumentHint ? { argumentHint } : {}), ...(aliases.length ? { aliases } : {}) };
 }
 
 const IMAGE_MEDIA_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
@@ -340,6 +357,46 @@ export class ClaudeCodeRuntime extends EventEmitter {
       return Boolean(await getSessionInfo(input.sessionId, { dir: input.cwd ?? this.cwd }));
     } catch {
       return false;
+    }
+  }
+
+  async listSlashCommands(input: { cwd?: string; model?: string; mcpConfig?: string; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode } = {}): Promise<ClaudeSlashCommandInfo[]> {
+    const abortController = new AbortController();
+    const { query } = await claudeSdk();
+    const pathToClaudeCodeExecutable = claudeCodeExecutable();
+    const mode = permissionMode(input.approvalPolicy, input.sandboxMode);
+    const messages = (async function* (): AsyncGenerator<ClaudeSdkUserMessage> {})();
+    const request = query({
+      prompt: messages,
+      options: {
+        cwd: input.cwd ?? this.cwd,
+        model: input.model ?? "sonnet",
+        ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
+        abortController,
+        includePartialMessages: false,
+        permissionMode: mode,
+        allowDangerouslySkipPermissions: mode === "bypassPermissions",
+        mcpServers: parseMcpServers(input.mcpConfig),
+      },
+    });
+    try {
+      const rawCommands = typeof request.supportedCommands === "function"
+        ? await request.supportedCommands()
+        : typeof request.initializationResult === "function"
+          ? (await request.initializationResult()).commands ?? []
+          : [];
+      const seen = new Set<string>();
+      return rawCommands.flatMap((command) => {
+        const normalized = normalizeSlashCommand(command);
+        if (!normalized) return [];
+        const key = normalized.name.toLowerCase();
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [normalized];
+      });
+    } finally {
+      abortController.abort();
     }
   }
 

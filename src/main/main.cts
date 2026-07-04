@@ -35,7 +35,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -116,6 +116,10 @@ async function listClaudeSkills(): Promise<CodexSkillInfo[]> {
   const seen = new Set(base.map((skill) => skill.name));
   const merged = [...base, ...pluginSkills.filter((skill) => !seen.has(skill.name))];
   return merged.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function listClaudeSlashCommands(input: { cwd?: string; model?: string } = {}): Promise<ClaudeSlashCommandInfo[]> {
+  return claudeRuntime.listSlashCommands({ cwd: input.cwd, model: input.model });
 }
 
 // Codex desktop installs marketplace plugins (Notion, GitHub, ...) under
@@ -1391,6 +1395,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("update:install", () => installUpdate(() => windowRef));
   ipcMain.handle("subagent:info", (_event, input) => providerReconciler.getSubagentInfo(input.id));
   ipcMain.handle("claude:skills", () => listClaudeSkills());
+  ipcMain.handle("claude:slash-commands", (_event, input) => listClaudeSlashCommands(input ?? {}));
   ipcMain.handle("claude:mcp-list", (_event, input) => listClaudeMcpServers(input ?? {}));
   ipcMain.handle("codex:plugin-skills", () => listCodexPluginSkills());
   ipcMain.handle("workspace:choose", async () => {

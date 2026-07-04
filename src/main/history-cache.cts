@@ -52,8 +52,12 @@ function normalizedText(value: string | undefined): string {
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
+function normalizedUserText(value: string | undefined): string {
+  return normalizedText(String(value ?? "").replace(/\n+첨부 파일:\s*(?:\n- [^\n]+)+\s*$/m, ""));
+}
+
 function itemMergeKey(item: ThreadHistoryItem): string {
-  if (item.kind === "user") return `user:${normalizedText(item.text)}:${item.attachments?.length ?? 0}`;
+  if (item.kind === "user") return `user:${normalizedUserText(item.text)}:${item.attachments?.length ?? 0}`;
   if (item.kind === "agent") return `agent:${item.turnId ?? ""}:${normalizedText(item.text)}`;
   if (item.kind === "system") return `system:${item.title ?? ""}:${normalizedText(item.text)}`;
   if (item.kind === "activity" && item.turnId) return `activity:${item.turnId}`;

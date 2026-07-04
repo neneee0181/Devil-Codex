@@ -125,6 +125,7 @@ export interface GitWorktreeInfo {
 }
 
 export interface CodexSkillInfo { name: string; description: string; path: string; scope: string; enabled: boolean; }
+export interface ClaudeSlashCommandInfo { name: string; description: string; argumentHint?: string; aliases?: string[]; }
 export interface McpToolInfo { name: string; title: string; description: string; }
 export interface McpServerInfo { name: string; authStatus: string; tools: McpToolInfo[]; resources: number; }
 
@@ -345,6 +346,7 @@ export interface DevilCodexApi {
   getSubagentInfo: (input: { id: string }) => Promise<{ nickname: string | null; model: string | null }>;
   onUpdateState: (listener: (state: UpdateState) => void) => () => void;
   listClaudeSkills: () => Promise<CodexSkillInfo[]>;
+  listClaudeSlashCommands: (input?: { cwd?: string; model?: string }) => Promise<ClaudeSlashCommandInfo[]>;
   listClaudeMcpServers: (input?: { cwd?: string }) => Promise<McpServerInfo[]>;
   listCodexPluginSkills: () => Promise<CodexSkillInfo[]>;
   loadCodexSettings: () => Promise<CodexSettings>;

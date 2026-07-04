@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import type { CaretPosition } from "./composerCaret";
 import type { ApprovalMode } from "./ApprovalPicker";
-import type { McpServerInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
+import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 
 export type SlashCommandId =
   | "mcp"
@@ -47,6 +47,7 @@ type SlashCommand = {
   label: string;
   detail: string | ((context: SlashCommandContext) => string);
   aliases?: string[];
+  available?: (context: SlashCommandContext) => boolean;
 };
 
 export type SlashCommandContext = {
@@ -56,13 +57,21 @@ export type SlashCommandContext = {
   approvalMode: ApprovalMode;
   petVisible: boolean;
   runtime?: "codex" | "claude-code";
+  workspace?: string;
+  hasActiveThread?: boolean;
+  contextUsage?: ContextUsage;
+  modelCount?: number;
+  modelsLoaded?: boolean;
+  skillCount?: number;
+  mcpServerCount?: number;
+  mcpToolCount?: number;
 };
 
 export type ComposerSuggestion = {
   id: string;
   label: string;
   detail: string;
-  kind: "skill" | "command" | "mcp";
+  kind: "skill" | "command" | "mcp" | "claude-command";
   command?: SlashCommandId;
   token?: string;
 };
@@ -74,29 +83,66 @@ const reasoningLabels: Record<ReasoningEffort, string> = {
   xhigh: "매우 높음",
 };
 
-const commands: SlashCommand[] = [
-  { id: "mcp", label: "MCP", detail: "MCP 서버 상태 보기", aliases: ["server", "tool"] },
+const approvalModeLabels: Record<ApprovalMode, string> = {
+  ask: "요청 시 승인",
+  agent: "작업별 승인",
+  full: "전체 접근",
+};
+
+function compactNumber(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  return String(Math.round(value));
+}
+
+function contextUsageDetail(context: SlashCommandContext): string {
+  if (!context.contextUsage || context.contextUsage.maxTokens <= 0) return "채팅 ID, 컨텍스트 사용량, 속도 제한을 표시합니다";
+  const percent = Math.round((context.contextUsage.usedTokens / context.contextUsage.maxTokens) * 100);
+  return `컨텍스트 ${percent}% · ${compactNumber(context.contextUsage.usedTokens)} / ${compactNumber(context.contextUsage.maxTokens)}`;
+}
+
+const codexCommands: SlashCommand[] = [
+  { id: "mcp", label: "MCP", detail: ({ mcpServerCount = 0, mcpToolCount = 0 }) => `app-server 동기화: ${mcpServerCount}개 서버 · ${mcpToolCount}개 도구`, aliases: ["server", "tool"] },
   { id: "fast", label: "고속", detail: ({ responseSpeed }) => responseSpeed === "fast" ? "고속을 끄고 표준 속도로 돌아갑니다" : "고속 응답을 켭니다", aliases: ["speed", "빠름"] },
   { id: "memory", label: "메모리", detail: "생성: 현재 대화에서 기억할 내용을 정리합니다", aliases: ["remember", "메모"] },
-  { id: "model", label: "모델", detail: ({ model }) => model, aliases: ["provider"] },
+  { id: "model", label: "모델", detail: ({ model, modelCount = 0, modelsLoaded }) => modelsLoaded ? `${model} · 모델 목록 ${modelCount}개` : `${model} · 모델 목록 확인 중`, aliases: ["provider"] },
   { id: "goal", label: "목표", detail: "Codex가 계속 달성해 나갈 목표를 설정합니다", aliases: ["target"] },
   { id: "side", label: "사이드", detail: "임시 보조에서 별도 대화를 시작합니다", aliases: ["side-chat", "sub"] },
-  { id: "status", label: "상태", detail: "채팅 ID, 컨텍스트 사용량, 속도 제한을 표시합니다", aliases: ["info"] },
-  { id: "settings", label: "설정", detail: "Codex 응답 방식을 선택합니다", aliases: ["config"] },
-  { id: "compact", label: "압축", detail: "이 스레드의 컨텍스트를 압축해줘", aliases: ["compress"] },
+  { id: "status", label: "상태", detail: contextUsageDetail, aliases: ["info"] },
+  { id: "settings", label: "설정", detail: ({ approvalMode, responseSpeed }) => `${approvalModeLabels[approvalMode]} · ${responseSpeed === "fast" ? "고속" : "표준"} 응답`, aliases: ["config"] },
+  { id: "compact", label: "압축", detail: "app-server thread/compact/start 실행", aliases: ["compress"], available: ({ hasActiveThread }) => Boolean(hasActiveThread) },
   { id: "init", label: "초기화", detail: "Codex용 지침이 담긴 AGENTS.md 파일을 작성합니다", aliases: ["agents"] },
   { id: "reasoning", label: "추론 수준", detail: ({ reasoningEffort }) => reasoningLabels[reasoningEffort], aliases: ["effort", "think"] },
   { id: "review", label: "코드 검토", detail: "스테이징되지 않은 변경 사항을 검토하거나 브랜치와 비교합니다", aliases: ["code-review"] },
   { id: "pet", label: "펫", detail: ({ petVisible }) => petVisible ? "데스크톱 펫 숨기기" : "데스크톱 펫 깨우기", aliases: ["buddy"] },
-  { id: "fork", label: "포크", detail: "이 채팅을 로컬 또는 새 워크트리로 포크합니다", aliases: ["copy"] },
+  { id: "fork", label: "포크", detail: "현재 채팅을 로컬 또는 새 워크트리로 포크합니다", aliases: ["copy"], available: ({ hasActiveThread }) => Boolean(hasActiveThread) },
   { id: "plan", label: "플랜 모드", detail: ({ approvalMode }) => approvalMode === "full" ? "플랜 모드 켜기 · 전체 접근 승인 사용 중" : "플랜 모드 켜기", aliases: ["planning"] },
-  { id: "feedback", label: "피드백", detail: "이 채팅에 대한 피드백 보내기", aliases: ["bug"] },
+  { id: "feedback", label: "피드백", detail: ({ skillCount = 0 }) => `피드백 보내기 · ${skillCount}개 스킬 동기화됨`, aliases: ["bug"] },
 ];
 
-export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ name: string; description: string }>, context: SlashCommandContext, mcpServers: McpServerInfo[] = []): ComposerSuggestion[] {
+function commandDetail(command: ClaudeSlashCommandInfo): string {
+  return [command.argumentHint, command.description || "Claude Code 명령"].filter(Boolean).join(" · ");
+}
+
+export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ name: string; description: string }>, context: SlashCommandContext, mcpServers: McpServerInfo[] = [], claudeSlashCommands: ClaudeSlashCommandInfo[] = []): ComposerSuggestion[] {
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
+  if (context.runtime === "claude-code") {
+    return claudeSlashCommands
+      .filter((command) => {
+        if (!normalized) return true;
+        return [command.name, command.description, command.argumentHint ?? "", ...(command.aliases ?? [])].some((part) => part.toLowerCase().includes(normalized));
+      })
+      .map((command) => ({
+        id: `claude-command:${command.name}`,
+        label: `/${command.name}`,
+        detail: commandDetail(command),
+        kind: "claude-command" as const,
+        token: `/${command.name} `,
+      }));
+  }
   const mcpItems = mcpServers
     .filter((server) => {
       if (!normalized) return true;
@@ -109,11 +155,7 @@ export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ 
       kind: "mcp" as const,
       token: `mcp:${server.name}`,
     }));
-  // Claude Code turns skip Codex-only controls (fast/reasoning/compact/fork/
-  // side/mcp/feedback); prompt-based and runtime-agnostic commands stay.
-  const commandSource = context.runtime === "claude-code"
-    ? commands.filter((command) => ["goal", "plan", "status", "model", "settings", "memory", "init", "review", "pet"].includes(command.id))
-    : commands;
+  const commandSource = codexCommands.filter((command) => command.available?.(context) !== false);
   const commandItems = commandSource
     .filter((command) => {
       if (!normalized) return true;
@@ -138,6 +180,7 @@ export function ComposerSuggestions({ items, activeIndex, position, onSelect }: 
 function iconFor(item: ComposerSuggestion): React.JSX.Element {
   if (item.kind === "skill") return <Cuboid size={16} />;
   if (item.kind === "mcp") return <PlugIcon />;
+  if (item.kind === "claude-command") return <Command size={16} />;
   switch (item.command) {
     case "mcp": return <Package size={16} />;
     case "fast": return <FastForward size={16} />;

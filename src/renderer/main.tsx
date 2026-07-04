@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -487,6 +487,7 @@ function normalizedUserText(text: string): string {
   value = value.replace(/^\[연결된 플러그인\/MCP 언급\][\s\S]*?\n\n/, "");
   value = value.replace(/^\[이전 런타임에서 전달된 대화\][\s\S]*?\[새 요청\]\s*/, "");
   value = value.replace(/\n+\[첨부 파일 컨텍스트\][\s\S]*$/m, "");
+  value = value.replace(/\n+첨부 파일:\s*(?:\n- [^\n]+)+\s*$/m, "");
   value = value.replace(/^(?:\$[^\s]+|\/[^\s]+)(?:[ \t]+(?:\$[^\s]+|\/[^\s]+))*\s*\n+/, "");
   return value.replace(/\s+/g, " ").trim();
 }
@@ -1080,6 +1081,7 @@ function App(): React.JSX.Element {
   const [searchBusy, setSearchBusy] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<CodexSkillInfo[]>([]);
   const [availableClaudeSkills, setAvailableClaudeSkills] = useState<CodexSkillInfo[]>([]);
+  const [availableClaudeSlashCommands, setAvailableClaudeSlashCommands] = useState<ClaudeSlashCommandInfo[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerInfo[]>([]);
   const [settingsSection, setSettingsSection] = useState("구성");
   const [items, setItems] = useState<ThreadHistoryItem[]>([]);
@@ -1337,6 +1339,22 @@ function App(): React.JSX.Element {
       .catch((error) => { if (active) setExternalError(`Claude 스킬 목록 실패: ${String(error)}`); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (composerRuntime !== "claude-code" || !workspace) {
+      setAvailableClaudeSlashCommands([]);
+      return;
+    }
+    let active = true;
+    void window.devilCodex.listClaudeSlashCommands({ cwd: workspace, model: composerModel })
+      .then((commands) => { if (active) setAvailableClaudeSlashCommands(commands.filter((command) => command.name)); })
+      .catch((error) => {
+        if (!active) return;
+        setAvailableClaudeSlashCommands([]);
+        setExternalError(`Claude 명령 목록 실패: ${String(error)}`);
+      });
+    return () => { active = false; };
+  }, [composerRuntime, workspace, composerModel]);
 
   useEffect(() => {
     let active = true;
@@ -3750,7 +3768,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>

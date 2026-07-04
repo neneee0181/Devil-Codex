@@ -96,6 +96,7 @@ const api: DevilCodexApi = {
   installUpdate: () => ipcRenderer.invoke("update:install"),
   getSubagentInfo: (input) => ipcRenderer.invoke("subagent:info", input),
   listClaudeSkills: () => ipcRenderer.invoke("claude:skills"),
+  listClaudeSlashCommands: (input) => ipcRenderer.invoke("claude:slash-commands", input ?? {}),
   listClaudeMcpServers: (input) => ipcRenderer.invoke("claude:mcp-list", input ?? {}),
   listCodexPluginSkills: () => ipcRenderer.invoke("codex:plugin-skills"),
   onUpdateState: (listener) => {
