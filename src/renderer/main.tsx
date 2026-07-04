@@ -1786,18 +1786,37 @@ function App(): React.JSX.Element {
   const visibleSearchResults = useMemo(() => searchResults.filter((summary) => !hiddenThreadIds.includes(summary.id) && !sideThreadSet.has(summary.id)), [searchResults, hiddenThreadIds, sideThreadSet]);
   // Subagents spawned in this thread, for the environment "하위 에이전트" list.
   const subagents = useMemo(() => {
-    const byThread = new Map<string, { id: string; label: string }>();
+    const byThread = new Map<string, { id: string; label: string; provider?: ProviderId; model?: string }>();
     for (const item of items) {
       if (item.kind !== "activity") continue;
       for (const entry of item.activities ?? []) {
         const sub = entry.kind === "subagent" ? entry.subagent : undefined;
         if (sub?.agentThreadId && !byThread.has(sub.agentThreadId)) {
-          byThread.set(sub.agentThreadId, { id: sub.agentThreadId, label: sub.nickname || sub.role || "서브에이전트" });
+          byThread.set(sub.agentThreadId, {
+            id: sub.agentThreadId,
+            label: sub.nickname || sub.role || "서브에이전트",
+            provider: sub.role as ProviderId | undefined,
+            model: sub.model,
+          });
         }
       }
     }
     return [...byThread.values()];
   }, [items]);
+  useEffect(() => {
+    setSubagentPick((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const agent of subagents) {
+        if (!agent.provider || !agent.model) continue;
+        const existing = next[agent.id];
+        if (existing?.provider === agent.provider && existing.model === agent.model && existing.auto === false) continue;
+        next[agent.id] = { provider: agent.provider, model: agent.model, auto: false };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [subagents]);
   useEffect(() => {
     for (const agent of subagents) {
       if (subagentNames[agent.id]) continue;

@@ -755,8 +755,16 @@ const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
 
 // Conversation state is lifted to the parent (history/onHistory) so it survives
 // tab switches and the optimistic message isn't lost on reload.
-export function SideChat({ target, history, busy, pick, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
-  const { thread, cwd, providers, runtime, accountId } = target;
+export function SideChat({ target, history, busy, pick, lockedModel = false, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; lockedModel?: boolean; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
+  const { thread, cwd, providers } = target;
+  // A delegated subagent thread runs on its own provider/runtime (e.g. DeepSeek
+  // through the Codex app-server) regardless of the parent chat's runtime. The
+  // spawn pick (locked, auto:false) carries the child's actual provider, so
+  // derive runtime/account from it — otherwise a Claude-mode parent would read
+  // and continue a Codex-runtime child through the wrong history path.
+  const spawn = lockedModel && pick && pick.auto === false ? pick : undefined;
+  const runtime: AgentRuntimeId = spawn ? (spawn.provider === "claude-code" ? "claude-code" : "codex") : target.runtime;
+  const accountId = spawn ? spawn.accountId : target.accountId;
   const [loaded, setLoaded] = useState(history !== undefined);
   const [draft, setDraft] = useState(() => readSideChatDraft(thread.id));
   const [sending, setSending] = useState(false);
@@ -837,8 +845,10 @@ export function SideChat({ target, history, busy, pick, onPick, onHistory }: { t
   const working = busy || sending;
   return <div className="side-chat">
     <header className="side-chat-head"><Bot size={15} /><strong>{thread.label}</strong>
-      {picked.auto !== false && <span className="side-chat-auto-badge" title="작업 성격과 provider capability를 기준으로 모델을 자동 추천하고 실패 시 fallback합니다."><Sparkles size={12} />자동</span>}
-      <SideChatModelPicker value={picked} providers={providers} onChange={onPick} />
+      {!lockedModel && picked.auto !== false && <span className="side-chat-auto-badge" title="작업 성격과 provider capability를 기준으로 모델을 자동 추천하고 실패 시 fallback합니다."><Sparkles size={12} />자동</span>}
+      {lockedModel
+        ? <button type="button" className="side-chat-model-trigger locked" title={`${pickLabel(providers, picked)} · 하위 에이전트 실행 모델`} disabled><span>{pickLabel(providers, picked)}</span></button>
+        : <SideChatModelPicker value={picked} providers={providers} onChange={onPick} />}
     </header>
     <div className="side-chat-body" ref={bodyRef}>
       {!loaded ? <div className="side-chat-loading"><span className="side-chat-spinner" /><strong>사이드 채팅 불러오는 중</strong><i /><i /><i /></div>

@@ -184,7 +184,7 @@ async function listClaudeMcpServers(input: { cwd?: string } = {}): Promise<McpSe
 }
 import { createGitWorktree, listGitWorktrees } from "./worktree-service.cjs";
 import { BrowserViewManager } from "./browser-view.cjs";
-import { ThreadHistoryCache, mergeCachedActivities } from "./history-cache.cjs";
+import { ThreadHistoryCache, mergeCachedActivities, normalizeCachedDelegateSubagents } from "./history-cache.cjs";
 
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
@@ -1331,18 +1331,38 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
     const thread = claudeRuntime.createThread({ cwd, model });
     try {
       let finalText = "";
+      // Pin the SDK session id to the Devil thread id so the subagent tab can
+      // later resume the same Claude session (mirrors the main-chat path).
       const result = await claudeRuntime.sendTurn({
         threadId: thread.id,
         cwd,
         text: input.task,
         model,
         resume: false,
+        nativeSessionId: thread.id,
         mcpConfig: await claudeMcpConfig(),
         approvalPolicy: "never",
         sandboxMode: "workspace-write",
         onCompleted: (text) => { finalText = text.trim(); },
       });
-      return { taskId, threadId: thread.id, status: "completed", result: finalText, provider: "claude-code", accountId, model, runtime, ...(result.sessionId ? {} : {}) };
+      // Persist the child conversation so the "subagent:<id>" tab (which reads
+      // via providerTranscripts for claude-code threads) shows it. archived:true
+      // keeps the hidden child out of the main sidebar, like Codex children.
+      await providerTranscripts.append(thread.id, { id: crypto.randomUUID(), kind: "user", text: input.task }).catch(() => undefined);
+      await providerTranscripts.append(thread.id, { id: crypto.randomUUID(), kind: "agent", text: finalText, runtime: "claude-code", provider: "claude-code", model }).catch(() => undefined);
+      await providerTranscripts.saveMeta({
+        id: thread.id,
+        cwd,
+        model,
+        runtime: "claude-code",
+        provider: "claude-code",
+        claudeSessionId: result.sessionId ?? thread.id,
+        title: titleFromText(input.task),
+        preview: previewFromText(finalText || input.task),
+        updatedAt: Date.now(),
+        archived: true,
+      }).catch(() => undefined);
+      return { taskId, threadId: thread.id, status: "completed", result: finalText, provider: "claude-code", accountId, model, runtime };
     } catch (error) {
       return { taskId, threadId: thread.id, status: "failed", error: error instanceof Error ? error.message : String(error), provider: "claude-code", accountId, model, runtime };
     }
@@ -1893,7 +1913,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await (await threadServerFor(input.id)).compactThread({ threadId: input.id });
   });
   ipcMain.handle("thread:read", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") return providerTranscripts.read(input.id);
+    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(await providerTranscripts.read(input.id));
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native
     // thread that took even one stray external turn is flagged external forever
@@ -1910,7 +1930,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       if (native.length > local.length) {
         return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)))));
       }
-      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(local));
+      return attachCodexTokenUsage(input.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
     }
     try {
       const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
@@ -1928,7 +1948,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else await historyCache.save(input.id, items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") return providerTranscripts.read(input.id);
+    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(await providerTranscripts.read(input.id));
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
@@ -1941,7 +1961,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (native.length > local.length) {
       return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native))));
     }
-    return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(local));
+    return attachCodexTokenUsage(input.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
   });
   ipcMain.handle("thread:projects", async (_event, input) => {
     const archived = (input ?? {}).archived ?? false;

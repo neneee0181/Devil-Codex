@@ -592,6 +592,19 @@ export class ProviderTranscriptStore {
     let turnIndex = 0;
     let currentTurnId = "";
 
+    // tool_use_id → tool_result text. Needed to rebuild delegate_subagent cards
+    // as subagent activities: the child threadId/provider/model live in the MCP
+    // result text, which arrives in later tool_result-only user lines.
+    const toolResults = new Map<string, string>();
+    for (const line of lines) {
+      if (line.type !== "user" && line.type !== "assistant") continue;
+      for (const part of claudeContentParts(line.message?.content)) {
+        if (String(part.type ?? "") !== "tool_result") continue;
+        const useId = String(part.tool_use_id ?? "");
+        if (useId && !toolResults.has(useId)) toolResults.set(useId, claudeTextContent(part.content));
+      }
+    }
+
     const ensureActivity = (turnId: string, entry: ThreadActivityEntry): void => {
       const index = items.findIndex((item) => item.kind === "activity" && item.turnId === turnId);
       if (index >= 0) {
@@ -665,6 +678,26 @@ export class ProviderTranscriptStore {
       for (const part of claudeContentParts(content).filter((part) => String(part.type ?? "") === "tool_use")) {
         const toolId = String(part.id ?? `${id}-tool`);
         const name = String(part.name ?? "Claude 도구");
+        // Rebuild delegated subagent calls as subagent activities so the right
+        // tab/model lock survive a reimport (Claude SDK prefixes MCP tools as
+        // "mcp__devil_subagent__delegate_subagent").
+        if (name === "delegate_subagent" || name.endsWith("__delegate_subagent")) {
+          const resultText = toolResults.get(toolId) ?? "";
+          const agentThreadId = resultText.match(/^threadId:\s*([^\s]+)/m)?.[1] ?? "";
+          if (agentThreadId) {
+            const provider = resultText.match(/^provider:\s*([^\n]+)/m)?.[1]?.trim();
+            const model = resultText.match(/^model:\s*([^\n]+)/m)?.[1]?.trim();
+            ensureActivity(turnId, {
+              id: toolId,
+              kind: "subagent",
+              title: provider || model ? `하위 에이전트: ${[provider, model].filter(Boolean).join(" · ")}` : "하위 에이전트",
+              detail: resultText,
+              status: "completed",
+              subagent: { agentThreadId, source: "thread_spawn", role: provider || "subagent", nickname: provider || undefined, model },
+            });
+            continue;
+          }
+        }
         ensureActivity(turnId, {
           id: toolId,
           kind: "mcp",

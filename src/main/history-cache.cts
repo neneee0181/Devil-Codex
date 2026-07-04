@@ -94,20 +94,35 @@ function insertMissingCachedItems(native: ThreadHistoryItem[], cached: ThreadHis
   return merged;
 }
 
-function normalizeCachedDelegateSubagents(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+// Exported: provider-transcript-backed threads (Claude Code runtime, external
+// providers) reuse this on read so previously cached raw delegate cards render
+// as subagent activities there too.
+export function normalizeCachedDelegateSubagents(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
   return items.map((item) => {
     if (item.kind !== "activity" || !item.activities?.length) return item;
     const activities = item.activities.map((entry) => {
-      if (entry.kind !== "mcp" || entry.title !== "delegate_subagent 실행") return entry;
       const agentThreadId = entry.detail?.match(/^threadId:\s*([^\s]+)/m)?.[1] ?? "";
-      if (!agentThreadId) return entry;
       const provider = entry.detail?.match(/^provider:\s*([^\n]+)/m)?.[1]?.trim();
       const model = entry.detail?.match(/^model:\s*([^\n]+)/m)?.[1]?.trim();
+      if (entry.kind === "subagent" && entry.subagent?.agentThreadId) {
+        return {
+          ...entry,
+          subagent: {
+            ...entry.subagent,
+            role: entry.subagent.role ?? provider ?? "subagent",
+            nickname: entry.subagent.nickname ?? provider,
+            model: entry.subagent.model ?? model,
+          },
+        };
+      }
+      // Codex titles the raw card "delegate_subagent 실행"; the Claude Agent SDK
+      // prefixes MCP tools, yielding "mcp__devil_subagent__delegate_subagent 실행".
+      if (entry.kind !== "mcp" || !/(?:^|__)delegate_subagent 실행$/.test(entry.title ?? "") || !agentThreadId) return entry;
       return {
         ...entry,
         kind: "subagent" as const,
         title: provider || model ? `하위 에이전트: ${[provider, model].filter(Boolean).join(" · ")}` : "하위 에이전트",
-        subagent: { agentThreadId, source: "thread_spawn" as const, role: provider || "subagent", nickname: provider || undefined },
+        subagent: { agentThreadId, source: "thread_spawn" as const, role: provider || "subagent", nickname: provider || undefined, model },
       };
     });
     return { ...item, activities };

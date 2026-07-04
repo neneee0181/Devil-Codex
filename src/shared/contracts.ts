@@ -54,6 +54,7 @@ export interface ThreadActivityEntry {
     source?: "review" | "compact" | "thread_spawn" | "memory_consolidation" | "other";
     role?: string;
     nickname?: string;
+    model?: string;
     depth?: number;
   };
 }

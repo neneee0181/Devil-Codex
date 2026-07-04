@@ -11,9 +11,14 @@ tags:
 ---
 # Agent Handoff
 
-Last synced: 2026-06-27
+Last synced: 2026-07-05
 
 ## What Changed
+
+### Latest: Claude-mode delegate_subagent parity (2026-07-05)
+
+- Codex-mode delegate flow verified OK; Claude-mode gaps fixed (prefixed MCP tool name match, subagent tab runtime derivation, claude child transcript/session persistence, JSONL import subagent rebuild). Details in `02-current-project-state.md`.
+- **Manual test pending**: Claude Code 모드 부모 채팅에서 `delegate_subagent`(예: deepseek) 실행 → 타임라인 subagent 카드 + 우측 탭 자동 오픈 + picker 잠금 + 앱 재시작 후 재열기 확인. claude-code 자식 위임 시 탭에 대화내역 표시/이어보내기 확인.
 
 ### Latest: v0.1.27 — ask_user MCP + proxy auth + UI polish (continue on Windows)
 

@@ -177,7 +177,9 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
 
 function delegateSubagentEntry(item: RawItem, id: string): ThreadActivityEntry | null {
   const tool = String(item.tool ?? item.name ?? "");
-  if (tool !== "delegate_subagent") return null;
+  // Claude Agent SDK prefixes MCP tools ("mcp__devil_subagent__delegate_subagent");
+  // Codex reports the bare tool name. Accept both so both runtimes convert.
+  if (tool !== "delegate_subagent" && !tool.endsWith("__delegate_subagent")) return null;
   const { text } = mcpResultContent(item);
   const agentThreadId = text.match(/^threadId:\s*([^\s]+)/m)?.[1] ?? "";
   if (!agentThreadId) return null;
@@ -189,7 +191,7 @@ function delegateSubagentEntry(item: RawItem, id: string): ThreadActivityEntry |
     title: provider || model ? `하위 에이전트: ${[provider, model].filter(Boolean).join(" · ")}` : "하위 에이전트",
     detail: text,
     status: String(item.status ?? "inProgress") as ThreadActivityEntry["status"],
-    subagent: { agentThreadId, source: "thread_spawn", role: provider || "subagent", nickname: provider || undefined },
+    subagent: { agentThreadId, source: "thread_spawn", role: provider || "subagent", nickname: provider || undefined, model },
   };
 }
 
