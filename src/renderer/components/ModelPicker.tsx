@@ -205,7 +205,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
             <span />
           </button>
           <div className="model-context-tooltip" role="tooltip">
-            <small>컨텍스트 창:</small>
+            <small>{contextUsage.scope === "last-request" ? "마지막 요청:" : contextUsage.source === "renderer-estimate" ? "컨텍스트 추정:" : "컨텍스트 창:"}</small>
             <strong>{contextPercent}% 참</strong>
             <span>{formatTokens(contextUsage.usedTokens)}/{formatTokens(contextUsage.maxTokens)} 개의 토큰 사용</span>
           </div>

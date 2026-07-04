@@ -335,7 +335,7 @@ function estimateContextUsage(items: ThreadHistoryItem[], model: string): Contex
     const attachmentText = (item.attachments ?? []).map((attachment) => `${attachment.name}\n${attachment.content ?? ""}`).join("\n");
     return sum + estimateTextTokens(`${item.title ?? ""}\n${item.text}\n${activityText}\n${attachmentText}`);
   }, 0);
-  return used > 0 ? { usedTokens: used, maxTokens: modelContextWindow(model) } : undefined;
+  return used > 0 ? { usedTokens: used, maxTokens: modelContextWindow(model), source: "renderer-estimate", scope: "visible-thread-estimate", includesCache: false } : undefined;
 }
 
 function storedReasoningEffort(): ReasoningEffort {
@@ -740,6 +740,7 @@ type ThreadUsageSummary = {
   totalTokens: number;
   estimatedCost: number;
   pricedTokens: number;
+  contextUsage?: ContextUsage;
   contextTokens?: number;
   maxTokens?: number;
   contextOverflow: boolean;
@@ -751,6 +752,23 @@ function compactTokenCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M`;
   if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
   return `${Math.round(value).toLocaleString()}`;
+}
+
+function contextUsageTitle(contextUsage: ContextUsage | undefined): string {
+  if (contextUsage?.scope === "last-request") return "마지막 요청 컨텍스트";
+  if (contextUsage?.source === "renderer-estimate") return "현재 대화 추정치";
+  return "현재 컨텍스트";
+}
+
+function contextUsageStatus(contextUsage: ContextUsage | undefined, overflow: boolean, usageHasClaudeCode: boolean): string {
+  if (!contextUsage?.usedTokens || !contextUsage.maxTokens) return "알 수 없음";
+  const percent = Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100);
+  if (contextUsage.scope === "last-request") return contextUsage.includesCache ? `캐시 포함 · ${percent}% 상당` : `${percent}% 상당`;
+  if (contextUsage.source === "renderer-estimate") return overflow
+    ? usageHasClaudeCode ? "추정 임계값 초과 · Claude Code 자동 압축 켜짐" : "추정 임계값 초과"
+    : `추정 ${percent}% 사용`;
+  if (overflow) return usageHasClaudeCode ? "임계값 초과 · Claude Code 자동 압축 켜짐" : "다음 요청에서 압축 필요";
+  return usageHasClaudeCode ? `${percent}% 사용 · Claude Code 자동 압축 켜짐` : `${percent}% 사용`;
 }
 
 function compactUsageReset(value: string | number | null | undefined): string {
@@ -864,9 +882,10 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     totalTokens: models.reduce((sum, row) => sum + row.totalTokens, 0),
     estimatedCost: models.reduce((sum, row) => sum + row.estimatedCost, 0),
     pricedTokens: models.reduce((sum, row) => sum + row.pricedTokens, 0),
+    contextUsage: input.contextUsage,
     contextTokens: input.contextUsage?.usedTokens,
     maxTokens: input.contextUsage?.maxTokens,
-    contextOverflow: Boolean(input.contextUsage?.usedTokens && input.contextUsage?.maxTokens && input.contextUsage.usedTokens > input.contextUsage.maxTokens),
+    contextOverflow: Boolean(input.contextUsage?.usedTokens && input.contextUsage?.maxTokens && input.contextUsage.scope !== "last-request" && input.contextUsage.usedTokens > input.contextUsage.maxTokens),
     models,
   };
 }
@@ -3259,7 +3278,7 @@ function App(): React.JSX.Element {
         `채팅 ID: ${thread?.id ?? "새 채팅"}`,
         `작업 경로: ${workspace || "없음"}`,
         `모델: ${modelDisplayName({ provider: providers.settings?.provider ?? "codex", model: thread?.model || model })}`,
-        `현재 컨텍스트: ${contextUsage ? `${formatTokenShort(contextUsage.usedTokens)} / ${formatTokenShort(contextUsage.maxTokens)} (${contextPercent}%)` : "알 수 없음"}`,
+        `${contextUsageTitle(contextUsage)}: ${contextUsage ? `${formatTokenShort(contextUsage.usedTokens)} / ${formatTokenShort(contextUsage.maxTokens)} (${contextPercent}%)` : "알 수 없음"}`,
         `현재 스레드 사용량: ${threadUsage.requests}회 요청 · ${threadUsageCostLabel(threadUsage.estimatedCost, threadUsage.pricedTokens, threadUsage.totalTokens)}`,
         `속도: ${responseSpeedLabel(responseSpeed)}`,
         `추론 수준: ${reasoningEffortLabel(reasoningEffort)}`,
@@ -4366,12 +4385,12 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
         </div>
         {usage.contextTokens && usage.maxTokens && <>
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
-            <span>현재 컨텍스트</span>
+            <span>{contextUsageTitle(usage.contextUsage)}</span>
             <b>{compactTokenCount(usage.contextTokens)} / {compactTokenCount(usage.maxTokens)}</b>
           </div>
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
             <span>컨텍스트 상태</span>
-            <b>{usage.contextOverflow ? usageHasClaudeCode ? "다음 요청에서 Claude Code 자동 압축" : "다음 요청에서 압축 필요" : `${Math.round((usage.contextTokens / usage.maxTokens) * 100)}% 사용`}</b>
+            <b>{contextUsageStatus(usage.contextUsage, usage.contextOverflow, usageHasClaudeCode)}</b>
           </div>
           <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.maxTokens)} max={usage.maxTokens} />
         </>}

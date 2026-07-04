@@ -71,7 +71,41 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
     for (const candidate of candidates) {
       const used = finiteNumber(candidate.usedTokens ?? candidate.used_tokens ?? candidate.totalTokens ?? candidate.total_tokens ?? candidate.tokenCount ?? candidate.token_count ?? candidate.inputTokens ?? candidate.input_tokens);
       const max = finiteNumber(candidate.maxTokens ?? candidate.max_tokens ?? candidate.modelContextWindow ?? candidate.model_context_window ?? candidate.contextWindow ?? candidate.context_window ?? candidate.windowTokens ?? candidate.window_tokens ?? candidate.limitTokens ?? candidate.limit_tokens);
-      if (used && max) return { usedTokens: used, maxTokens: max };
+      if (used && max) {
+        const source = typeof candidate.source === "string" ? candidate.source : undefined;
+        const scope = typeof candidate.scope === "string" ? candidate.scope : undefined;
+        const includesCache = typeof candidate.includesCache === "boolean" ? candidate.includesCache : undefined;
+        const inputTokens = finiteNumber(candidate.inputTokens ?? candidate.input_tokens);
+        const cachedInputTokens = finiteNumber(candidate.cachedInputTokens ?? candidate.cached_input_tokens);
+        const outputTokens = finiteNumber(candidate.outputTokens ?? candidate.output_tokens);
+        const rawMaxTokens = finiteNumber(candidate.rawMaxTokens ?? candidate.raw_max_tokens);
+        const percentage = finiteNumber(candidate.percentage);
+        const categories = Array.isArray(candidate.categories)
+          ? candidate.categories.flatMap((category) => {
+            if (!category || typeof category !== "object") return [];
+            const record = category as RawItem;
+            const name = typeof record.name === "string" ? record.name : "";
+            const tokens = finiteNumber(record.tokens);
+            if (!name || !tokens) return [];
+            const color = typeof record.color === "string" ? record.color : undefined;
+            const isDeferred = typeof record.isDeferred === "boolean" ? record.isDeferred : undefined;
+            return [{ name, tokens, ...(color ? { color } : {}), ...(typeof isDeferred === "boolean" ? { isDeferred } : {}) }];
+          })
+          : undefined;
+        return {
+          usedTokens: used,
+          maxTokens: max,
+          ...(source === "codex-app-server" || source === "claude-code-sdk" || source === "claude-code-result" || source === "renderer-estimate" ? { source } : {}),
+          ...(scope === "current-context" || scope === "last-request" || scope === "visible-thread-estimate" ? { scope } : {}),
+          ...(typeof includesCache === "boolean" ? { includesCache } : {}),
+          ...(inputTokens ? { inputTokens } : {}),
+          ...(cachedInputTokens ? { cachedInputTokens } : {}),
+          ...(outputTokens ? { outputTokens } : {}),
+          ...(rawMaxTokens ? { rawMaxTokens } : {}),
+          ...(percentage ? { percentage } : {}),
+          ...(categories?.length ? { categories } : {}),
+        };
+      }
     }
   }
   return undefined;

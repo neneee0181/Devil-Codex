@@ -1851,6 +1851,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
             ? providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId })
             : undefined,
         });
+        if (result.contextUsage) await providerTranscripts.setTurnContextUsage(input.threadId, result.turnId, result.contextUsage);
         await codexProxy.finishRuntimeRequest(requestLogId, { status: "completed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, ...(result.usage ? { usage: result.usage } : {}) });
         await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
         if (result.sessionId) await providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: result.sessionId });

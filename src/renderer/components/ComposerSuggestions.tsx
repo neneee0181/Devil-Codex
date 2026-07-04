@@ -99,7 +99,8 @@ function compactNumber(value: number): string {
 function contextUsageDetail(context: SlashCommandContext): string {
   if (!context.contextUsage || context.contextUsage.maxTokens <= 0) return "채팅 ID, 컨텍스트 사용량, 속도 제한을 표시합니다";
   const percent = Math.round((context.contextUsage.usedTokens / context.contextUsage.maxTokens) * 100);
-  return `컨텍스트 ${percent}% · ${compactNumber(context.contextUsage.usedTokens)} / ${compactNumber(context.contextUsage.maxTokens)}`;
+  const label = context.contextUsage.scope === "last-request" ? "마지막 요청" : context.contextUsage.source === "renderer-estimate" ? "컨텍스트 추정" : "컨텍스트";
+  return `${label} ${percent}% · ${compactNumber(context.contextUsage.usedTokens)} / ${compactNumber(context.contextUsage.maxTokens)}`;
 }
 
 const codexCommands: SlashCommand[] = [

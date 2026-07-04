@@ -2,7 +2,7 @@ import { app } from "electron";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
+import type { ContextUsage, ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
 
 type ProviderTurnMeta = {
   provider: string;
@@ -312,6 +312,31 @@ export class ProviderTranscriptStore {
 
   async append(threadId: string, item: ThreadHistoryItem): Promise<void> {
     await this.mutate((all) => { all.items[threadId] = [...(all.items[threadId] ?? []), item]; });
+  }
+
+  async setTurnContextUsage(threadId: string, turnId: string, contextUsage: ContextUsage): Promise<void> {
+    await this.mutate((all) => {
+      const items = all.items[threadId] ?? [];
+      let updated = false;
+      const next = items.map((item) => {
+        if (!updated && item.turnId === turnId && item.kind === "agent") {
+          updated = true;
+          return { ...item, contextUsage };
+        }
+        return item;
+      });
+      if (updated) {
+        all.items[threadId] = next;
+        return;
+      }
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        const item = next[index];
+        if (item?.turnId !== turnId) continue;
+        next[index] = { ...item, contextUsage };
+        all.items[threadId] = next;
+        return;
+      }
+    });
   }
 
   async appendActivityEntry(threadId: string, turnId: string | undefined, entry: ThreadActivityEntry, status: ThreadHistoryItem["status"] = "completed"): Promise<void> {

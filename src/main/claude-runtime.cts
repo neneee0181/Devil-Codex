@@ -13,9 +13,12 @@ type ClaudeSdkUserMessage = { type: "user"; message: { role: "user"; content: st
 type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
   initializationResult?: () => Promise<{ commands?: unknown[] }>;
   supportedCommands?: () => Promise<unknown[]>;
+  getContextUsage?: () => Promise<unknown>;
 };
 type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
 export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; totalTokens: number };
+
+const CLAUDE_CONTEXT_USAGE_TIMEOUT_MS = 1500;
 
 type TurnContext = {
   threadId: string;
@@ -293,9 +296,69 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   const promptInput = input + cached;
   return {
     usage: { input_tokens: input, output_tokens: output, ...(cached ? { cached_input_tokens: cached } : {}), total_tokens: promptInput + output },
-    ...(contextWindow > 0 && promptInput > 0 ? { contextUsage: { usedTokens: promptInput, maxTokens: contextWindow } } : {}),
+    ...(contextWindow > 0 && promptInput > 0 ? {
+      contextUsage: {
+        usedTokens: promptInput,
+        maxTokens: contextWindow,
+        source: "claude-code-result",
+        scope: "last-request",
+        includesCache: Boolean(cached),
+        inputTokens: input,
+        cachedInputTokens: cached,
+        outputTokens: output,
+      },
+    } : {}),
     ...(contextWindow > 0 ? { modelContextWindow: contextWindow } : {}),
   };
+}
+
+function contextUsageFromSdkControl(value: unknown): ContextUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const totalTokens = compactNumber(raw.totalTokens ?? raw.total_tokens);
+  const maxTokens = compactNumber(raw.maxTokens ?? raw.max_tokens ?? raw.rawMaxTokens ?? raw.raw_max_tokens);
+  if (!totalTokens || !maxTokens) return undefined;
+  const rawMaxTokens = compactNumber(raw.rawMaxTokens ?? raw.raw_max_tokens);
+  const percentage = compactNumber(raw.percentage);
+  const categories = Array.isArray(raw.categories)
+    ? raw.categories.flatMap((category) => {
+      if (!category || typeof category !== "object") return [];
+      const record = category as Record<string, unknown>;
+      const name = typeof record.name === "string" ? record.name : "";
+      const tokens = compactNumber(record.tokens);
+      if (!name || !tokens) return [];
+      const color = typeof record.color === "string" ? record.color : undefined;
+      const isDeferred = typeof record.isDeferred === "boolean" ? record.isDeferred : undefined;
+      return [{ name, tokens, ...(color ? { color } : {}), ...(typeof isDeferred === "boolean" ? { isDeferred } : {}) }];
+    })
+    : undefined;
+  return {
+    usedTokens: totalTokens,
+    maxTokens,
+    source: "claude-code-sdk",
+    scope: "current-context",
+    includesCache: false,
+    ...(rawMaxTokens ? { rawMaxTokens } : {}),
+    ...(percentage ? { percentage } : {}),
+    ...(categories?.length ? { categories } : {}),
+  };
+}
+
+async function sdkCurrentContextUsage(request: ClaudeSdkQuery): Promise<ContextUsage | undefined> {
+  if (typeof request.getContextUsage !== "function") return undefined;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), CLAUDE_CONTEXT_USAGE_TIMEOUT_MS);
+    request.getContextUsage!()
+      .then((value) => resolve(contextUsageFromSdkControl(value)))
+      .catch(() => resolve(undefined))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+function claudeCodeSettings(): Record<string, unknown> {
+  // Let Claude Code use its native auto-compact threshold/window. Devil only
+  // makes sure the default auto-compact behavior is enabled for SDK sessions.
+  return { autoCompactEnabled: true };
 }
 
 function compactMetadata(message: ClaudeSdkMessage): Record<string, unknown> {
@@ -400,7 +463,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -409,6 +472,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     let finalText = "";
     let nativeSessionId = input.nativeSessionId;
     let usageSnapshot: TurnUsageSnapshot | undefined;
+    let sdkContextUsage: ContextUsage | undefined;
     const abortController = new AbortController();
     const mode = permissionMode(input.approvalPolicy, input.sandboxMode);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
@@ -442,6 +506,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
         env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
         abortController,
         includePartialMessages: true,
+        settings: claudeCodeSettings(),
         permissionMode: mode,
         allowDangerouslySkipPermissions: mode === "bypassPermissions",
         ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId) }),
@@ -451,9 +516,12 @@ export class ClaudeCodeRuntime extends EventEmitter {
         // sessionId so creation/sync behaves like Codex's native thread id.
         ...(input.resume && input.nativeSessionId ? { resume: input.nativeSessionId } : input.nativeSessionId ? { sessionId: input.nativeSessionId } : {}),
       };
-      for await (const message of query({ prompt: messages, options })) {
+      const request = query({ prompt: messages, options });
+      for await (const message of request) {
         this.handleSdkMessage(message, context);
+        if (message.type === "result") sdkContextUsage = await sdkCurrentContextUsage(request) ?? sdkContextUsage;
       }
+      sdkContextUsage = sdkContextUsage ?? await sdkCurrentContextUsage(request);
     })();
 
     const result = await run.then(async () => {
@@ -474,13 +542,13 @@ export class ClaudeCodeRuntime extends EventEmitter {
             durationMs: Date.now() - startedAt,
             ...(usageSnapshot ? {
               usage: usageSnapshot.usage,
-              ...(usageSnapshot.contextUsage ? { contextUsage: usageSnapshot.contextUsage } : {}),
               ...(usageSnapshot.modelContextWindow ? { modelContextWindow: usageSnapshot.modelContextWindow } : {}),
             } : {}),
+            ...(sdkContextUsage ?? usageSnapshot?.contextUsage ? { contextUsage: sdkContextUsage ?? usageSnapshot?.contextUsage } : {}),
           },
         },
       });
-      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot) };
+      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot), ...(sdkContextUsage ?? usageSnapshot?.contextUsage ? { contextUsage: sdkContextUsage ?? usageSnapshot?.contextUsage } : {}) };
     }).catch(async (error) => {
       await normalizeClaudeSessionEntrypoint(input.cwd, nativeSessionId);
       // interruptTurn() removes the controller before aborting, so a missing
@@ -501,7 +569,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       if (!interrupted) throw error;
       // A stop is a normal outcome (Codex parity): resolve so the renderer
       // does not render a spurious "요청 실패" system row.
-      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot) };
+      return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot), ...(sdkContextUsage ?? usageSnapshot?.contextUsage ? { contextUsage: sdkContextUsage ?? usageSnapshot?.contextUsage } : {}) };
     }).finally(() => {
       this.active.delete(input.threadId);
       this.streamedAgentText.delete(`${input.threadId}:${turnId}`);

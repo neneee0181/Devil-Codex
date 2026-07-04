@@ -81,6 +81,15 @@ export interface ThreadHistoryItem {
 export interface ContextUsage {
   usedTokens: number;
   maxTokens: number;
+  source?: "codex-app-server" | "claude-code-sdk" | "claude-code-result" | "renderer-estimate";
+  scope?: "current-context" | "last-request" | "visible-thread-estimate";
+  includesCache?: boolean;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  rawMaxTokens?: number;
+  percentage?: number;
+  categories?: Array<{ name: string; tokens: number; color?: string; isDeferred?: boolean }>;
 }
 
 export interface ThreadAttachment {
