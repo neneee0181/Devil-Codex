@@ -1117,6 +1117,8 @@ function App(): React.JSX.Element {
   const [renameThreadTarget, setRenameThreadTarget] = useState<ThreadSummary | null>(null);
   const [renameThreadDraft, setRenameThreadDraft] = useState("");
   const [renameThreadBusy, setRenameThreadBusy] = useState(false);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const [generalChatsAll, setGeneralChatsAll] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [openMenuOpen, setOpenMenuOpen] = useState(false);
@@ -1185,6 +1187,8 @@ function App(): React.JSX.Element {
   const prefetchingThreadHistory = useRef(new Set<string>());
   const activeResume = useRef<string | null>(null);
   const loadingThreadTimer = useRef<number | null>(null);
+  const threadsLoadingCount = useRef(0);
+  const projectsLoadingCount = useRef(0);
   const pendingThreads = useRef(new Map<string, ThreadSummary>());
   const pendingTurn = useRef<PendingTurnState | null>(null);
   const pendingTurns = useRef(new Map<string, PendingTurnState>());
@@ -1263,7 +1267,7 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (keepThreadOnRuntimeSwitch.current) {
       keepThreadOnRuntimeSwitch.current = false;
-      if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
+      if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true, showLoading: true }), refreshProjects({ quiet: true, showLoading: true })]);
       return;
     }
     const restored = restoreRuntimeSnapshot(runtimeSnapshots.current[agentRuntime]);
@@ -1278,7 +1282,7 @@ function App(): React.JSX.Element {
       setProjectDraft(false);
     }
     pendingThreads.current.clear();
-    if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true }), refreshProjects({ quiet: true })]);
+    if (workspace) void Promise.all([refreshThreads(workspace, { quiet: true, showLoading: true }), refreshProjects({ quiet: true, showLoading: true })]);
   }, [agentRuntime]);
   useEffect(() => { threadRef.current = thread; }, [thread]);
   useEffect(() => {
@@ -1817,6 +1821,7 @@ function App(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [search, view, agentRuntime]);
 
+  const sidebarLoading = threadsLoading || projectsLoading;
   const projectGroups = useMemo(() => {
     const sortThreadList = (list: ThreadSummary[]): ThreadSummary[] => [...list]
       .filter((summary) => !hiddenThreadIds.includes(summary.id))
@@ -2507,8 +2512,13 @@ function App(): React.JSX.Element {
     if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
   }
 
-  async function refreshThreads(cwd = workspace, options?: { quiet?: boolean }): Promise<void> {
+  async function refreshThreads(cwd = workspace, options?: { quiet?: boolean; showLoading?: boolean }): Promise<void> {
     if (!cwd) return;
+    const showLoading = options?.showLoading ?? !options?.quiet;
+    if (showLoading) {
+      threadsLoadingCount.current += 1;
+      setThreadsLoading(true);
+    }
     try {
       const loaded = await window.devilCodex.listThreads({ cwd, runtime: agentRuntime });
       for (const summary of loaded) pendingThreads.current.delete(summary.id);
@@ -2525,6 +2535,11 @@ function App(): React.JSX.Element {
     } catch (error) {
       if (options?.quiet) return;
       setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "스레드 목록 오류", text: String(error) }]);
+    } finally {
+      if (showLoading) {
+        threadsLoadingCount.current = Math.max(0, threadsLoadingCount.current - 1);
+        if (threadsLoadingCount.current === 0) setThreadsLoading(false);
+      }
     }
   }
 
@@ -2536,7 +2551,12 @@ function App(): React.JSX.Element {
     finally { prefetchingThreadHistory.current.delete(threadId); }
   }
 
-  async function refreshProjects(_options?: { quiet?: boolean }): Promise<void> {
+  async function refreshProjects(options?: { quiet?: boolean; showLoading?: boolean }): Promise<void> {
+    const showLoading = options?.showLoading ?? !options?.quiet;
+    if (showLoading) {
+      projectsLoadingCount.current += 1;
+      setProjectsLoading(true);
+    }
     try {
       const all = await window.devilCodex.listProjects({ runtime: agentRuntime });
       const map = new Map<string, { cwd: string; threads: ThreadSummary[] }>();
@@ -2553,6 +2573,11 @@ function App(): React.JSX.Element {
       setProjects((current) => sameProjectThreadGroups(current, groups) ? current : groups);
     } catch {
       // listing all projects is best-effort; ignore failures
+    } finally {
+      if (showLoading) {
+        projectsLoadingCount.current = Math.max(0, projectsLoadingCount.current - 1);
+        if (projectsLoadingCount.current === 0) setProjectsLoading(false);
+      }
     }
   }
 
@@ -3680,16 +3705,16 @@ function App(): React.JSX.Element {
           <button type="button" className={agentRuntime === "claude-code" ? "active" : ""} onClick={() => setAgentRuntime("claude-code")}><img className="runtime-logo" src={claudeRuntimeIcon} alt="" />Claude</button>
         </div>
 
-        {sidebarLayoutMode === "projectsDown" && generalChats.length > 0 && (
+        {sidebarLayoutMode === "projectsDown" && (sidebarLoading || generalChats.length > 0) && (
           <div className="general-chats">
             <div className="sidebar-label">채팅</div>
-            {generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
+            {sidebarLoading ? <SidebarLoadingRows /> : generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
               <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
                 <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id, summary.accountId)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
                 {runningThreadIds.has(summary.id) ? <span className="thread-running" title="응답 생성 중" /> : <time>{relativeTime(summary.updatedAt)}</time>}
               </div>
             ))}
-            {!generalChatsAll && generalChats.length > 6 && <button className="thread-more-link" onClick={() => setGeneralChatsAll(true)}>더 보기</button>}
+            {!sidebarLoading && !generalChatsAll && generalChats.length > 6 && <button className="thread-more-link" onClick={() => setGeneralChatsAll(true)}>더 보기</button>}
           </div>
         )}
 
@@ -3708,7 +3733,9 @@ function App(): React.JSX.Element {
           <AnimatePresence initial={false}>
             {projectExpanded && (
               <motion.div className="other-projects" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .18, ease: [.4, 0, .2, 1] }}>
-              {sidebarLayoutMode === "timeline" ? (
+              {sidebarLoading ? (
+                <SidebarLoadingRows />
+              ) : sidebarLayoutMode === "timeline" ? (
                 <div className="thread-list flat-thread-list">
                   {timelineProjectThreads.slice(0, 20).map((summary) => (
                     <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
@@ -3743,16 +3770,16 @@ function App(): React.JSX.Element {
             )}
           </AnimatePresence>
         </div>
-        {sidebarLayoutMode !== "projectsDown" && generalChats.length > 0 && (
+        {sidebarLayoutMode !== "projectsDown" && (sidebarLoading || generalChats.length > 0) && (
           <div className="general-chats">
             <div className="sidebar-label">채팅</div>
-            {generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
+            {sidebarLoading ? <SidebarLoadingRows /> : generalChats.slice(0, generalChatsAll ? generalChats.length : 6).map((summary) => (
               <div className={`${thread?.id === summary.id ? "thread-row active" : "thread-row"}${runningThreadIds.has(summary.id) ? " running" : ""}`} key={summary.id} onContextMenu={(event) => openThreadContextMenu(event, summary)}>
                 <button className="thread-open" onMouseEnter={() => void prefetchThreadHistory(summary.id, summary.accountId)} onClick={() => void resumeThread(summary)} title={summary.preview}>{pinnedThreads.includes(summary.id) && <Pin size={11} />} {summary.title}</button>
                 {runningThreadIds.has(summary.id) ? <span className="thread-running" title="응답 생성 중" /> : <time>{relativeTime(summary.updatedAt)}</time>}
               </div>
             ))}
-            {!generalChatsAll && generalChats.length > 6 && <button className="thread-more-link" onClick={() => setGeneralChatsAll(true)}>더 보기</button>}
+            {!sidebarLoading && !generalChatsAll && generalChats.length > 6 && <button className="thread-more-link" onClick={() => setGeneralChatsAll(true)}>더 보기</button>}
           </div>
         )}
         <ThreadContextMenu state={threadContextMenu} pinned={Boolean(threadContextMenu && pinnedThreads.includes(threadContextMenu.summary.id))} onToggleMarker={toggleThreadMarker} onRename={openRenameThreadDialog} onHide={hideThread} />
@@ -4170,6 +4197,12 @@ function ProjectHeaderMenu({ anchor, open, submenu, sortMode, layoutMode, onSubm
   );
 }
 
+function SidebarLoadingRows(): React.JSX.Element {
+  return <div className="sidebar-loading-list" aria-label="목록 불러오는 중">
+    {Array.from({ length: 4 }, (_, index) => <span key={index}><i /><b /></span>)}
+  </div>;
+}
+
 function ThreadContextMenu({ state, pinned, onToggleMarker, onRename, onHide }: {
   state: { summary: ThreadSummary; left: number; top: number } | null;
   pinned: boolean;
@@ -4331,7 +4364,7 @@ function AccountUsageInline({ entries, state, preferredProvider, onDetails }: { 
       {entry.label !== "Codex" && <small className="account-usage-provider">{[entry.label, entry.accountEmail || entry.accountLabel].filter(Boolean).join(" · ")}</small>}
       {entry.windows.slice(0, 3).map((window) => <div className="account-usage-row" key={`${entry.provider}-${window.label}`}>
         <strong>{window.label}</strong>
-        <span>{entry.provider === "codex" ? `${Math.round(window.remainingPercent)}% 남음` : `${Math.round(window.usedPercent)}% 사용`}</span>
+        <span>{Math.round(window.usedPercent)}% 사용</span>
         <time>{compactUsageReset(window.resetsAt)}</time>
       </div>)}
     </> : <p>{message}</p>}
@@ -4533,7 +4566,16 @@ function AutomationsView({ onPrompt }: { onPrompt: (prompt: string) => void }): 
 
 function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide, shareRuntimeLabel, onShareRuntime }: { pinned: boolean; onPin: () => void; onRename: () => void; onCopy: (kind: "cwd" | "id" | "markdown") => void; onSide: () => void; shareRuntimeLabel: string; onShareRuntime: () => void }): React.JSX.Element {
   const [copyOpen, setCopyOpen] = useState(false);
-  return <motion.div className="thread-menu" initial={{ opacity: 0, y: -6, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: .98 }} transition={{ duration: .13, ease: [.4, 0, .2, 1] }}>
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [copyPlacement, setCopyPlacement] = useState<"left" | "right">("right");
+  useLayoutEffect(() => {
+    if (!copyOpen) return;
+    const rect = menuRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const copyWidth = 292;
+    setCopyPlacement(rect.right + 8 + copyWidth > window.innerWidth - 8 ? "left" : "right");
+  }, [copyOpen]);
+  return <motion.div ref={menuRef} className="thread-menu" initial={{ opacity: 0, y: -6, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -4, scale: .98 }} transition={{ duration: .13, ease: [.4, 0, .2, 1] }}>
     <button onClick={onPin}>{pinned ? <PinOff size={16} /> : <Pin size={16} />}{pinned ? "채팅 고정 해제" : "채팅 고정"}<kbd>{shortcut("⌥⌘P")}</kbd></button>
     <button onClick={onRename}><Pencil size={16} />채팅 이름 바꾸기<kbd>{shortcut("⌥⌘R")}</kbd></button>
     <div className="menu-divider" />
@@ -4542,7 +4584,7 @@ function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide, shareRuntimeLabel
     <button className={copyOpen ? "active" : ""} onClick={() => setCopyOpen((open) => !open)}><Copy size={16} />복사<ChevronRight size={15} className="chev" /></button>
     <AnimatePresence>
       {copyOpen && (
-        <motion.div className="thread-copy-menu" initial={{ opacity: 0, scale: .97, x: -4 }} animate={{ opacity: 1, scale: 1, x: 0 }} exit={{ opacity: 0, scale: .98, x: -3 }} transition={{ duration: .13 }}>
+        <motion.div className={`thread-copy-menu ${copyPlacement}`} initial={{ opacity: 0, scale: .97, x: copyPlacement === "left" ? 4 : -4 }} animate={{ opacity: 1, scale: 1, x: 0 }} exit={{ opacity: 0, scale: .98, x: copyPlacement === "left" ? 3 : -3 }} transition={{ duration: .13 }}>
           <button type="button" onClick={() => onCopy("cwd")}><Copy size={16} />작업 중인 디렉토리 복사<kbd>{shortcut("⇧⌘C")}</kbd></button>
           <button type="button" onClick={() => onCopy("id")}><Copy size={16} />세션 ID 복사<kbd>{shortcut("⌥⌘C")}</kbd></button>
           <button type="button" onClick={() => onCopy("markdown")}><FileText size={16} />Markdown으로 복사</button>
