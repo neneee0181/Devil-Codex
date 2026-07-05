@@ -263,6 +263,29 @@ function collectUsageWindows(body: Record<string, unknown>, depth = 0): Provider
   return windows.sort((a, b) => usageWindowOrder(a.label) - usageWindowOrder(b.label));
 }
 
+export function codexUsageWindowsFromData(data: Record<string, unknown>): ProviderUsageWindow[] {
+  const rateLimit = data.rate_limit && typeof data.rate_limit === "object" ? data.rate_limit as Record<string, unknown> : null;
+  if (rateLimit) {
+    const primary = usageWindowFrom("primary_window", rateLimit.primary_window);
+    const secondary = usageWindowFrom("secondary_window", rateLimit.secondary_window);
+    const known = [primary, secondary].filter(Boolean) as ProviderUsageWindow[];
+    if (known.length) return known.sort((a, b) => usageWindowOrder(a.label) - usageWindowOrder(b.label));
+  }
+
+  const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
+  const rawLimits = [data, data.rate_limit, data.rate_limits, rateLimitsById?.codex]
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+  const windows = [
+    ...rawLimits.flatMap((value) => collectUsageWindows(value)),
+    ...Object.entries(rateLimitsById ?? {})
+      .filter(([key]) => /codex|gpt|chatgpt|primary|secondary|weekly|seven|five/i.test(key))
+      .flatMap(([, value]) => value && typeof value === "object" ? collectUsageWindows(value as Record<string, unknown>) : []),
+  ];
+  return [...new Map(windows.map((window) => [`${window.label}:${window.resetsAt ?? ""}`, window])).values()]
+    .sort((a, b) => usageWindowOrder(a.label) - usageWindowOrder(b.label));
+}
+
 function tokenSubject(token: string | null): string {
   return token ? createHash("sha256").update(token).digest("hex").slice(0, 16) : "missing";
 }
@@ -356,16 +379,8 @@ function fetchCodexUsage(token: string): Promise<Response> {
 }
 
 function codexUsageEntry(data: Record<string, unknown>, connected: boolean, subject: string): ProviderUsageEntry {
-  const rateLimitsById = data.rate_limits_by_limit_id as Record<string, unknown> | undefined;
-  const rawLimits = [data, data.rate_limit, data.rate_limits, rateLimitsById?.codex]
-    .flatMap((value) => Array.isArray(value) ? value : [value])
-    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
-  const windows = [
-    ...rawLimits.flatMap((value) => collectUsageWindows(value)),
-    ...Object.entries(rateLimitsById ?? {}).flatMap(([, value]) => value && typeof value === "object" ? collectUsageWindows(value as Record<string, unknown>) : []),
-  ];
-  const unique = [...new Map(windows.map((window) => [`${window.label}:${window.resetsAt ?? ""}`, window])).values()];
-  return remember({ provider: "codex", label: "Codex", connected, windows: unique, unavailable: unique.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+  const windows = codexUsageWindowsFromData(data);
+  return remember({ provider: "codex", label: "Codex", connected, windows, unavailable: windows.length ? undefined : "Codex 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
 }
 
 async function codexUsage(connected: boolean): Promise<ProviderUsageEntry | null> {
