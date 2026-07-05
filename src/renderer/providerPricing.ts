@@ -153,7 +153,15 @@ export function estimateProviderUsageCost(provider: ProviderId | "unknown", mode
   const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
   const pricedTokens = Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens);
   const inputCost = uncachedInput * pricing.input / 1_000_000;
-  const cachedCost = cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
+  // When the runtime reports the read/write split (Claude Code), price cache
+  // writes at 1.25x input (Anthropic 5-minute cache) and only reads at the
+  // discounted cache rate. Merged-only entries keep the old flat cache rate.
+  const cacheRead = usage.cacheReadInputTokens ?? 0;
+  const cacheCreation = usage.cacheCreationInputTokens ?? 0;
+  const hasSplit = cacheRead + cacheCreation > 0 && cacheRead + cacheCreation <= cached;
+  const cachedCost = hasSplit
+    ? (cacheRead * (pricing.cachedInput ?? pricing.input) + cacheCreation * pricing.input * 1.25 + Math.max(0, cached - cacheRead - cacheCreation) * (pricing.cachedInput ?? pricing.input)) / 1_000_000
+    : cached * (pricing.cachedInput ?? pricing.input) / 1_000_000;
   const outputCost = usage.outputTokens * pricing.output / 1_000_000;
   return { cost: inputCost + cachedCost + outputCost, pricedTokens };
 }

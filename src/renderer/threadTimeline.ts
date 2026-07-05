@@ -26,11 +26,15 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
   const totalTokens = tokenNumber(raw.totalTokens ?? raw.total_tokens) ?? inputTokens + outputTokens;
   if (totalTokens <= 0) return undefined;
   const cachedInputTokens = tokenNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
+  const cacheReadInputTokens = tokenNumber(raw.cacheReadInputTokens ?? raw.cache_read_input_tokens);
+  const cacheCreationInputTokens = tokenNumber(raw.cacheCreationInputTokens ?? raw.cache_creation_input_tokens);
   const reasoningOutputTokens = tokenNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
   return {
     inputTokens,
     outputTokens,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     totalTokens,
   };

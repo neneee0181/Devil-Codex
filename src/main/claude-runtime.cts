@@ -15,8 +15,8 @@ type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
   supportedCommands?: () => Promise<unknown[]>;
   getContextUsage?: () => Promise<unknown>;
 };
-type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
-export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; totalTokens: number };
+type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
+export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; totalTokens: number };
 
 const CLAUDE_CONTEXT_USAGE_TIMEOUT_MS = 1500;
 
@@ -277,6 +277,8 @@ function turnUsageResult(snapshot: TurnUsageSnapshot | undefined): ClaudeTurnUsa
     inputTokens: snapshot.usage.input_tokens,
     outputTokens: snapshot.usage.output_tokens,
     ...(snapshot.usage.cached_input_tokens ? { cachedInputTokens: snapshot.usage.cached_input_tokens } : {}),
+    ...(snapshot.usage.cache_read_input_tokens ? { cacheReadInputTokens: snapshot.usage.cache_read_input_tokens } : {}),
+    ...(snapshot.usage.cache_creation_input_tokens ? { cacheCreationInputTokens: snapshot.usage.cache_creation_input_tokens } : {}),
     totalTokens: snapshot.usage.total_tokens,
   };
 }
@@ -286,7 +288,9 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
   const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-  const cached = num(record.cache_read_input_tokens) + num(record.cache_creation_input_tokens);
+  const cacheRead = num(record.cache_read_input_tokens);
+  const cacheCreation = num(record.cache_creation_input_tokens);
+  const cached = cacheRead + cacheCreation;
   const input = num(record.input_tokens);
   const output = num(record.output_tokens);
   if (input + cached + output <= 0) return undefined;
@@ -296,7 +300,14 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   const contextWindow = models.reduce((max, model) => Math.max(max, typeof model.contextWindow === "number" ? model.contextWindow : 0), 0);
   const promptInput = input + cached;
   return {
-    usage: { input_tokens: input, output_tokens: output, ...(cached ? { cached_input_tokens: cached } : {}), total_tokens: promptInput + output },
+    usage: {
+      input_tokens: input,
+      output_tokens: output,
+      ...(cached ? { cached_input_tokens: cached } : {}),
+      ...(cacheRead ? { cache_read_input_tokens: cacheRead } : {}),
+      ...(cacheCreation ? { cache_creation_input_tokens: cacheCreation } : {}),
+      total_tokens: promptInput + output,
+    },
     ...(contextWindow > 0 && promptInput > 0 ? {
       contextUsage: {
         usedTokens: promptInput,

@@ -111,9 +111,12 @@ type ModelUsageRow = {
   failed: number;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
+  freshTokens: number;
   durationMs: number;
   estimatedCost: number;
   pricedTokens: number;
@@ -137,7 +140,8 @@ function DevilUsageTab({ summary, state }: { summary: ReturnType<typeof summariz
   const hasUsage = summary.rows.length > 0;
   return <section><h2>Devil Codex 모델별 사용량</h2>
     <div className="usage-summary-grid">
-      <UsageMetric title="전체 토큰" value={formatTokenCount(summary.totalTokens)} detail={`${summary.completed}개 완료 요청`} />
+      <UsageMetric title="실사용 토큰" value={formatTokenCount(summary.freshTokens)} detail="신규 입력 + 캐시 생성 + 출력 (CLI /cost 비교 기준)" />
+      <UsageMetric title="전체 처리량" value={formatTokenCount(summary.totalTokens)} detail={summary.cacheReadTokens > 0 ? `캐시 재사용 ${formatTokenCount(summary.cacheReadTokens)} 포함` : `${summary.completed}개 완료 요청`} />
       <UsageMetric title="예상 비용" value={summary.estimatedCost > 0 ? formatUsd(summary.estimatedCost) : "-"} detail={summary.pricedTokens > 0 ? "공개 단가 기준" : "단가 매칭 없음"} />
       <UsageMetric title="요청 수" value={`${summary.requests}회`} detail={summary.failed ? `${summary.failed}회 실패 포함` : "실패 없음"} />
     </div>
@@ -157,13 +161,14 @@ function ModelUsageCard({ row }: { row: ModelUsageRow }): React.JSX.Element {
   return <div className="setting-card usage-model-card">
     <header><span><strong>{row.model}</strong><small>{row.providerLabel}</small></span><b>{knownCost ? formatUsd(row.estimatedCost) : "단가 미정"}</b></header>
     <div className="usage-model-stats">
-      <span><small>전체 토큰</small><strong>{formatTokenCount(row.totalTokens)}</strong></span>
+      <span><small>실사용</small><strong>{formatTokenCount(row.freshTokens)}</strong></span>
       <span><small>입력</small><strong>{formatTokenCount(row.inputTokens)}</strong></span>
       <span><small>출력</small><strong>{formatTokenCount(row.outputTokens)}</strong></span>
       <span><small>요청</small><strong>{row.requests}회</strong></span>
     </div>
     <footer>
-      {row.cachedInputTokens > 0 && <small>캐시 입력 {formatTokenCount(row.cachedInputTokens)}</small>}
+      {row.cacheReadTokens > 0 && <small>캐시 재사용 {formatTokenCount(row.cacheReadTokens)}</small>}
+      {row.cacheCreationTokens > 0 && <small>캐시 생성 {formatTokenCount(row.cacheCreationTokens)}</small>}
       {row.reasoningOutputTokens > 0 && <small>추론 출력 {formatTokenCount(row.reasoningOutputTokens)}</small>}
       <small>평균 {formatDuration(row.completed ? row.durationMs / row.completed : 0)}</small>
       {row.failed > 0 && <small className="usage-failed">{row.failed}회 실패</small>}
@@ -198,7 +203,7 @@ function approvalValue(label: string): string { return label === "사용 안 함
 function sandboxLabel(value: string): string { return value === "read-only" ? "읽기 전용" : value === "danger-full-access" ? "전체 접근" : "작업 공간 쓰기"; }
 function sandboxValue(label: string): string { return label === "읽기 전용" ? "read-only" : label === "전체 접근" ? "danger-full-access" : "workspace-write"; }
 
-function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: ProviderSettings | null): { rows: ModelUsageRow[]; totalTokens: number; estimatedCost: number; pricedTokens: number; requests: number; completed: number; failed: number } {
+function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: ProviderSettings | null): { rows: ModelUsageRow[]; totalTokens: number; freshTokens: number; cacheReadTokens: number; estimatedCost: number; pricedTokens: number; requests: number; completed: number; failed: number } {
   const labels = new Map<ProviderId, string>((settings?.providers ?? []).map((provider) => [provider.id, provider.label]));
   const rows = new Map<string, ModelUsageRow>();
   for (const entry of entries) {
@@ -213,9 +218,12 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
       failed: 0,
       inputTokens: 0,
       cachedInputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
       outputTokens: 0,
       reasoningOutputTokens: 0,
       totalTokens: 0,
+      freshTokens: 0,
       durationMs: 0,
       estimatedCost: 0,
       pricedTokens: 0,
@@ -236,6 +244,8 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
   return {
     rows: sorted,
     totalTokens: sorted.reduce((sum, row) => sum + row.totalTokens, 0),
+    freshTokens: sorted.reduce((sum, row) => sum + row.freshTokens, 0),
+    cacheReadTokens: sorted.reduce((sum, row) => sum + row.cacheReadTokens, 0),
     estimatedCost: sorted.reduce((sum, row) => sum + row.estimatedCost, 0),
     pricedTokens: sorted.reduce((sum, row) => sum + row.pricedTokens, 0),
     requests: sorted.reduce((sum, row) => sum + row.requests, 0),
@@ -249,11 +259,21 @@ function addUsage(row: ModelUsageRow, usage: ProviderTokenUsage): void {
   const inputExcludesCache = cached > 0 && (usage.totalTokens ?? 0) >= usage.inputTokens + cached + usage.outputTokens;
   const inputIncludesCache = cached > 0 && !inputExcludesCache && usage.inputTokens >= cached;
   const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
+  // Entries logged before the read/write split treat all cached tokens as
+  // creation-free reads, matching the old flat-cache display.
+  const cacheRead = usage.cacheReadInputTokens
+    ?? (usage.cacheCreationInputTokens != null ? Math.max(0, cached - usage.cacheCreationInputTokens) : cached);
+  const cacheCreation = usage.cacheCreationInputTokens ?? Math.max(0, cached - cacheRead);
   row.inputTokens += uncachedInput;
   row.cachedInputTokens += cached;
+  row.cacheReadTokens += cacheRead;
+  row.cacheCreationTokens += cacheCreation;
   row.outputTokens += usage.outputTokens;
   row.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;
   row.totalTokens += Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens);
+  // "Fresh" tokens exclude cache reads: what the model actually processed for
+  // the first time. This is the number comparable to the stock CLI's /cost.
+  row.freshTokens += uncachedInput + cacheCreation + usage.outputTokens;
 }
 
 function providerFallbackLabel(provider: ProviderId): string {

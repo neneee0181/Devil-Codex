@@ -739,6 +739,8 @@ type ThreadUsageModel = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
   durationMs: number;
@@ -842,12 +844,16 @@ function runtimeAgentLabel(runtime: AgentRuntimeId, provider: ProviderId | undef
   return `${base}(${providerDisplayName(provider, providers)})`;
 }
 
-function providerUsageInputBreakdown(usage: ProviderTokenUsage): { uncachedInput: number; cached: number; total: number } {
+function providerUsageInputBreakdown(usage: ProviderTokenUsage): { uncachedInput: number; cached: number; cacheRead: number; cacheCreation: number; total: number } {
   const cached = usage.cachedInputTokens ?? 0;
   const inputExcludesCache = cached > 0 && (usage.totalTokens ?? 0) >= usage.inputTokens + cached + usage.outputTokens;
   const inputIncludesCache = cached > 0 && !inputExcludesCache && usage.inputTokens >= cached;
   const uncachedInput = inputIncludesCache ? Math.max(0, usage.inputTokens - cached) : usage.inputTokens;
-  return { uncachedInput, cached, total: Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens) };
+  // Entries logged before the read/write split count all cached tokens as reads.
+  const cacheRead = usage.cacheReadInputTokens
+    ?? (usage.cacheCreationInputTokens != null ? Math.max(0, cached - usage.cacheCreationInputTokens) : cached);
+  const cacheCreation = usage.cacheCreationInputTokens ?? Math.max(0, cached - cacheRead);
+  return { uncachedInput, cached, cacheRead, cacheCreation, total: Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens) };
 }
 
 function providerTokenTotal(usage: ProviderTokenUsage): number {
@@ -878,7 +884,9 @@ function threadUsageRowDetail(row: ThreadUsageModel): string {
   if (row.failed > 0) parts.push(`실패 ${row.failed}회`);
   if (row.completed > 0 && row.durationMs > 0) parts.push(`평균 ${formatDurationShort(row.durationMs / row.completed)}`);
   if (row.inputTokens > 0 || row.outputTokens > 0) parts.push(`입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`);
-  if (row.cachedInputTokens > 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
+  if (row.cacheCreationTokens > 0) parts.push(`캐시 생성 ${compactTokenCount(row.cacheCreationTokens)}`);
+  if (row.cacheReadTokens > 0) parts.push(`캐시 재사용 ${compactTokenCount(row.cacheReadTokens)}`);
+  else if (row.cachedInputTokens > 0 && row.cacheCreationTokens === 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
   return parts.join(" · ");
 }
 
@@ -898,6 +906,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       inputTokens: 0,
       outputTokens: 0,
       cachedInputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
       reasoningOutputTokens: 0,
       totalTokens: 0,
       durationMs: 0,
@@ -913,6 +923,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       row.inputTokens += usageBreakdown.uncachedInput;
       row.outputTokens += entry.usage.outputTokens;
       row.cachedInputTokens += usageBreakdown.cached;
+      row.cacheReadTokens += usageBreakdown.cacheRead;
+      row.cacheCreationTokens += usageBreakdown.cacheCreation;
       row.reasoningOutputTokens += entry.usage.reasoningOutputTokens ?? 0;
       row.totalTokens += providerTokenTotal(entry.usage);
       const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
