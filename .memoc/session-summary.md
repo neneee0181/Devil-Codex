@@ -14,14 +14,15 @@ Last: 2026-07-05T21:30:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- Claude-mode "token heavy vs stock CLI" diagnosed: API usage at parity; display counted cache reads at full weight.
+- Claude-mode token issue closed: accounting split (`6690e01`) + persistent per-thread Claude process (`291f7b8`).
 
 ## Changed
-- Cache read/creation split through claude-runtime → contracts → pricing → usage UI ("실사용 토큰" headline). Commit `6690e01`.
+- Turns stream into one live SDK query per thread; hooks fire once, cache stays warm. Stop/mode-change/10min-idle dispose then resume.
+- User kept per-turn directives + devil MCP tools (intentional).
 
 ## Open Tasks
-- Optional trims: per-turn Ask-user/English directive dedup; SessionStart hook refire on per-turn resume.
+- Manual in-app check: multi-turn Claude chat, stop button, model switch mid-thread.
 - v0.1.40 manual checks from previous session still pending.
 
 ## Resume
-- Passed: tsc noEmit (both), build.
+- Passed: tsc noEmit (both), build, runtime smoke (2-turn reuse).
