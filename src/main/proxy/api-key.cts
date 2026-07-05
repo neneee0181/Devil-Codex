@@ -260,7 +260,7 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
           return;
         }
         const u = data.usage as Record<string, number> | undefined;
-        if (u) usage = { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0 };
+        if (u) usage = openAiCompatibleUsage(u);
         const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
         const delta = choice?.delta as Record<string, unknown> | undefined;
         if (delta) {
@@ -311,7 +311,22 @@ async function* parseOpenAiCompatibleJson(providerLabel: string, response: Respo
     }
   }
   const usage = data.usage as Record<string, number> | undefined;
-  yield { type: "done", usage: usage ? { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } : undefined };
+  yield { type: "done", usage: usage ? openAiCompatibleUsage(usage) : undefined };
+}
+
+// OpenAI-compatible providers report cache hits in different fields:
+// prompt_tokens_details.cached_tokens (OpenAI-style) or prompt_cache_hit_tokens
+// (DeepSeek). Without this, proxied turns show cached=0 and Devil's usage/cost
+// summaries price the whole prompt at the uncached input rate.
+function openAiCompatibleUsage(u: Record<string, unknown>): { inputTokens: number; outputTokens: number; cachedInputTokens?: number } {
+  const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
+  const cached = num(details?.cached_tokens) || num(u.prompt_cache_hit_tokens);
+  return {
+    inputTokens: num(u.prompt_tokens),
+    outputTokens: num(u.completion_tokens),
+    ...(cached ? { cachedInputTokens: cached } : {}),
+  };
 }
 
 export async function* streamGoogle(response: Response, options: { label?: string; unwrapResponse?: boolean } = {}): AsyncGenerator<AdapterEvent> {

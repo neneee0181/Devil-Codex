@@ -124,8 +124,16 @@ export async function* streamCopilot(response: Response): AsyncGenerator<Adapter
           yield { type: "error", status: 502, errorType: err.type ?? "upstream_error", message: `GitHub Copilot 스트림 오류: ${err.message ?? err.code ?? "알 수 없는 오류"}` };
           return;
         }
-        const u = data.usage as Record<string, number> | undefined;
-        if (u) usage = { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0 };
+        const u = data.usage as Record<string, unknown> | undefined;
+        if (u) {
+          const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
+          const cached = typeof details?.cached_tokens === "number" && details.cached_tokens > 0 ? details.cached_tokens : undefined;
+          usage = {
+            inputTokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0,
+            outputTokens: typeof u.completion_tokens === "number" ? u.completion_tokens : 0,
+            ...(cached ? { cachedInputTokens: cached } : {}),
+          };
+        }
         const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
         if (!choice) continue;
         const delta = choice.delta as Record<string, unknown> | undefined;
