@@ -14,11 +14,10 @@ Last: 2026-07-05T21:30:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- Claude-mode token issue closed: accounting split (`6690e01`) + persistent per-thread Claude process (`291f7b8`).
+- Token audit done both modes. Claude: accounting split (`6690e01`) + persistent process (`291f7b8`). Codex: verified parity with stock (91.6% vs 92.6% cached), no leak.
 
 ## Changed
-- Turns stream into one live SDK query per thread; hooks fire once, cache stays warm. Stop/mode-change/10min-idle dispose then resume.
-- User kept per-turn directives + devil MCP tools (intentional).
+- Proxy adapters now map cache-hit fields (DeepSeek/Copilot) so proxied turns stop showing cached=0 (`7ef7cd6`).
 
 ## Open Tasks
 - Manual in-app check: multi-turn Claude chat, stop button, model switch mid-thread.
