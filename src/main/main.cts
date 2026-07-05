@@ -2314,6 +2314,7 @@ app.on("before-quit", () => {
   trayRef?.destroy();
   trayRef = undefined;
   appServer?.dispose();
+  claudeRuntime.disposeAllInstances();
   for (const instance of threadServers.values()) instance.dispose();
   threadServers.clear();
   threadServerLastUsed.clear();

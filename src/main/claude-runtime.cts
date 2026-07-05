@@ -14,11 +14,17 @@ type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
   initializationResult?: () => Promise<{ commands?: unknown[] }>;
   supportedCommands?: () => Promise<unknown[]>;
   getContextUsage?: () => Promise<unknown>;
+  setModel?: (model?: string) => Promise<void>;
 };
 type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
 export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; totalTokens: number };
 
 const CLAUDE_CONTEXT_USAGE_TIMEOUT_MS = 1500;
+// Keep an idle Claude Code process alive briefly so follow-up turns reuse the
+// same session process (no SessionStart hook re-fire, warm prompt cache). The
+// Anthropic prompt cache TTL is 5 minutes; past ~10 minutes a fresh resume
+// costs the same, so reap the process to free memory.
+const CLAUDE_INSTANCE_IDLE_MS = 10 * 60_000;
 
 type TurnContext = {
   threadId: string;
@@ -403,6 +409,25 @@ function compactDetail(meta: Record<string, unknown>): string {
   return parts.join(" · ");
 }
 
+type ActiveTurn = { context: TurnContext; resolve: () => void; reject: (error: unknown) => void };
+
+// One live Claude Code process per Devil thread. Later turns stream into the
+// same process instead of respawning per turn, matching the stock CLI's
+// single-process conversation: SessionStart hooks fire once, the prompt-cache
+// prefix stays warm, and turn startup skips process/MCP re-init.
+type ThreadInstance = {
+  fingerprint: string;
+  request: ClaudeSdkQuery;
+  push: (message: ClaudeSdkUserMessage) => void;
+  end: () => void;
+  abortController: AbortController;
+  model: string;
+  sessionId?: string;
+  currentTurn?: ActiveTurn;
+  idleTimer?: NodeJS.Timeout;
+  disposed: boolean;
+};
+
 type PermissionResultLike =
   | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: unknown[] }
   | { behavior: "deny"; message: string; interrupt?: boolean };
@@ -413,6 +438,7 @@ type OnAskUserQuestionToolLike = (input: Record<string, unknown>, options: { sig
 
 export class ClaudeCodeRuntime extends EventEmitter {
   private active = new Map<string, AbortController>();
+  private instances = new Map<string, ThreadInstance>();
   private toolRuns = new Map<string, { threadId: string; name: string; kind: "command" | "tool" | "fileChange"; summary: string; path?: string }>();
   private pendingApprovals = new Map<string, { threadId: string; resolve: (decision: ApprovalDecision) => void }>();
 
@@ -497,14 +523,11 @@ export class ClaudeCodeRuntime extends EventEmitter {
     let nativeSessionId = input.nativeSessionId;
     let usageSnapshot: TurnUsageSnapshot | undefined;
     let sdkContextUsage: ContextUsage | undefined;
-    const abortController = new AbortController();
     const mode = permissionMode(input.approvalPolicy, input.sandboxMode);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
 
     const content = userMessageContent(input.text, input.attachments);
-    const messages = (async function* (): AsyncGenerator<ClaudeSdkUserMessage> {
-      yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
-    })();
+    const instance = await this.obtainInstance(input, mode);
     const context: TurnContext = {
       threadId: input.threadId,
       turnId,
@@ -513,44 +536,24 @@ export class ClaudeCodeRuntime extends EventEmitter {
       onFinalText: (text) => { finalText = text; },
       onSessionId: (sessionId) => {
         normalizeClaudeSessionEntrypointSoon(input.cwd, sessionId);
+        instance.sessionId = sessionId;
         if (sessionId === nativeSessionId) return;
         nativeSessionId = sessionId;
         input.onSessionId?.(sessionId);
       },
       onUsage: (snapshot) => { usageSnapshot = snapshot; },
     };
-    this.active.set(input.threadId, abortController);
+    this.active.set(input.threadId, instance.abortController);
     const run = (async () => {
-      const { query } = await claudeSdk();
-      const pathToClaudeCodeExecutable = claudeCodeExecutable();
-      const options: ClaudeSdkOptions = {
-        cwd: input.cwd,
-        model: input.model,
-        ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
-        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
-        abortController,
-        includePartialMessages: true,
-        settings: claudeCodeSettings(),
-        permissionMode: mode,
-        allowDangerouslySkipPermissions: mode === "bypassPermissions",
-        ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, turnId, input.onAskUserQuestionTool) }),
-        ...(input.onUserDialog && input.supportedDialogKinds?.length ? {
-          onUserDialog: input.onUserDialog,
-          supportedDialogKinds: input.supportedDialogKinds,
-          toolConfig: { askUserQuestion: { previewFormat: "markdown" } },
-        } : {}),
-        mcpServers: parseMcpServers(input.mcpConfig),
-        // Resume an existing native Claude session when it is already on disk.
-        // For a brand-new Devil thread, reserve the same UUID as Claude's
-        // sessionId so creation/sync behaves like Codex's native thread id.
-        ...(input.resume && input.nativeSessionId ? { resume: input.nativeSessionId } : input.nativeSessionId ? { sessionId: input.nativeSessionId } : {}),
-      };
-      const request = query({ prompt: messages, options });
-      for await (const message of request) {
-        this.handleSdkMessage(message, context);
-        if (message.type === "result") sdkContextUsage = await sdkCurrentContextUsage(request) ?? sdkContextUsage;
-      }
-      sdkContextUsage = sdkContextUsage ?? await sdkCurrentContextUsage(request);
+      await new Promise<void>((resolve, reject) => {
+        if (instance.disposed) {
+          reject(new Error("Claude Code 세션 프로세스가 종료되었습니다."));
+          return;
+        }
+        instance.currentTurn = { context, resolve, reject };
+        instance.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null });
+      });
+      if (!instance.disposed) sdkContextUsage = await sdkCurrentContextUsage(instance.request);
     })();
 
     const result = await run.then(async () => {
@@ -611,6 +614,8 @@ export class ClaudeCodeRuntime extends EventEmitter {
           pending.resolve("cancel");
         }
       }
+      instance.currentTurn = undefined;
+      this.scheduleIdleReap(input.threadId, instance);
     });
     return result;
   }
@@ -619,8 +624,162 @@ export class ClaudeCodeRuntime extends EventEmitter {
     const controller = this.active.get(input.threadId);
     if (!controller) return false;
     this.active.delete(input.threadId);
-    controller.abort();
+    // Stopping aborts the whole process (the pump rejects the pending turn and
+    // the catch path reports "interrupted"). The next turn resumes the same
+    // native session in a fresh process, matching pre-persistent behavior.
+    const instance = this.instances.get(input.threadId);
+    if (instance) this.disposeInstance(input.threadId, instance, { abort: true });
+    else controller.abort();
     return true;
+  }
+
+  disposeAllInstances(): void {
+    for (const [threadId, instance] of [...this.instances]) this.disposeInstance(threadId, instance, { abort: true });
+  }
+
+  private instanceFingerprint(input: { cwd: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string): string {
+    return JSON.stringify([input.cwd, input.mcpConfig ?? "", mode, input.supportedDialogKinds ?? [], Boolean(input.onUserDialog), Boolean(input.onAskUserQuestionTool)]);
+  }
+
+  // Reuse the thread's live process when its launch config still matches.
+  // Model changes go through the SDK's setModel control request; permission
+  // mode or MCP config changes need a fresh process (those are fixed at
+  // spawn), which resumes the same native session.
+  private async obtainInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string): Promise<ThreadInstance> {
+    const fingerprint = this.instanceFingerprint(input, mode);
+    const existing = this.instances.get(input.threadId);
+    if (existing && !existing.disposed && existing.fingerprint === fingerprint) {
+      if (existing.idleTimer) {
+        clearTimeout(existing.idleTimer);
+        existing.idleTimer = undefined;
+      }
+      if (existing.model !== input.model) {
+        if (typeof existing.request.setModel === "function") {
+          try {
+            await existing.request.setModel(input.model);
+            existing.model = input.model;
+          } catch {
+            this.disposeInstance(input.threadId, existing, { abort: true });
+          }
+        } else {
+          this.disposeInstance(input.threadId, existing, { abort: true });
+        }
+      }
+      if (!existing.disposed) return existing;
+    } else if (existing) {
+      this.disposeInstance(input.threadId, existing, { abort: true });
+    }
+    return this.createInstance(input, mode, fingerprint, existing?.sessionId);
+  }
+
+  private async createInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string, fingerprint: string, knownSessionId?: string): Promise<ThreadInstance> {
+    const { query } = await claudeSdk();
+    const pathToClaudeCodeExecutable = claudeCodeExecutable();
+    const abortController = new AbortController();
+    const queue: ClaudeSdkUserMessage[] = [];
+    let notify: (() => void) | undefined;
+    let ended = false;
+    const messages = (async function* (): AsyncGenerator<ClaudeSdkUserMessage> {
+      while (!ended) {
+        while (queue.length) yield queue.shift()!;
+        if (ended) break;
+        await new Promise<void>((resolve) => { notify = resolve; });
+      }
+    })();
+    const wake = (): void => {
+      const pending = notify;
+      notify = undefined;
+      pending?.();
+    };
+    const instance: ThreadInstance = {
+      fingerprint,
+      request: undefined as unknown as ClaudeSdkQuery,
+      push: (message) => { queue.push(message); wake(); },
+      end: () => { ended = true; wake(); },
+      abortController,
+      model: input.model,
+      sessionId: knownSessionId ?? input.nativeSessionId,
+      disposed: false,
+    };
+    const resumeSessionId = knownSessionId ?? input.nativeSessionId;
+    const options: ClaudeSdkOptions = {
+      cwd: input.cwd,
+      model: input.model,
+      ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+      env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
+      abortController,
+      includePartialMessages: true,
+      settings: claudeCodeSettings(),
+      permissionMode: mode,
+      allowDangerouslySkipPermissions: mode === "bypassPermissions",
+      ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, () => instance.currentTurn?.context.turnId ?? "", input.onAskUserQuestionTool) }),
+      ...(input.onUserDialog && input.supportedDialogKinds?.length ? {
+        onUserDialog: input.onUserDialog,
+        supportedDialogKinds: input.supportedDialogKinds,
+        toolConfig: { askUserQuestion: { previewFormat: "markdown" } },
+      } : {}),
+      mcpServers: parseMcpServers(input.mcpConfig),
+      // Resume an existing native Claude session when it is already on disk.
+      // For a brand-new Devil thread, reserve the same UUID as Claude's
+      // sessionId so creation/sync behaves like Codex's native thread id.
+      ...(input.resume && resumeSessionId ? { resume: resumeSessionId } : input.nativeSessionId ? { sessionId: input.nativeSessionId } : {}),
+    };
+    instance.request = query({ prompt: messages, options });
+    this.instances.set(input.threadId, instance);
+    void this.pumpInstance(input.threadId, instance);
+    return instance;
+  }
+
+  // Single reader for the instance's lifetime: routes SDK messages to the
+  // in-flight turn and completes it on the per-turn "result" message.
+  private async pumpInstance(threadId: string, instance: ThreadInstance): Promise<void> {
+    try {
+      for await (const message of instance.request) {
+        const turn = instance.currentTurn;
+        if (!turn) {
+          const sessionId = "session_id" in message && typeof message.session_id === "string" ? message.session_id : undefined;
+          if (sessionId) instance.sessionId = sessionId;
+          continue;
+        }
+        this.handleSdkMessage(message, turn.context);
+        if (message.type === "result") {
+          instance.currentTurn = undefined;
+          turn.resolve();
+        }
+      }
+      instance.currentTurn?.reject(new Error("Claude Code 프로세스가 예기치 않게 종료되었습니다."));
+    } catch (error) {
+      const turn = instance.currentTurn;
+      instance.currentTurn = undefined;
+      turn?.reject(error);
+    } finally {
+      this.disposeInstance(threadId, instance, { abort: true });
+    }
+  }
+
+  private disposeInstance(threadId: string, instance: ThreadInstance, opts: { abort: boolean }): void {
+    if (this.instances.get(threadId) === instance) this.instances.delete(threadId);
+    if (instance.disposed) return;
+    instance.disposed = true;
+    if (instance.idleTimer) {
+      clearTimeout(instance.idleTimer);
+      instance.idleTimer = undefined;
+    }
+    instance.end();
+    if (opts.abort) instance.abortController.abort();
+    const turn = instance.currentTurn;
+    instance.currentTurn = undefined;
+    turn?.reject(new Error("Claude Code 세션 프로세스가 종료되었습니다."));
+  }
+
+  private scheduleIdleReap(threadId: string, instance: ThreadInstance): void {
+    if (instance.disposed || instance.currentTurn) return;
+    if (instance.idleTimer) clearTimeout(instance.idleTimer);
+    const timer = setTimeout(() => {
+      if (!instance.currentTurn) this.disposeInstance(threadId, instance, { abort: true });
+    }, CLAUDE_INSTANCE_IDLE_MS);
+    timer.unref?.();
+    instance.idleTimer = timer;
   }
 
   // Answer a pending canUseTool prompt. Returns false when the request id is
@@ -636,7 +795,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
   // Claude Code decides when a tool needs permission; Devil supplies the
   // answer UI. Emits the same requestApproval events the Codex app-server
   // uses, so the renderer reuses the existing approval dialog unchanged.
-  private canUseToolBridge(threadId: string, turnId: string, onAskUserQuestionTool?: OnAskUserQuestionToolLike): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
+  private canUseToolBridge(threadId: string, turnId: () => string, onAskUserQuestionTool?: OnAskUserQuestionToolLike): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
     return (toolName, input, options) => new Promise<PermissionResultLike>((resolve) => {
       if (toolName === "AskUserQuestion" && onAskUserQuestionTool) {
         void onAskUserQuestionTool(input, { signal: options.signal })
@@ -671,7 +830,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
         requestId,
         params: {
           threadId,
-          turnId,
+          turnId: turnId(),
           itemId: requestId,
           command: isCommand ? summary : `${toolName}: ${summary}`,
           ...(changedPath ? { grantRoot: changedPath } : {}),
