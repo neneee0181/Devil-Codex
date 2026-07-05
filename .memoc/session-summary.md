@@ -3,26 +3,26 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-07-04T08:44:44
-updated: 2026-07-05T22:23:00
+updated: 2026-07-05T22:45:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-05T22:23:00+09:00
+Last: 2026-07-05T22:45:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.1.42 prep: Codex provider quota parser fixed for Settings/account usage.
+- v0.1.43 prep: terminal startup crash fixed for right/bottom tabs.
 
 ## Changed
-- `provider-usage.cts` now prefers official `rate_limit.primary_window`/`secondary_window` and avoids mixing monthly/additional quota candidates into 5h/7d rows.
-- Version bumped to `0.1.42`.
+- `terminal-manager.cts` now falls through auto shell candidates, catches fallback spawn errors, and uses a safe cwd when a new-thread project path is missing.
+- Version bumped to `0.1.43`.
 
 ## Open Tasks
 - Manual in-app check: multi-turn Claude chat, stop button, model switch mid-thread.
-- User-side installed-app check: Settings/account usage should no longer show 5시간 as 100% used when API reports low usage.
+- User-side installed-app check: right/bottom terminal on a project new thread should not show a main-process JS error.
 
 ## Resume
-- Passed: `npm run build:main`, `npm run build:renderer`, parser fixture, live Codex usage smoke.
+- Passed: `npm run build:main`, `npm run build:renderer`, `git diff --check`. Direct Node smoke created sessions but ConPTY helper did not exit cleanly outside Electron.

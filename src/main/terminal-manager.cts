@@ -94,6 +94,24 @@ function resolveShell(requested: TerminalShellId | undefined, cwd: string): Reso
   return { id: "cmd", label: profile.label, command: profile.path ?? "cmd.exe", args: [], cwd };
 }
 
+function resolveShellCandidates(requested: TerminalShellId | undefined, cwd: string): ResolvedShell[] {
+  if (process.platform !== "win32") return [resolveShell(requested, cwd)];
+  const requestedShell = resolveShell(requested, cwd);
+  if (requested && requested !== "auto") {
+    const fallback = requestedShell.id === "cmd" ? [] : [resolveShell("cmd", cwd)];
+    return [requestedShell, ...fallback];
+  }
+  const profiles = availableShellProfiles();
+  const candidates: ResolvedShell[] = [];
+  for (const id of ["wsl", "git-bash", "pwsh", "powershell", "cmd"] as TerminalShellId[]) {
+    const profile = profiles.find((item) => item.id === id && item.available && item.path);
+    if (!profile && id !== "cmd") continue;
+    const shell = resolveShell(id, cwd);
+    if (!candidates.some((item) => item.id === shell.id && item.command === shell.command)) candidates.push(shell);
+  }
+  return candidates.length ? candidates : [requestedShell];
+}
+
 export class TerminalManager {
   private sessions = new Map<string, TerminalRecord>();
   private keyedSessions = new Map<string, string>();
@@ -104,8 +122,11 @@ export class TerminalManager {
   profiles(): TerminalShellProfile[] { return availableShellProfiles(); }
 
   create(cwd: string, cols = 100, rows = 24, key?: string, shellId?: TerminalShellId): TerminalSession {
-    const terminalCwd = cwd || process.cwd();
-    const shell = resolveShell(shellId, terminalCwd);
+    const requestedCwd = cwd || process.cwd();
+    const missingCwd = !existsSync(requestedCwd);
+    const terminalCwd = missingCwd ? process.cwd() : requestedCwd;
+    const shells = resolveShellCandidates(shellId, terminalCwd);
+    let shell = shells[0]!;
     const existingId = key ? this.keyedSessions.get(key) : undefined;
     const existing = existingId ? this.sessions.get(existingId) : undefined;
     if (existing && existing.meta.shellId === shell.id) {
@@ -122,7 +143,18 @@ export class TerminalManager {
       this.emit({ id, data });
     };
     try {
-      const native = pty.spawn(shell.command, shell.args, { name: "xterm-256color", cwd: shell.cwd, cols, rows, env: process.env as Record<string, string> });
+      let native: pty.IPty | undefined;
+      const errors: string[] = [];
+      for (const candidate of shells) {
+        try {
+          native = pty.spawn(candidate.command, candidate.args, { name: "xterm-256color", cwd: candidate.cwd, cols, rows, env: process.env as Record<string, string> });
+          shell = candidate;
+          break;
+        } catch (error) {
+          errors.push(`${candidate.label}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (!native) throw new Error(errors.join(" | ") || "PTY spawn failed");
       native.onData(append);
       native.onExit(() => this.deleteSession(id));
       processRef = {
@@ -130,19 +162,31 @@ export class TerminalManager {
         resize: (nextCols, nextRows) => native.resize(Math.max(2, nextCols), Math.max(2, nextRows)),
         kill: () => native.kill(),
       };
-    } catch {
+    } catch (ptyError) {
       fallback = true;
-      const child = spawn(shell.command, shell.args.length ? shell.args : ["-i"], { cwd: terminalCwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
-      child.stdout.on("data", (data: Buffer) => append(data.toString()));
-      child.stderr.on("data", (data: Buffer) => append(data.toString()));
-      child.on("exit", () => this.deleteSession(id));
-      processRef = {
-        write: (data) => child.stdin.write(data.replace(/\r/g, "\n")),
-        resize: () => undefined,
-        kill: () => child.kill(),
-      };
-      append("\u001b[33mPTY를 사용할 수 없어 호환 shell 모드로 실행합니다.\u001b[0m\r\n");
+      shell = shells.find((candidate) => candidate.id === "cmd") ?? shell;
+      try {
+        const child = spawn(shell.command, shell.args.length ? shell.args : ["-i"], { cwd: terminalCwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+        child.stdout.on("data", (data: Buffer) => append(data.toString()));
+        child.stderr.on("data", (data: Buffer) => append(data.toString()));
+        child.on("error", (error) => {
+          append(`\u001b[31m터미널 shell을 시작하지 못했습니다: ${error.message}\u001b[0m\r\n`);
+          this.deleteSession(id);
+        });
+        child.on("exit", () => this.deleteSession(id));
+        processRef = {
+          write: (data) => { if (!child.stdin.destroyed) child.stdin.write(data.replace(/\r/g, "\n")); },
+          resize: () => undefined,
+          kill: () => child.kill(),
+        };
+      } catch (error) {
+        append(`\u001b[31m터미널 shell을 시작하지 못했습니다: ${error instanceof Error ? error.message : String(error)}\u001b[0m\r\n`);
+        this.deleteSession(id);
+        processRef = { write: () => undefined, resize: () => undefined, kill: () => undefined };
+      }
+      append(`\u001b[33mPTY를 사용할 수 없어 호환 shell 모드로 실행합니다.${ptyError instanceof Error ? ` (${ptyError.message})` : ""}\u001b[0m\r\n`);
     }
+    if (missingCwd) append(`\u001b[33m요청한 프로젝트 경로를 찾을 수 없어 ${terminalCwd}에서 터미널을 열었습니다: ${requestedCwd}\u001b[0m\r\n`);
     const meta = { id, cwd: terminalCwd, shell: shell.command, fallback, shellId: shell.id, shellLabel: shell.label };
     this.sessions.set(id, { ...processRef, meta, buffer: "", key });
     if (key) this.keyedSessions.set(key, id);
