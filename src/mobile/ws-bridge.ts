@@ -5,6 +5,7 @@ export type RemoteCallChannel =
   | "thread:read"
   | "thread:create"
   | "thread:resume"
+  | "thread:meta:update"
   | "thread:projects"
   | "thread:search"
   | "thread:queue:get"
@@ -67,6 +68,7 @@ const allowedChannels = new Set<RemoteCallChannel>([
   "thread:read",
   "thread:create",
   "thread:resume",
+  "thread:meta:update",
   "thread:projects",
   "thread:search",
   "thread:queue:get",

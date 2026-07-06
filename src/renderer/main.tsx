@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -352,7 +352,7 @@ function storedAgentRuntime(): AgentRuntimeId {
 }
 
 function storedClaudeModel(): string {
-  return localStorage.getItem(CLAUDE_MODEL_KEY) || "sonnet";
+  return localStorage.getItem(CLAUDE_MODEL_KEY) || "claude-sonnet-5";
 }
 
 function storedClaudeProvider(): ProviderId {
@@ -971,7 +971,7 @@ function App(): React.JSX.Element {
   const providers = useProviders();
   const codexSettings = useCodexSettings();
   const englishOutput = Boolean(codexSettings.settings?.englishOutput);
-  const model = providers.settings?.model ?? "gpt-5.4";
+  const model = providers.settings?.model ?? "gpt-5.5";
   const accountId = providers.settings?.accountId;
   const [claudeModel, setClaudeModelState] = useState(() => storedClaudeModel());
   const [claudeProviderId, setClaudeProviderIdState] = useState<ProviderId>(() => storedClaudeProvider());
@@ -1050,6 +1050,16 @@ function App(): React.JSX.Element {
     if (composerConfigKey) {
       rememberComposerConfig(composerConfigKey, { runtime: composerRuntime, provider: next.provider, accountId: next.accountId, model: next.model });
       setThread((current) => current ? { ...current, runtime: composerRuntime, provider: next.provider, accountId: next.accountId, model: next.model } : current);
+      if (thread?.id) {
+        void window.devilCodex.updateThreadMeta({
+          id: thread.id,
+          cwd: thread.cwd,
+          runtime: composerRuntime,
+          provider: next.provider,
+          accountId: next.accountId,
+          model: next.model,
+        }).catch((error) => console.warn("[devil-codex] thread model sync failed", error));
+      }
       return;
     }
     if (composerRuntime === "claude-code") {
@@ -1379,6 +1389,17 @@ function App(): React.JSX.Element {
       disposeChanged();
       disposeCommand();
     };
+  }, []);
+
+  useEffect(() => {
+    const dispose = window.devilCodex.onThreadMetaChanged((meta: ThreadMetaUpdate) => {
+      if (!meta.id) return;
+      const apply = <T extends ThreadRef | ThreadSummary>(item: T): T => item.id === meta.id ? { ...item, ...meta } : item;
+      setThread((current) => current?.id === meta.id ? apply(current) : current);
+      setThreads((current) => current.map(apply));
+      setProjects((current) => current.map((group) => ({ ...group, threads: group.threads.map(apply) })));
+    });
+    return dispose;
   }, []);
 
   useEffect(() => {
@@ -1773,7 +1794,7 @@ function App(): React.JSX.Element {
   const sideConversationAccountId = sideConversationProvider === "codex" ? undefined : composerAccountId;
   const sideConversationModel = sideConversationRuntime === "claude-code"
     ? composerModel
-    : providers.settings?.provider === "codex" ? model : "gpt-5.4";
+    : providers.settings?.provider === "codex" ? model : "gpt-5.5";
   const sideConversationProviders = sideConversationRuntime === "claude-code" ? composerProviders : providers.settings?.providers ?? [];
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
@@ -2974,7 +2995,7 @@ function App(): React.JSX.Element {
     const targetProvider: ProviderId = targetRuntime === "claude-code" ? "claude-code" : "codex";
     const targetModel = targetRuntime === "claude-code"
       ? claudeModel
-      : providers.settings?.provider === "codex" ? model : "gpt-5.4";
+      : providers.settings?.provider === "codex" ? model : "gpt-5.5";
     const now = Math.floor(Date.now() / 1000);
     const sharedTitle = `공유: ${activeSummary.title || "새 채팅"}`;
     const marker: ThreadHistoryItem = {
@@ -3214,7 +3235,7 @@ function App(): React.JSX.Element {
 
   function startAutomationChat(prompt: string): void {
     const codexProvider = providers.settings?.providers.find((item) => item.id === "codex");
-    const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.4";
+    const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.5";
     void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
   }
 

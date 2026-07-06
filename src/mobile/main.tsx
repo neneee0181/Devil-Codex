@@ -51,6 +51,7 @@ import type {
   RuntimeStatus,
   ThreadHistoryItem,
   ThreadAttachment,
+  ThreadMetaUpdate,
   ThreadRef,
   ThreadSummary,
   TurnSendInput,
@@ -200,6 +201,18 @@ function latestHistoryChoice(history: ThreadHistoryItem[]): ModelChoice | null {
   return model ? { model, provider, accountId } : null;
 }
 
+function mergeThreadHistory(remote: ThreadHistoryItem[], local: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  if (!local.length) return remote;
+  const remoteIds = new Set(remote.map((item) => item.id));
+  const remoteUserTexts = new Set(remote.filter((item) => item.kind === "user").map((item) => item.text.trim()));
+  const carry = local.filter((item) => {
+    if (remoteIds.has(item.id)) return false;
+    if (item.kind === "user" && remoteUserTexts.has(item.text.trim())) return false;
+    return item.kind === "user" || item.kind === "activity" || item.status === "inProgress";
+  });
+  return carry.length ? [...remote, ...carry] : remote;
+}
+
 function attachmentPreview(item: ThreadAttachment): string | null {
   if (item.kind !== "image") return null;
   return item.url || item.content || null;
@@ -294,6 +307,7 @@ function App(): React.JSX.Element {
   const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
+  const currentThreadIdRef = useRef<string | null>(null);
   const appRef = useRef<HTMLDivElement | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const composerWrapRef = useRef<HTMLDivElement | null>(null);
@@ -483,6 +497,10 @@ function App(): React.JSX.Element {
     historyRef.current = threadHistory;
   }, [threadHistory]);
 
+  useEffect(() => {
+    currentThreadIdRef.current = currentThread?.id ?? null;
+  }, [currentThread?.id]);
+
   const availableModels = useMemo<ModelChoice[]>(() => modelOptions(providerSettings, codexModels), [providerSettings, codexModels]);
   const currentThreadChoice = useMemo<ModelChoice | null>(() => {
     if (!currentThread) return null;
@@ -560,6 +578,15 @@ function App(): React.JSX.Element {
       if (!currentThread?.id || state.threadId !== currentThread.id) return;
       setQueuedTurns(Array.isArray(state.queue) ? state.queue : []);
     });
+    const unsubMeta = bridge.subscribe<unknown>("thread:meta-changed", (payload) => {
+      if (!payload || typeof payload !== "object") return;
+      const meta = payload as ThreadMetaUpdate;
+      if (!meta.id) return;
+      const apply = <T extends ThreadSummary | ThreadRef>(item: T): T => item.id === meta.id ? { ...item, ...meta } : item;
+      setProjectSummaries((current) => current.map(apply));
+      setThreadSummaries((current) => current.map(apply));
+      setCurrentThread((current) => current?.id === meta.id ? apply(current) : current);
+    });
     const unsubStatus = bridge.subscribe<unknown>("app-server:status", (payload) => {
       if (payload && typeof payload === "object") {
         const record = payload as Partial<RuntimeStatus>;
@@ -583,6 +610,7 @@ function App(): React.JSX.Element {
       unsubAsk();
       unsubUsage();
       unsubQueue();
+      unsubMeta();
       unsubStatus();
       unsubSettings();
       unsubProviders();
@@ -668,8 +696,9 @@ function App(): React.JSX.Element {
         bridge.call<ThreadHistoryItem[]>("thread:read", { id: threadId, runtime: known?.runtime, accountId: known?.accountId }),
         bridge.call<QueuedTurnView[]>("thread:queue:get", { threadId }).catch(() => []),
       ]);
-      historyRef.current = history;
-      setThreadHistory(history);
+      const nextHistory = currentThreadIdRef.current === threadId ? mergeThreadHistory(history, historyRef.current) : history;
+      historyRef.current = nextHistory;
+      setThreadHistory(nextHistory);
       setQueuedTurns(queue);
     } catch (error) {
       setBootstrapError(String(error));
@@ -786,6 +815,7 @@ function App(): React.JSX.Element {
         await bridge.call<void>("turn:queue:enqueue", { threadId: currentThread.id, entry: { id: optimistic.id, pending, userItem: optimistic } });
         return;
       }
+      setCurrentThread((current) => current?.id === currentThread.id ? { ...current, provider: targetModel.provider ?? meta.provider, model: targetModel.model, accountId: targetModel.accountId ?? meta.accountId } : current);
       const next = [...historyRef.current, optimistic];
       historyRef.current = next;
       setThreadHistory(next);
@@ -1190,7 +1220,19 @@ function App(): React.JSX.Element {
                           <select
                             value={selectedThreadModel ? modelChoiceKey(selectedThreadModel) : ""}
                             onChange={(event) => {
+                              const picked = threadModelChoices.find((item) => modelChoiceKey(item) === event.target.value);
                               setThreadModelKeyState({ key: event.target.value, dirty: true });
+                              if (picked && currentThread) {
+                                setCurrentThread((current) => current?.id === currentThread.id ? { ...current, ...picked } : current);
+                                void bridge.call<void>("thread:meta:update", {
+                                  id: currentThread.id,
+                                  cwd: currentThread.cwd,
+                                  runtime: currentThread.runtime,
+                                  provider: picked.provider,
+                                  accountId: picked.accountId,
+                                  model: picked.model,
+                                }).catch((error) => setBootstrapError(String(error)));
+                              }
                             }}
                           >
                             {threadModelChoices.map((item) => (

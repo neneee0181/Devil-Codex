@@ -40,7 +40,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -277,8 +277,15 @@ const REMOTE_ALLOWED_CHANNELS = new Set<string>([
   "thread:read",
   "thread:create",
   "thread:resume",
+  "thread:meta:update",
   "thread:projects",
   "thread:search",
+  "thread:queue:get",
+  "turn:queue:enqueue",
+  "turn:queue:update",
+  "turn:queue:remove",
+  "turn:queue:steer",
+  "turn:queue:clear",
   "turn:send",
   "turn:interrupt",
   "approval:respond",
@@ -300,6 +307,8 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "ask:request",
   "app-server:status",
   "provider:usage-changed",
+  "thread:meta-changed",
+  "thread:queue-changed",
   "remote:status",
   "settings:changed",
   "provider:auth",
@@ -385,6 +394,7 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapList("thread:projects");
   wrapSingle("thread:read", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:resume", (input) => (input as { id?: string } | undefined)?.id);
+  wrapSingle("thread:meta:update", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:queue:get", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:enqueue", (input) => (input as { threadId?: string; entry?: { pending?: { threadId?: string } } } | undefined)?.threadId ?? (input as { entry?: { pending?: { threadId?: string } } } | undefined)?.entry?.pending?.threadId);
   wrapSingle("turn:queue:update", (input) => (input as { threadId?: string } | undefined)?.threadId);
@@ -627,8 +637,18 @@ async function providerAccountLabel(provider: ProviderId | undefined, accountId:
   return settings?.providers.find((item) => item.id === provider)?.accounts.find((account) => account.id === accountId)?.label;
 }
 
-function annotateCodexSummaries<T extends ThreadSummary>(threads: T[]): T[] {
-  return threads.map((thread) => ({ ...thread, provider: "codex" as const }));
+function annotateCodexSummaries<T extends ThreadSummary>(threads: T[], stored: ThreadSummary[] = []): T[] {
+  const metaById = new Map(stored.map((summary) => [summary.id, summary]));
+  return threads.map((thread) => {
+    const meta = metaById.get(thread.id);
+    return {
+      ...thread,
+      ...(meta?.model ? { model: meta.model } : {}),
+      ...(meta?.runtime ? { runtime: meta.runtime } : {}),
+      provider: (meta?.provider ?? "codex") as ProviderId,
+      ...(meta?.accountId ? { accountId: meta.accountId } : {}),
+    };
+  });
 }
 
 interface SidecarDiagnosticsSnapshot {
@@ -772,6 +792,7 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
 // unaffected.
 function remoteEventThreadId(channel: string, payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
+  if (channel === "thread:meta-changed") return typeof (payload as { id?: unknown }).id === "string" ? String((payload as { id?: unknown }).id) : undefined;
   if (channel === "thread:queue-changed") return typeof (payload as { threadId?: unknown }).threadId === "string" ? String((payload as { threadId?: unknown }).threadId) : undefined;
   const params = (payload as { params?: Record<string, unknown> }).params;
   return typeof params?.threadId === "string" ? params.threadId : undefined;
@@ -2236,7 +2257,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   handle("thread:create", async (input) => {
     const request = input as any;
     if (requestedRuntime(request.runtime) === "claude-code") {
-      const model = request.model || "sonnet";
+      const model = request.model || "claude-sonnet-5";
       const provider = request.provider && request.provider !== "codex" ? request.provider : "claude-code";
       const thread = provider === "claude-code"
         ? claudeRuntime.createThread({ cwd: request.cwd, model })
@@ -2270,7 +2291,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       }
       // API-key providers still use the established local transcript path until
       // their Responses adapters are registered with the local proxy as well.
-      const thread = await instance.createThread({ ...request, model: request.provider && request.provider !== "codex" ? "gpt-5.4" : request.model });
+      const thread = await instance.createThread({ ...request, model: request.provider && request.provider !== "codex" ? "gpt-5.5" : request.model });
       bindThreadServer(thread.id, instance);
       bound = true;
       loadedThreads.add(thread.id);
@@ -2291,9 +2312,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // Devil's own durable index must remain visible in that short window.
     const [codex, external] = await Promise.all([server().listThreads(request).catch(() => []), providerTranscripts.summaries()]);
     const requestedCwd = cwdKey(request.cwd);
-    const extra = filterRuntime(external, "codex").filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (request.archived ?? false));
+    const codexIds = new Set(codex.map((summary) => summary.id));
+    const extra = filterRuntime(external, "codex").filter((summary) => !codexIds.has(summary.id) && cwdKey(summary.cwd) === requestedCwd && summary.archived === (request.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
+    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), external)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
@@ -2315,13 +2337,13 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         .filter((summary) => summary.archived === (request.archived ?? false))
         .filter((summary) => `${summary.title}\n${summary.preview}\n${summary.cwd}`.toLowerCase().includes(query));
     }
-    return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(request)));
+    return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(request), await providerTranscripts.summaries()));
   });
   handle("thread:resume", async (input) => {
     const request = input as any;
     if (requestedRuntime(request.runtime) === "claude-code") {
       const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === request.id);
-      return { ...claudeRuntime.resumeThread({ id: request.id, cwd: meta?.cwd, model: meta?.model || request.model || "sonnet" }), claudeSessionId: meta?.claudeSessionId };
+      return { ...claudeRuntime.resumeThread({ id: request.id, cwd: meta?.cwd, model: meta?.model || request.model || "claude-sonnet-5" }), claudeSessionId: meta?.claudeSessionId };
     }
     if (await providerTranscripts.isExternal(request.id)) {
       const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === request.id);
@@ -2335,6 +2357,21 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const ref = await instance.resumeThread(request);
     loadedThreads.add(request.id);
     return { ...ref, provider: "codex" };
+  });
+  handle("thread:meta:update", async (input) => {
+    const request = input as ThreadMetaUpdate;
+    const id = String(request?.id ?? "");
+    if (!id) return;
+    const meta: ThreadMetaUpdate = {
+      id,
+      ...(request.cwd ? { cwd: request.cwd } : {}),
+      ...(request.model ? { model: request.model } : {}),
+      ...(request.runtime ? { runtime: request.runtime } : {}),
+      ...(request.provider ? { provider: request.provider } : {}),
+      ...(request.accountId ? { accountId: request.accountId } : { accountId: undefined }),
+    };
+    await providerTranscripts.saveMeta(meta);
+    sendToRenderer("thread:meta-changed", meta);
   });
   ipcMain.handle("thread:rename", async (_event, input) => {
     const name = String(input.name ?? "").trim();
@@ -2438,9 +2475,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const runtime = requestedRuntime(request.runtime);
     if (runtime === "claude-code") return filterRuntime(await providerTranscripts.summaries(), "claude-code").filter((summary) => summary.archived === archived);
     const [codex, external] = await Promise.all([server().listProjects(request).catch(() => []), providerTranscripts.summaries()]);
-    const extra = filterRuntime(external, "codex").filter((summary) => summary.archived === archived);
+    const codexIds = new Set(codex.map((summary) => summary.id));
+    const extra = filterRuntime(external, "codex").filter((summary) => !codexIds.has(summary.id) && summary.archived === archived);
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
+    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), external)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
@@ -2565,6 +2603,18 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       text: `${request.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
+    if (!request.subagent && requestedRuntime(request.runtime) !== "claude-code") {
+      const meta: ThreadMetaUpdate = {
+        id: request.threadId,
+        cwd: request.cwd ?? "",
+        model: request.model,
+        runtime: "codex",
+        provider: request.provider ?? "codex",
+        ...(request.accountId ? { accountId: request.accountId } : { accountId: undefined }),
+      };
+      await providerTranscripts.saveMeta(meta);
+      sendToRenderer("thread:meta-changed", meta);
+    }
     if (requestedRuntime(request.runtime) === "claude-code") {
       const existingHistory = await providerTranscripts.read(request.threadId);
       const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === request.threadId);
@@ -2583,7 +2633,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await providerTranscripts.saveMeta({
         id: request.threadId,
         cwd: request.cwd ?? "",
-        model: request.model || "sonnet",
+        model: request.model || "claude-sonnet-5",
         runtime: "claude-code",
         provider,
         accountId: request.accountId,
@@ -2604,7 +2654,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await codexProxy.recordRuntimeRequest({
         id: requestLogId,
         provider,
-        model: request.model || "sonnet",
+        model: request.model || "claude-sonnet-5",
         accountId: request.accountId,
         accountLabel,
         threadId: request.threadId,
@@ -2618,7 +2668,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           threadId: request.threadId,
           cwd: request.cwd,
           text: turnInput.text,
-          model: request.model || "sonnet",
+          model: request.model || "claude-sonnet-5",
           resume: resumeClaudeCode,
           nativeSessionId,
           attachments: request.attachments,
@@ -2637,7 +2687,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           // fails midway can still resume the same Claude session on retry.
           onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: request.threadId, claudeSessionId: sessionId }); },
           onCompleted: (text, completed) => text.trim()
-            ? providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: request.model || "sonnet", accountId: request.accountId })
+            ? providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: request.model || "claude-sonnet-5", accountId: request.accountId })
             : undefined,
         });
         if (result.contextUsage) await providerTranscripts.setTurnContextUsage(request.threadId, result.turnId, result.contextUsage);

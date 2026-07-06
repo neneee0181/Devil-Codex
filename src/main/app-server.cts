@@ -237,7 +237,7 @@ export class CodexAppServer extends EventEmitter {
     return (result.data ?? []).map((thread) => ({
       id: String(thread.id),
       cwd: String(thread.cwd ?? input.cwd),
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       title: threadTitle(thread),
       preview: threadPreview(thread.preview),
       updatedAt: Number(thread.updatedAt ?? 0),
@@ -256,7 +256,7 @@ export class CodexAppServer extends EventEmitter {
     return (result.data ?? []).map((thread) => ({
       id: String(thread.id),
       cwd: String(thread.cwd ?? ""),
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       title: threadTitle(thread),
       preview: threadPreview(thread.preview),
       updatedAt: Number(thread.updatedAt ?? 0),
@@ -281,7 +281,7 @@ export class CodexAppServer extends EventEmitter {
       return [{
         id: String(thread.id),
         cwd: String(thread.cwd ?? ""),
-        model: "gpt-5.4",
+        model: "gpt-5.5",
         title: threadTitle(thread),
         preview: threadPreview(entry.snippet ?? thread.preview),
         updatedAt: Number(thread.updatedAt ?? 0),

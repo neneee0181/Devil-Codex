@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppCommand, DevilCodexApi, RemoteControlStatus, ThreadQueueCommand, ThreadQueueState } from "./contracts.cjs";
+import type { AppCommand, DevilCodexApi, RemoteControlStatus, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState } from "./contracts.cjs";
 
 const api: DevilCodexApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -51,6 +51,7 @@ const api: DevilCodexApi = {
   searchThreads: (input) => ipcRenderer.invoke("thread:search", input),
   resumeThread: (input) => ipcRenderer.invoke("thread:resume", input),
   renameThread: (input) => ipcRenderer.invoke("thread:rename", input),
+  updateThreadMeta: (input) => ipcRenderer.invoke("thread:meta:update", input),
   forkThread: (input) => ipcRenderer.invoke("thread:fork", input),
   compactThread: (input) => ipcRenderer.invoke("thread:compact", input),
   readThread: (input) => ipcRenderer.invoke("thread:read", input),
@@ -166,6 +167,11 @@ const api: DevilCodexApi = {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
     ipcRenderer.on("thread:queue-command", handler);
     return () => ipcRenderer.removeListener("thread:queue-command", handler);
+  },
+  onThreadMetaChanged: (listener: (meta: ThreadMetaUpdate) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("thread:meta-changed", handler);
+    return () => ipcRenderer.removeListener("thread:meta-changed", handler);
   },
   onTerminalData: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

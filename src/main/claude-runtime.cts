@@ -483,7 +483,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       prompt: messages,
       options: {
         cwd: input.cwd ?? this.cwd,
-        model: input.model ?? "sonnet",
+        model: input.model ?? "claude-sonnet-5",
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "cli" },
         abortController,

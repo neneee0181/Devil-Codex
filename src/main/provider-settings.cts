@@ -151,7 +151,7 @@ function antigravityCatalogModels(): ProviderModel[] {
 
 const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">> = [
   { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
-  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
+  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }, { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
   { id: "copilot", label: "GitHub Copilot", kind: "login", authProvider: "copilot", keyRequired: false, models: [
     { id: "gpt-5.5", label: "GPT-5.5" },
     { id: "gpt-5.4", label: "GPT-5.4" },
@@ -216,7 +216,7 @@ const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
 type StoredModelMap = Partial<Record<ProviderId, ProviderInfo["models"]>>;
 type StoredAccountModelMap = Partial<Record<ProviderId, Record<string, ProviderInfo["models"]>>>;
 type PersistedSettings = Pick<ProviderSettings, "provider" | "model"> & { accountId?: string; models?: StoredModelMap; accountModels?: StoredAccountModelMap };
-const defaults: PersistedSettings = { provider: "codex", model: "gpt-5.4" };
+const defaults: PersistedSettings = { provider: "codex", model: "gpt-5.5" };
 
 export class ProviderSettingsStore {
   private root(): string { return join(app.getPath("userData"), "providers"); }

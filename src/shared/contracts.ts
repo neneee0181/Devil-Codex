@@ -319,6 +319,15 @@ export interface ThreadQueueState {
   queue: QueuedTurnView[];
 }
 
+export interface ThreadMetaUpdate {
+  id: string;
+  cwd?: string;
+  model?: string;
+  runtime?: AgentRuntimeId;
+  provider?: ProviderId;
+  accountId?: string;
+}
+
 export type ThreadQueueCommand =
   | { type: "enqueue"; threadId: string; entry: { id: string; pending: TurnSendInput; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean }
   | { type: "update"; threadId: string; id: string; text: string }
@@ -364,6 +373,7 @@ export interface DevilCodexApi {
   searchThreads: (input: { query: string; archived?: boolean; runtime?: AgentRuntimeId }) => Promise<ThreadSummary[]>;
   resumeThread: (input: { id: string; model: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadRef>;
   renameThread: (input: { id: string; name: string; cwd?: string; model?: string; preview?: string }) => Promise<void>;
+  updateThreadMeta: (input: ThreadMetaUpdate) => Promise<void>;
   forkThread: (input: { id: string; cwd: string; model: string }) => Promise<ThreadRef>;
   compactThread: (input: { id: string; cwd?: string; model: string; accountId?: string }) => Promise<void>;
   readThread: (input: { id: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadHistoryItem[]>;
@@ -453,5 +463,6 @@ export interface DevilCodexApi {
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;
   onThreadQueueChanged: (listener: (state: ThreadQueueState) => void) => () => void;
   onThreadQueueCommand: (listener: (command: ThreadQueueCommand) => void) => () => void;
+  onThreadMetaChanged: (listener: (meta: ThreadMetaUpdate) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;
 }
