@@ -31,6 +31,7 @@ const defaults: Config = {
 };
 
 const REMOTE_INSTALL_URL = "https://tailscale.com/download";
+const TAILSCALE_ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns";
 
 const groups = [
   { label: "설정", items: [["구성", TerminalSquare], ["연결", Globe2], ["알림", Bell], ["사용량 및 청구", CreditCard]] },
@@ -134,7 +135,34 @@ function RemoteControlSection(): React.JSX.Element {
 
   const tailscaleMessage = status?.tailscale.error
     ?? (!status?.tailscale.installed ? "Tailscale이 설치되어 있지 않습니다." : !status?.tailscale.loggedIn ? "Tailscale 로그인 또는 연결이 필요합니다." : null);
+  const remoteErrorMessage = error ?? status?.error ?? tailscaleMessage;
+  const needsHttpsCertificateHelp = /does not support getting TLS certs|https|tls cert|certificate/i.test(remoteErrorMessage ?? "");
   const disabled = state === "loading" || action !== null;
+  const handleModeChange = async (value: string): Promise<void> => {
+    const nextMode = value as RemoteControlMode;
+    if (nextMode === selectedMode) return;
+    if (!status?.enabled) {
+      setSelectedMode(nextMode);
+      return;
+    }
+
+    const previousMode = status.mode;
+    setSelectedMode(nextMode);
+    setAction("enable");
+    setError(null);
+    try {
+      const next = await window.devilCodex.remoteEnable({ mode: nextMode });
+      setStatus(next);
+      setSelectedMode(next.mode);
+      setState("ready");
+    } catch (cause) {
+      setSelectedMode(previousMode);
+      setError(toErrorMessage(cause, "원격 제어 작업에 실패했습니다."));
+      setState("error");
+    } finally {
+      setAction(null);
+    }
+  };
 
   return <>
     <div className="setting-card">
@@ -144,8 +172,8 @@ function RemoteControlSection(): React.JSX.Element {
           else void runAction("disable", () => window.devilCodex.remoteDisable());
         }} />
       </Row>
-      <Row title="접속 모드" detail="tailnet은 같은 Tailscale 네트워크 안에서만 열리고, Funnel은 외부 인터넷 공개 URL을 사용합니다.">
-        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={(value) => setSelectedMode(value as RemoteControlMode)} />
+      <Row title="접속 모드" detail="tailnet은 같은 Tailscale 네트워크 안에서만 열리고, Funnel은 외부 인터넷 공개 URL을 사용합니다. 실행 중에 바꾸면 서버와 QR을 새 모드로 다시 준비합니다.">
+        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={(value) => void handleModeChange(value)} disabled={disabled} />
       </Row>
       <Row title="현재 상태" detail="main 프로세스가 반환한 원격 제어 상태를 그대로 보여줍니다.">
         <div style={{ display: "grid", gap: 6, justifyItems: "end", textAlign: "right", minWidth: 220 }}>
@@ -154,17 +182,21 @@ function RemoteControlSection(): React.JSX.Element {
           {status?.tokenPreview && <code style={inlineCodeStyle}>{status.tokenPreview}</code>}
         </div>
       </Row>
-      <Row title="빠른 작업" detail="상태 재확인, 토큰 재발급, Tailscale 설치 페이지 열기를 여기서 처리합니다.">
+      <Row title="빠른 작업" detail="상태 재확인, 토큰 재발급, Tailscale 설치 페이지와 Admin Console HTTPS 설정 열기를 여기서 처리합니다.">
         <div style={actionGroupStyle}>
           <button className="secondary" onClick={() => void reload()} disabled={disabled}>재확인</button>
           <button className="secondary" onClick={() => void runAction("regenerate", () => window.devilCodex.remoteRegenerateToken())} disabled={disabled || !status?.enabled}>토큰 재발급</button>
           <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: REMOTE_INSTALL_URL })}>Tailscale 설치</button>
+          <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: TAILSCALE_ADMIN_DNS_URL })}>HTTPS 설정</button>
         </div>
       </Row>
     </div>
 
     {selectedMode === "funnel" && <p className="section-help" style={{ color: "#d6a86a", marginTop: 12 }}>Funnel은 공개 URL을 만듭니다. QR 또는 URL을 아는 사람은 접속을 시도할 수 있으므로 토큰 재발급과 기기 승인을 함께 사용해야 합니다.</p>}
-    {(error || status?.error || tailscaleMessage) && <p className="section-help" style={{ color: "#ef9a94", marginTop: 12 }}>{error ?? status?.error ?? tailscaleMessage}</p>}
+    {remoteErrorMessage && <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+      <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>{remoteErrorMessage}</p>
+      {needsHttpsCertificateHelp && <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>이 오류는 Tailscale 설치 문제라기보다 Tailscale Admin Console에서 HTTPS Certificates 또는 MagicDNS가 꺼져 있을 때 자주 나타납니다. Admin Console의 DNS/HTTPS 설정에서 해당 기능이 활성화되어 있는지 확인하세요.</p>}
+    </div>}
 
     <div className="setting-card" style={{ marginTop: 16 }}>
       <Row title="접속 URL" detail="모바일 브라우저나 다른 PC에서 열 주소입니다. QR이 있으면 같은 주소를 담고 있습니다.">
@@ -205,7 +237,7 @@ function RemoteControlSection(): React.JSX.Element {
 
 function Row({ title, detail, children }: { title: string; detail?: string; children: React.ReactNode }): React.JSX.Element { return <div className="setting-row"><div><strong>{title}</strong>{detail && <p>{detail}</p>}</div><div>{children}</div></div>; }
 function Toggle({ value, onChange }: { value: boolean; onChange: (value: boolean) => void }): React.JSX.Element { return <button className={`switch ${value ? "on" : ""}`} onClick={() => onChange(!value)} aria-pressed={value}><i /></button>; }
-function Select({ value, options, onChange }: { value: string; options: string[]; onChange?: (value: string) => void }): React.JSX.Element { return <select value={value} onChange={(e) => onChange?.(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select>; }
+function Select({ value, options, onChange, disabled = false }: { value: string; options: string[]; onChange?: (value: string) => void; disabled?: boolean }): React.JSX.Element { return <select value={value} onChange={(e) => onChange?.(e.target.value)} disabled={disabled}>{options.map((option) => <option key={option}>{option}</option>)}</select>; }
 function ShellSelect({ value, profiles, onChange }: { value: TerminalShellId; profiles: TerminalShellProfile[]; onChange: (value: TerminalShellId) => void }): React.JSX.Element {
   const list = profiles.length ? profiles : [{ id: "auto" as const, label: "자동", available: true, detail: "shell 목록을 불러오는 중" }];
   return <select value={value} onChange={(event) => onChange(event.target.value as TerminalShellId)}>
