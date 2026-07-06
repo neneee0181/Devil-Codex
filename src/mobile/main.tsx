@@ -287,6 +287,7 @@ function App(): React.JSX.Element {
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | "permissions" | null>(null);
+  const [threadDetailsOpen, setThreadDetailsOpen] = useState(false);
   const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
@@ -394,6 +395,7 @@ function App(): React.JSX.Element {
     nearBottomRef.current = true;
     forceScrollToBottomRef.current = true;
     setThreadPanel(null);
+    setThreadDetailsOpen(false);
     setThreadModelKeyState({ key: "", dirty: false });
     setComposerImages([]);
   }, [route.view, route.view === "thread" ? route.threadId : ""]);
@@ -816,7 +818,7 @@ function App(): React.JSX.Element {
               <div className="brand-mark"><Bot size={18} /></div>
               <div className="title-block">
                 <h1>Devil Codex Remote</h1>
-                <p>{currentThread ? threadLabel(currentThread) : runtimeStatus?.cwd || "원격 세션 대기"}</p>
+                <p>{route.view === "thread" && currentThread ? basename(currentThread.cwd) : currentThread ? threadLabel(currentThread) : runtimeStatus?.cwd || "원격 세션 대기"}</p>
               </div>
             </div>
             <button type="button" className="status-pill" onClick={() => void connectRuntime()} disabled={bridgeState.state !== "ready"}>
@@ -1040,7 +1042,18 @@ function App(): React.JSX.Element {
                   {currentThread && (
                     <div className="card thread-toolbar glow-card glow-host">
                       <GlowRing />
-                      <div className="thread-summary">
+                      <button
+                        type="button"
+                        className="thread-summary thread-summary-button"
+                        onClick={() => {
+                          setThreadDetailsOpen((current) => {
+                            const next = !current;
+                            if (!next) setThreadPanel(null);
+                            return next;
+                          });
+                        }}
+                        aria-expanded={threadDetailsOpen}
+                      >
                         <div className="thread-summary-copy">
                           <div className="row-title-group">
                             <div className="row-icon"><MessageSquare size={16} /></div>
@@ -1050,10 +1063,12 @@ function App(): React.JSX.Element {
                         </div>
                         <div className="thread-summary-side">
                           <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
-                          <ChevronDown size={16} className={`thread-chevron ${threadPanel ? "open" : ""}`} />
+                          <ChevronDown size={16} className={`thread-chevron ${threadDetailsOpen ? "open" : ""}`} />
                         </div>
-                      </div>
+                      </button>
 
+                      {threadDetailsOpen && (
+                        <>
                       <div className="thread-toggle-row">
                         <button
                           type="button"
@@ -1189,8 +1204,10 @@ function App(): React.JSX.Element {
 
                       {threadPanel === "slash" && slashCommands.length === 0 && (
                         <div className="thread-panel">
-                          <div className="tiny wrap-anywhere">이 스레드에서 사용할 slash command가 아직 없습니다.</div>
+                          <div className="tiny">사용 가능한 slash 명령이 없습니다.</div>
                         </div>
+                      )}
+                        </>
                       )}
                     </div>
                   )}
