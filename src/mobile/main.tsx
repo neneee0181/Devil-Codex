@@ -1,12 +1,13 @@
 /// <reference types="vite/client" />
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Bot,
   CheckCircle2,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   FolderKanban,
   Gauge,
@@ -48,6 +49,7 @@ import type {
 } from "../shared/contracts";
 import { RemoteBridge, clearStoredToken, consumeHashToken, isAppServerEvent, isAskRequest, storedToken } from "./ws-bridge";
 import { GlowRing } from "./GlowRing";
+import { MobileMarkdown } from "./Markdown";
 import "./styles.css";
 
 consumeHashToken();
@@ -56,6 +58,11 @@ type Route =
   | { view: "projects" }
   | { view: "thread"; threadId: string; cwd?: string }
   | { view: "usage" };
+
+// How many of the newest timeline items render by default; "이전 대화
+// 더보기" reveals another page of older items already held in threadHistory
+// (thread:read has no server-side pagination, so this windows client-side).
+const HISTORY_PAGE_SIZE = 30;
 
 type CreateThreadDraft = {
   cwd: string;
@@ -189,7 +196,15 @@ function App(): React.JSX.Element {
   const [askRequest, setAskRequest] = useState<AskRequest | null>(null);
   const [respondingApproval, setRespondingApproval] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
+  // Whole-page scroll (no inner scroll container) - track how close to the
+  // bottom the reader is so new/streamed messages only auto-follow when they
+  // were already at the bottom, and so "이전 대화 더보기" can restore the
+  // exact scroll position instead of yanking the viewport when older items
+  // get inserted above what's on screen.
+  const nearBottomRef = useRef(true);
+  const pendingScrollAdjustRef = useRef<number | null>(null);
 
   useEffect(() => {
     return bridge.onState((snapshot) => setBridgeState(snapshot));
@@ -280,6 +295,54 @@ function App(): React.JSX.Element {
   }, [route.view, route.view === "thread" ? route.threadId : "", threadSummaries, projectSummaries]);
 
   useEffect(() => {
+    if (route.view !== "thread") return;
+    setVisibleHistoryCount(HISTORY_PAGE_SIZE);
+    nearBottomRef.current = true;
+  }, [route.view, route.view === "thread" ? route.threadId : ""]);
+
+  // Whole page scrolls (composer is a fixed overlay), so track proximity to
+  // the bottom on the document itself rather than a dedicated scroll pane.
+  useEffect(() => {
+    const onScroll = (): void => {
+      const doc = document.documentElement;
+      nearBottomRef.current = doc.scrollHeight - doc.scrollTop - doc.clientHeight < 140;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const visibleHistory = useMemo(
+    () => threadHistory.slice(Math.max(0, threadHistory.length - visibleHistoryCount)),
+    [threadHistory, visibleHistoryCount],
+  );
+  const hiddenHistoryCount = threadHistory.length - visibleHistory.length;
+
+  function loadMoreHistory(): void {
+    pendingScrollAdjustRef.current = document.documentElement.scrollHeight;
+    setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE);
+  }
+
+  // Older items get inserted above the current viewport when "더보기" grows
+  // the window - compensate scrollTop by however much the page grew so the
+  // reader stays anchored on the same message instead of jumping.
+  useLayoutEffect(() => {
+    if (pendingScrollAdjustRef.current == null) return;
+    const previousHeight = pendingScrollAdjustRef.current;
+    pendingScrollAdjustRef.current = null;
+    const delta = document.documentElement.scrollHeight - previousHeight;
+    if (delta > 0) window.scrollBy(0, delta);
+  }, [visibleHistory]);
+
+  // New/streamed messages: only auto-follow to the bottom if the reader was
+  // already there (or a thread was just opened) - never yank them down while
+  // they're reading back through history.
+  useLayoutEffect(() => {
+    if (route.view !== "thread" || loadingThread) return;
+    if (!nearBottomRef.current) return;
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }, [route.view, loadingThread, visibleHistory.length]);
+
+  useEffect(() => {
     historyRef.current = threadHistory;
   }, [threadHistory]);
 
@@ -298,11 +361,25 @@ function App(): React.JSX.Element {
         if (record.state && record.cwd !== undefined && record.detail !== undefined) setRuntimeStatus(record as RuntimeStatus);
       }
     });
+    // PC-side changes (Settings page model/allowlist/approval toggles, provider
+    // key or model selection) push here instead of the phone having to poll or
+    // wait for its next manual refresh - keeps two open sessions (desktop +
+    // phone) in sync without a reconnect.
+    const unsubSettings = bridge.subscribe<CodexSettings>("settings:changed", (settings) => {
+      setCodexSettings(settings);
+      void bridge.call<RemoteScope>("remote:scope").then(setRemoteScope).catch(() => undefined);
+      void refreshProjects("");
+    });
+    const unsubProviders = bridge.subscribe<ProviderSettings>("providers:changed", (settings) => {
+      setProviderSettings(settings);
+    });
     return () => {
       unsubApp();
       unsubAsk();
       unsubUsage();
       unsubStatus();
+      unsubSettings();
+      unsubProviders();
     };
   }, [bridge, currentThread, threadSummaries, projectSummaries]);
 
@@ -769,7 +846,12 @@ function App(): React.JSX.Element {
                       <div className="muted" style={{ whiteSpace: "normal" }}>스레드 기록을 읽고 있습니다.</div>
                     </div>
                   )}
-                  {!loadingThread && threadHistory.map((item) => (
+                  {!loadingThread && hiddenHistoryCount > 0 && (
+                    <button type="button" className="load-more-button" onClick={loadMoreHistory}>
+                      <ChevronUp size={14} />이전 대화 더보기 ({hiddenHistoryCount})
+                    </button>
+                  )}
+                  {!loadingThread && visibleHistory.map((item) => (
                     item.kind === "activity"
                       ? <ActivityBlock key={item.id} item={item} />
                       : <MessageBlock key={item.id} item={item} />
@@ -905,7 +987,7 @@ function MessageBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element 
           <strong>{label}</strong>
           {(item.model || item.runtime) && <span>· {item.model || item.runtime}</span>}
         </div>
-        <div className="msg-body">{messageText(item) || "(비어 있음)"}</div>
+        {messageText(item) ? <MobileMarkdown text={messageText(item)} /> : <div className="msg-body">(비어 있음)</div>}
       </div>
     </motion.div>
   );

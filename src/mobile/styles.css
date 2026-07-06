@@ -553,6 +553,189 @@ button {
   font-size: 0.88rem;
 }
 
+.load-more-button {
+  display: flex;
+  justify-self: center;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-dim);
+  padding: 8px 16px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+.load-more-button:active {
+  background: var(--surface-press);
+}
+
+/* ---------- Markdown (chat message body) ---------- */
+
+.markdown-body {
+  min-width: 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote {
+  margin: 0 0 8px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.3em;
+}
+
+.markdown-body li {
+  margin: 2px 0;
+}
+
+.markdown-body li > p {
+  margin: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 10px 0 6px;
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.markdown-body h1:first-child,
+.markdown-body h2:first-child,
+.markdown-body h3:first-child,
+.markdown-body h4:first-child {
+  margin-top: 0;
+}
+
+.markdown-body strong {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.markdown-body blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding: 2px 0 2px 10px;
+  color: var(--text-dim);
+}
+
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.markdown-body a {
+  color: var(--accent-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body > code,
+.markdown-body p > code,
+.markdown-body li > code {
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 0.86em;
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body .markdown-image-disabled {
+  display: inline-block;
+  color: var(--text-faint);
+  font-size: 0.82em;
+  font-style: italic;
+}
+
+.markdown-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.85em;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.markdown-body thead th {
+  background: var(--surface-strong);
+}
+
+.markdown-code {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: #0d0a0d;
+  margin: 0 0 8px;
+  overflow: hidden;
+}
+
+.markdown-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.markdown-code-head button {
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  padding: 2px;
+}
+
+.markdown-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.markdown-code code {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre;
+  color: #e8e0e2;
+}
+
 /* ---------- Activity / tool calls ---------- */
 
 .activity-card {
@@ -582,6 +765,7 @@ button {
 
 .entry-head {
   display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -589,22 +773,32 @@ button {
 
 .entry-title {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 7px;
   font-weight: 600;
   font-size: 0.84rem;
+  overflow-wrap: anywhere;
 }
 
 .entry-detail {
+  min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   font-size: 0.82rem;
   color: var(--text-dim);
 }
 
 .file-list {
   display: grid;
+  min-width: 0;
   gap: 5px;
+}
+
+.file-list .tiny {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .image-strip {

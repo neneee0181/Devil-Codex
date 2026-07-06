@@ -297,6 +297,8 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "ask:request",
   "app-server:status",
   "provider:usage-changed",
+  "settings:changed",
+  "providers:changed",
 ]);
 const FALLBACK_TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA1ElEQVQ4jcWTsQ2DMBBFXWUF/gCJFGELS5FSQsU4GYANQooMgESfCRAjQOnMQOLQM8BFtgJFoLBJkeJL9ln37mzfZ2EYbgBcAGgA5KgngNzkMrPwSPxWzsbKp92WrnzvC3ixcXOTgu7HAw3DMJPWmuq6piRJZhDmAhjVdR0JIdwBSilqmob6vp9iWZa5A9I0tWdRFE2Qoij8AQCobVsbK8vyDwAp5borKKVs5dWPOCx8I+fcH6C1pqqqKI7jxUEyxlg1ykEQPH4105l97GwgthNfO78BmdECbWW4kcMAAAAASUVORK5CYII=";
 const historyCache = new ThreadHistoryCache();
@@ -2041,6 +2043,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       // server bounce needed - existing WS connections stay open).
       remoteServer.setHandlers(buildRemoteIpcHandlers());
     }
+    sendToRenderer("settings:changed", next);
     return next;
   });
   ipcMain.handle("remote:status", () => remoteStatus());
@@ -2054,18 +2057,28 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // real allowlist state).
   ipcMain.handle("remote:scope", () => ({ restricted: false }));
   handle("providers:load", () => providerSettingsStore.load());
-  ipcMain.handle("providers:select", (_event, input) => providerSettingsStore.select(input));
+  ipcMain.handle("providers:select", async (_event, input) => {
+    const saved = await providerSettingsStore.select(input);
+    sendToRenderer("providers:changed", saved);
+    return saved;
+  });
   ipcMain.handle("providers:save-key", async (_event, input) => {
     const saved = await providerSettingsStore.saveKey(input);
+    let result = saved;
     try {
-      return await providerModels.refresh(input.provider, saved.accountId ?? input.accountId);
+      result = await providerModels.refresh(input.provider, saved.accountId ?? input.accountId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn("[devil-codex providers] model refresh after key save failed:", message);
-      return saved;
     }
+    sendToRenderer("providers:changed", result);
+    return result;
   });
-  ipcMain.handle("providers:clear-key", (_event, input) => providerSettingsStore.clearKey(input.provider, input.accountId));
+  ipcMain.handle("providers:clear-key", async (_event, input) => {
+    const saved = await providerSettingsStore.clearKey(input.provider, input.accountId);
+    sendToRenderer("providers:changed", saved);
+    return saved;
+  });
   ipcMain.handle("providers:refresh-models", (_event, input) => refreshProviderModels(input.provider, input.accountId));
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
