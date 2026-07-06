@@ -46,6 +46,8 @@ body,
 #root {
   margin: 0;
   min-height: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -248,15 +250,20 @@ button {
 
 .content {
   flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 14px;
   padding: 14px 14px 118px;
 }
 
 .section {
   display: grid;
+  min-width: 0;
   gap: 12px;
 }
 
 .card {
+  min-width: 0;
   border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -351,6 +358,7 @@ button {
 
 .list-stack {
   display: grid;
+  min-width: 0;
   gap: 10px;
 }
 
@@ -364,6 +372,7 @@ button {
 
 .row-head {
   display: flex;
+  min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
@@ -388,6 +397,8 @@ button {
 }
 
 .row-title {
+  min-width: 0;
+  flex: 1;
   font-weight: 650;
   font-size: 0.92rem;
   white-space: nowrap;
@@ -396,6 +407,7 @@ button {
 }
 
 .muted {
+  min-width: 0;
   color: var(--text-dim);
   font-size: 0.84rem;
   white-space: nowrap;

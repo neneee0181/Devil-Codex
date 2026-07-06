@@ -276,16 +276,16 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
 
   const toggle = (id: string): void => onChange(allowed.includes(id) ? allowed.filter((item) => item !== id) : [...allowed, id]);
 
-  return <div style={{ display: "grid", gap: 12, marginTop: 4 }}>
+  return <div className="allowed-threads">
     <p className="section-help" style={{ margin: 0 }}>비워두면 이 PC의 모든 스레드에 원격 접근이 가능합니다. 하나라도 추가하면 원격 클라이언트는 아래 목록의 스레드만 보고 이어서 대화할 수 있습니다.</p>
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-      <select value={selectedCwd} onChange={(event) => setSelectedCwd(event.target.value)} style={{ flex: 1, minWidth: 200 }}>
+    <div className="thread-picker-row">
+      <select value={selectedCwd} onChange={(event) => setSelectedCwd(event.target.value)}>
         {!projectCwds.length && <option value="">프로젝트 없음</option>}
         {projectCwds.map((cwd) => <option key={cwd} value={cwd}>{cwd}</option>)}
       </select>
       <button type="button" className="secondary" onClick={() => void reload()} disabled={loading}>{loading ? "불러오는 중…" : "새로고침"}</button>
     </div>
-    <div style={{ display: "grid", gap: 6, maxHeight: 220, overflow: "auto" }}>
+    <div className="thread-list">
       {threadsForSelected.length ? threadsForSelected.map((thread) => (
         <label key={thread.id} style={{ ...listItemStyle, cursor: "pointer" }}>
           <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
@@ -294,11 +294,11 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
           </span>
           <input type="checkbox" checked={allowed.includes(thread.id)} onChange={() => toggle(thread.id)} />
         </label>
-      )) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>{selectedCwd ? "이 프로젝트에 스레드가 없습니다." : "먼저 프로젝트를 선택하세요."}</span>}
+      )) : <span className="thread-list-empty">{selectedCwd ? "이 프로젝트에 스레드가 없습니다." : "먼저 프로젝트를 선택하세요."}</span>}
     </div>
-    <div>
-      <strong style={{ fontSize: 13 }}>현재 허용된 스레드 ({allowed.length})</strong>
-      <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+    <div className="allowed-threads-summary">
+      <strong>현재 허용된 스레드 ({allowed.length})</strong>
+      <div className="thread-list" style={{ marginTop: 8 }}>
         {allowed.length ? allowed.map((id) => {
           const thread = byId.get(id);
           return <div key={id} style={listItemStyle}>
@@ -308,7 +308,7 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
             </span>
             <button type="button" className="secondary" onClick={() => toggle(id)}>제거</button>
           </div>;
-        }) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>허용된 스레드가 없습니다 (전체 접근).</span>}
+        }) : <span className="thread-list-empty">허용된 스레드가 없습니다 (전체 접근).</span>}
       </div>
     </div>
   </div>;

@@ -70,8 +70,9 @@ function routeFromHash(): Route {
   if (!raw) return { view: "projects" };
   if (raw === "/usage") return { view: "usage" };
   if (raw.startsWith("/thread/")) {
-    const [, , threadId] = raw.split("/");
-    const params = new URLSearchParams(raw.split("?")[1] ?? "");
+    const [path, query] = raw.split("?");
+    const [, , threadId] = path.split("/");
+    const params = new URLSearchParams(query ?? "");
     return { view: "thread", threadId: decodeURIComponent(threadId ?? ""), cwd: params.get("cwd") ?? undefined };
   }
   return { view: "projects" };
