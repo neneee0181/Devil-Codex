@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Code2, Copy, FileText, Folder, FolderOpen, M
 import type { ExternalTarget, OpenWorkspaceTarget, WorkspaceEntry, WorkspaceFile } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { FileTypeIcon } from "./FileTypeIcon";
-import { MarkdownContent } from "./MarkdownContent";
+import { MarkdownContent, normalizeFileLinkPath } from "./MarkdownContent";
 
 const CodePreview = lazy(() => import("./CodePreview").then((module) => ({ default: module.CodePreview })));
 
@@ -31,7 +31,8 @@ export function WorkspaceFilesPanel({ workspace, target }: { workspace: string; 
   }, [workspace]);
 
   const openFile = useCallback(async (path: string): Promise<void> => {
-    try { setSelected(await window.devilCodex.readWorkspaceFile({ cwd: workspace, path })); setError(""); }
+    const normalized = normalizeFileLinkPath(path);
+    try { setSelected(await window.devilCodex.readWorkspaceFile({ cwd: workspace, path: normalized })); setError(""); }
     catch (reason) { setError(String(reason)); }
   }, [workspace]);
 
@@ -39,8 +40,9 @@ export function WorkspaceFilesPanel({ workspace, target }: { workspace: string; 
   useEffect(() => { void window.devilCodex.listOpenWorkspaceTargets().then(setOpenTargets).catch(() => undefined); }, []);
   useEffect(() => {
     if (!target) return;
-    void window.devilCodex.findWorkspaceFile({ cwd: workspace, query: target }).then(async (path) => {
-      if (!path) { setError(`파일을 찾을 수 없습니다: ${target}`); return; }
+    const normalizedTarget = normalizeFileLinkPath(target);
+    void window.devilCodex.findWorkspaceFile({ cwd: workspace, query: normalizedTarget }).then(async (path) => {
+      if (!path) { setError(`파일을 찾을 수 없습니다: ${normalizedTarget}`); return; }
       const parents: string[] = [""];
       let parent = parentPath(path);
       while (parent) { parents.push(parent); parent = parentPath(parent); }

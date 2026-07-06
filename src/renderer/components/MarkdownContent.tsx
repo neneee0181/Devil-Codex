@@ -25,7 +25,23 @@ function CodeBlock({ children }: { children: ReactNode }): React.JSX.Element {
 function fileLinkFromCode(value: string): { label: string; path: string } | null {
   const match = value.trim().match(/^\[([^\]]+)\]\(devil-file:([^)]+)\)$/);
   if (!match) return null;
-  return { label: match[1], path: decodeURIComponent(match[2]) };
+  return { label: cleanFileLinkLabel(match[1]), path: normalizeFileLinkPath(decodeURIComponent(match[2])) };
+}
+
+export function cleanFileLinkLabel(value: ReactNode): string {
+  return nodeText(value).replace(/^\.\[([^\]]+)\]\(devil-file:[^)]+\)$/, ".$1").trim();
+}
+
+export function normalizeFileLinkPath(value: string): string {
+  let path = value.trim()
+    .replace(/^devil-file:/, "")
+    .replace(/^file:\/\//, "")
+    .replace(/^<|>$/g, "")
+    .replace(/\\/g, "/");
+  try { path = decodeURIComponent(path); } catch { /* already decoded or malformed */ }
+  path = path.replace(/:(\d+)(?::\d+)?$/, "");
+  if (/^memoc\//i.test(path)) path = `.${path}`;
+  return path;
 }
 
 function richMarkdown(text: string): string {
@@ -35,12 +51,17 @@ function richMarkdown(text: string): string {
     if (fenced) return line;
     const normalizedLinks = line
       .replace(/`(\[[^\]]+\]\(devil-file:[^)]+\))`/g, "$1")
-      .replace(/\[`([^`]+)`\]\(devil-file:([^)]+)\)/g, "[$1](devil-file:$2)");
+      .replace(/\[`([^`]+)`\]\(devil-file:([^)]+)\)/g, "[$1](devil-file:$2)")
+      .replace(/\.\[([^\]]+)\]\(devil-file:((?!\.)[^)]+)\)/g, (_match, label: string, path: string) => `[.${label}](devil-file:.${path})`);
     if (normalizedLinks.includes("](")) return normalizedLinks;
     if (line.trim() === "첨부 파일:") return "";
     const image = normalizedLinks.replace(/((?:\/[\w.@%+~ -]+)+\.(?:png|jpe?g|gif|webp|svg))/gi, (path) => `![${path.split("/").at(-1)}](devil-image:${encodeURIComponent(path)})`);
     if (image !== normalizedLinks) return image;
-    return normalizedLinks.replace(/\b((?:[\w.@+-]+[\\/])*[\w.@+-]+\.(?:tsx?|jsx?|css|json|md|cjs|mjs|py|go|rs|java|kt|swift|html|ya?ml|toml|sql|sh))\b/g, (path) => `[${path}](devil-file:${encodeURIComponent(path)})`);
+    const filePattern = /(^|[^\w)\]])((?:(?:[A-Za-z]:)?[\\/]|\.?[\w.@+-]+[\\/])+(?:[\w.@+-]+\.)+(?:tsx?|jsx?|css|json|md|cjs|mjs|py|go|rs|java|kt|swift|html|ya?ml|toml|sql|sh)(?::\d+(?::\d+)?)?)/g;
+    return normalizedLinks.replace(filePattern, (_match, prefix: string, path: string) => {
+      const normalized = normalizeFileLinkPath(path);
+      return `${prefix}[${normalized}](devil-file:${encodeURIComponent(normalized)})`;
+    });
   }).join("\n");
 }
 
@@ -75,7 +96,7 @@ export const MarkdownContent = memo(function MarkdownContent({ text, onOpenFile 
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         code: ({ children }) => {
           const file = fileLinkFromCode(nodeText(children));
-          return file ? <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(file.path.replace(/^file:\/\//, ""))}>{file.label}</button> : <code>{children}</code>;
+          return file ? <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(file.path)}>{file.label}</button> : <code>{children}</code>;
         },
         img: ({ src, alt }) => {
           if (!src) return null;
@@ -85,8 +106,9 @@ export const MarkdownContent = memo(function MarkdownContent({ text, onOpenFile 
         },
         a: ({ href, children }) => {
           const external = /^(https?:|mailto:|#)/i.test(href ?? "");
-          const path = href?.startsWith("devil-file:") ? decodeURIComponent(href.slice(11)) : decodeURIComponent(href ?? "");
-          return external ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(path.replace(/^file:\/\//, ""))}>{children}</button>;
+          const path = normalizeFileLinkPath(href?.startsWith("devil-file:") ? href.slice(11) : href ?? "");
+          const label = cleanFileLinkLabel(children);
+          return external ? <a href={href} target="_blank" rel="noreferrer">{children}</a> : <button type="button" className="markdown-file-link" onClick={() => onOpenFile?.(path)}>{label || children}</button>;
         },
       }}
     >{markdown}</ReactMarkdown>
