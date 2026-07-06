@@ -3,26 +3,27 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-07-04T08:44:44
-updated: 2026-07-05T22:45:00
+updated: 2026-07-06T00:00:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-05T22:45:00+09:00
+Last: 2026-07-06T00:00:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.1.43 prep: terminal startup crash fixed for right/bottom tabs.
+- v0.1.41 released (tag pushed, CI building): token-audit fixes both modes.
+- Remote-control spec written, NOT implemented: `.memoc/wiki/project/remote-control.md` (tailnet default + Funnel opt-in, mobile core UI only).
 
 ## Changed
-- `terminal-manager.cts` now falls through auto shell candidates, catches fallback spawn errors, and uses a safe cwd when a new-thread project path is missing.
-- Version bumped to `0.1.43`.
+- Docs only: wiki page, `03-decisions.md`, `02` entry.
 
 ## Open Tasks
+- Implement remote control per wiki spec (await user "go").
+- Feature-gap backlog: plan mode (both), manual /compact (claude), native codex /review.
 - Manual in-app check: multi-turn Claude chat, stop button, model switch mid-thread.
-- User-side installed-app check: right/bottom terminal on a project new thread should not show a main-process JS error.
 
 ## Resume
-- Passed: `npm run build:main`, `npm run build:renderer`, `git diff --check`. Direct Node smoke created sessions but ConPTY helper did not exit cleanly outside Electron.
+- Tree clean except untracked hello.txt.

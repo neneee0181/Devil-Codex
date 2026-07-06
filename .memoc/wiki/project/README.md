@@ -18,7 +18,7 @@ Implementation docs for this repository.
 
 ## Project Pages
 
-_None yet. Add pages like `architecture.md`, `auth.md`, `gateway.md`, `deployment.md`, or `ui-dashboard.md`._
+- [원격 제어 구현 계획](remote-control.md) — 폰 브라우저에서 Devil 조작 (Tailscale + WS 브릿지). 미구현, 상세 명세 완성.
 
 ## How To Use
 

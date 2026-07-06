@@ -15,6 +15,13 @@ Durable project decisions live here. Keep entries short, dated, and useful to fu
 
 ## Decision Log
 
+### 2026-07-06 — Remote control: Tailscale 기반, tailnet 기본 + Funnel opt-in, 모바일 핵심 UI만
+
+- 폰/타 기기 브라우저에서 Devil 원격 조작 기능을 만들기로 결정 (아직 미구현, 명세만 확정).
+- 접속 방식: 기본은 Tailscale tailnet 전용(폰에도 무료 Tailscale 앱), 설정에서 Tailscale Funnel 공개 URL opt-in. Funnel 시 토큰 인증 + 기기 승인 + rate limit 필수.
+- 모바일 UI 범위: 스레드 목록·대화·턴 전송·승인 응답·사용량만. 터미널/브라우저뷰/git 패널은 데스크톱 전용.
+- 네이티브 모바일 앱 없음(PWA). 구현 명세: [wiki/project/remote-control.md](wiki/project/remote-control.md).
+
 ### 2026-06-24 — Use thread-level provider reconcile for stock-Codex external sync
 
 - User approved a narrow rcodex-style compatibility layer: after an external-provider turn is processed by the Codex app-server through `modelProvider: "devil"`, Devil may reconcile that existing thread's stored provider back to `openai` by patching `~/.codex/state_5.sqlite` `threads.model_provider` and the rollout first-line `session_meta.payload.model_provider`.

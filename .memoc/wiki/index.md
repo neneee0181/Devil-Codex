@@ -22,7 +22,7 @@ Persistent LLM-maintained wiki hub.
 
 ## Project Pages
 
-_None yet. Link implementation pages from [project/README.md](project/README.md)._
+- [원격 제어 구현 계획](project/remote-control.md) — Tailscale 기반 모바일 원격 조작 명세 (미구현).
 
 ## Knowledge Pages
 
