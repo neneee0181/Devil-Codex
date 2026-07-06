@@ -731,6 +731,27 @@ button {
   background: var(--surface-press);
 }
 
+.scroll-to-bottom-button {
+  position: absolute;
+  right: 10px;
+  bottom: calc(var(--composer-height) + var(--nav-height) + 18px);
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: rgba(16, 16, 24, 0.9);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  box-shadow: 0 16px 36px -18px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(12px);
+}
+
+.scroll-to-bottom-button:active {
+  background: rgba(30, 30, 40, 0.94);
+}
+
 /* ---------- Markdown (chat message body) ---------- */
 
 .markdown-body {
@@ -930,6 +951,27 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.entry-toggle {
+  width: 100%;
+  text-align: left;
+}
+
+.entry-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.entry-chevron {
+  color: var(--text-faint);
+  transition: transform 0.16s ease;
+}
+
+.entry-chevron.open {
+  transform: rotate(180deg);
 }
 
 .entry-title {

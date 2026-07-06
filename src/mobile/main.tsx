@@ -4,6 +4,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  ArrowDown,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -288,6 +289,7 @@ function App(): React.JSX.Element {
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | null>(null);
   const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
   const appRef = useRef<HTMLDivElement | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
@@ -402,6 +404,7 @@ function App(): React.JSX.Element {
     if (!container || route.view !== "thread") return;
     const onScroll = (): void => {
       nearBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+      setShowScrollToBottom(!nearBottomRef.current);
     };
     onScroll();
     container.addEventListener("scroll", onScroll, { passive: true });
@@ -458,6 +461,7 @@ function App(): React.JSX.Element {
     if (!container) return;
     container.scrollTop = container.scrollHeight;
     nearBottomRef.current = true;
+    setShowScrollToBottom(false);
   }
 
   useLayoutEffect(() => {
@@ -592,6 +596,10 @@ function App(): React.JSX.Element {
     const params = (event.params ?? {}) as Record<string, unknown>;
     const eventThreadId = String(params.threadId ?? "");
     if (event.method === "turn/started" && eventThreadId && currentThread?.id === eventThreadId) setBusy(true);
+    if ((event.method === "turn/started" || event.method === "turn/updated") && eventThreadId) {
+      if (selectedProject) void refreshThreads(selectedProject);
+      void refreshProjects("");
+    }
     if (event.method === "turn/completed" && eventThreadId) {
       if (currentThread?.id === eventThreadId) setBusy(false);
       if (selectedProject) void refreshThreads(selectedProject);
@@ -1165,6 +1173,23 @@ function App(): React.JSX.Element {
                       )}
                     </div>
                   </div>
+                  <AnimatePresence>
+                    {showScrollToBottom && !loadingThread && (
+                      <motion.button
+                        type="button"
+                        className="scroll-to-bottom-button"
+                        initial={{ opacity: 0, y: 10, scale: 0.92 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 8, scale: 0.94 }}
+                        transition={{ duration: 0.16 }}
+                        onClick={scrollThreadToBottom}
+                        aria-label="맨 아래로 이동"
+                        title="맨 아래로 이동"
+                      >
+                        <ArrowDown size={18} />
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
                 </div>
               </section>
             )}
@@ -1346,37 +1371,58 @@ const MessageBlock = memo(function MessageBlock({ item }: { item: ThreadHistoryI
 
 const ActivityBlock = memo(function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
   const totalTokens = item.cumulativeTokenUsage?.totalTokens ?? item.tokenUsage?.totalTokens;
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    for (const entry of item.activities ?? []) initial[entry.id] = entry.status === "failed" || entry.status === "inProgress";
+    return initial;
+  });
   return (
     <article className="card activity-card">
       <div className="split-line">
         <span className="section-label" style={{ padding: 0 }}>작업 흐름</span>
         <span className="tiny">{item.status ?? "completed"}</span>
       </div>
-      {(item.activities ?? []).map((entry) => (
-        <div key={entry.id} className={`activity-entry ${entry.status ?? "completed"}`}>
-          <div className="entry-head">
-            <span className="entry-title">
-              {entry.status === "failed" ? <XCircle size={14} /> : entry.status === "inProgress" ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
-              {entry.title}
-            </span>
-            <span className="tiny">{entry.kind}</span>
+      {(item.activities ?? []).map((entry) => {
+        const hasDetails = Boolean(entry.detail || entry.output || entry.files?.length || entry.images?.length);
+        const expanded = hasDetails ? Boolean(expandedIds[entry.id]) : false;
+        return (
+          <div key={entry.id} className={`activity-entry ${entry.status ?? "completed"}${expanded ? " expanded" : ""}`}>
+            <button
+              type="button"
+              className={`entry-head ${hasDetails ? "entry-toggle" : ""}`}
+              onClick={() => {
+                if (!hasDetails) return;
+                setExpandedIds((current) => ({ ...current, [entry.id]: !current[entry.id] }));
+              }}
+              disabled={!hasDetails}
+              aria-expanded={hasDetails ? expanded : undefined}
+            >
+              <span className="entry-title">
+                {entry.status === "failed" ? <XCircle size={14} /> : entry.status === "inProgress" ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
+                {entry.title}
+              </span>
+              <span className="entry-meta">
+                <span className="tiny">{entry.kind}</span>
+                {hasDetails && <ChevronDown size={14} className={`entry-chevron ${expanded ? "open" : ""}`} />}
+              </span>
+            </button>
+            {expanded && entry.detail && <div className="entry-detail">{entry.detail}</div>}
+            {expanded && entry.output && <div className="entry-detail">{entry.output}</div>}
+            {expanded && entry.files?.length ? (
+              <div className="file-list">
+                {entry.files.map((file) => (
+                  <div key={`${entry.id}:${file.path}`} className="tiny">{file.path} (+{file.additions}/-{file.deletions})</div>
+                ))}
+              </div>
+            ) : null}
+            {expanded && entry.images?.length ? (
+              <div className="image-strip">
+                {entry.images.map((src, index) => <img key={`${entry.id}:${index}`} src={src} alt={entry.title} />)}
+              </div>
+            ) : null}
           </div>
-          {entry.detail && <div className="entry-detail">{entry.detail}</div>}
-          {entry.output && <div className="entry-detail">{entry.output}</div>}
-          {entry.files?.length ? (
-            <div className="file-list">
-              {entry.files.map((file) => (
-                <div key={`${entry.id}:${file.path}`} className="tiny">{file.path} (+{file.additions}/-{file.deletions})</div>
-              ))}
-            </div>
-          ) : null}
-          {entry.images?.length ? (
-            <div className="image-strip">
-              {entry.images.map((src, index) => <img key={`${entry.id}:${index}`} src={src} alt={entry.title} />)}
-            </div>
-          ) : null}
-        </div>
-      ))}
+        );
+      })}
       {(item.contextUsage || totalTokens) && (
         <div className="badge-row">
           {item.contextUsage && <span className="badge">컨텍스트 {item.contextUsage.usedTokens.toLocaleString()} / {item.contextUsage.maxTokens.toLocaleString()}</span>}
