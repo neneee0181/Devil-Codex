@@ -289,6 +289,7 @@ const REMOTE_ALLOWED_CHANNELS = new Set<string>([
   "providers:load",
   "providers:select",
   "settings:load",
+  "settings:update-permissions",
   "codex:models",
   "claude:slash-commands",
   "remote:status",
@@ -301,6 +302,7 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "provider:usage-changed",
   "remote:status",
   "settings:changed",
+  "provider:auth",
   "providers:changed",
 ]);
 const FALLBACK_TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA1ElEQVQ4jcWTsQ2DMBBFXWUF/gCJFGELS5FSQsU4GYANQooMgESfCRAjQOnMQOLQM8BFtgJFoLBJkeJL9ln37mzfZ2EYbgBcAGgA5KgngNzkMrPwSPxWzsbKp92WrnzvC3ixcXOTgu7HAw3DMJPWmuq6piRJZhDmAhjVdR0JIdwBSilqmob6vp9iWZa5A9I0tWdRFE2Qoij8AQCobVsbK8vyDwAp5borKKVs5dWPOCx8I+fcH6C1pqqqKI7jxUEyxlg1ykEQPH4105l97GwgthNfO78BmdECbWW4kcMAAAAASUVORK5CYII=";
@@ -343,6 +345,15 @@ function requireRemoteAllowed(id: string | undefined): void {
 function sanitizeRemoteStatus(status: RemoteControlStatus): RemoteControlStatus {
   const { url: _url, qrDataUrl: _qrDataUrl, tokenPreview: _tokenPreview, ...safe } = status;
   return safe;
+}
+
+const remoteApprovalPolicies = new Set<ThreadApprovalPolicy>(["on-request", "never"]);
+const remoteSandboxModes = new Set<ThreadSandboxMode>(["read-only", "workspace-write", "danger-full-access"]);
+const remoteReasoningEfforts = new Set<CodexSettings["reasoningEffort"]>(["low", "medium", "high", "xhigh"]);
+const remoteResponseSpeeds = new Set<CodexSettings["responseSpeed"]>(["standard", "fast"]);
+
+function validRemoteSetting<T extends string>(values: Set<T>, value: unknown): T | undefined {
+  return typeof value === "string" && values.has(value as T) ? value as T : undefined;
 }
 // Remote (phone/browser) clients dispatch through this map instead of the raw
 // `ipcHandlers` the local renderer uses, so an active allowlist (Settings ->
@@ -387,7 +398,23 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   remote.set("remote:scope", () => ({ restricted: Boolean(remoteAllowlistCache) }));
   remote.set("providers:select", async (input) => {
     const saved = await providerSettingsStore.select(input as { provider: ProviderId; model: string; accountId?: string });
-    sendToRenderer("providers:changed", saved);
+    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
+    return saved;
+  });
+  remote.set("settings:update-permissions", async (input) => {
+    const current = await settingsStore.load();
+    const request = isRecord(input) ? input : {};
+    const next: CodexSettings = { ...current };
+    const approvalPolicy = validRemoteSetting(remoteApprovalPolicies, request.approvalPolicy);
+    const sandboxMode = validRemoteSetting(remoteSandboxModes, request.sandboxMode);
+    const reasoningEffort = validRemoteSetting(remoteReasoningEfforts, request.reasoningEffort);
+    const responseSpeed = validRemoteSetting(remoteResponseSpeeds, request.responseSpeed);
+    if (approvalPolicy) next.approvalPolicy = approvalPolicy;
+    if (sandboxMode) next.sandboxMode = sandboxMode;
+    if (reasoningEffort) next.reasoningEffort = reasoningEffort;
+    if (responseSpeed) next.responseSpeed = responseSpeed;
+    const saved = await settingsStore.save(next);
+    sendToRenderer("settings:changed", saved);
     return saved;
   });
   return remote;
@@ -731,12 +758,11 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
 // app-server:event carries a threadId; when a remote allowlist is active, a
 // remote client must never see it for a thread it isn't scoped to (otherwise
 // a phone limited to one thread could still watch an unrelated project's
-// tool calls stream by). ask:request has no threadId in its payload at all
-// (it's a global "ask the human" signal, not thread-scoped data) so there's
-// no way to check it against the allowlist - safest is to just not forward
-// it to a restricted remote client; the local desktop dialog still fires
-// either way. app-server:status / provider:usage-changed aren't thread-scoped
-// and stay unaffected.
+// tool calls stream by). ask:request is a global "ask the human" signal and
+// intentionally stays forwarded so the phone can answer devil_ask / ask_user
+// MCP prompts even when the remote view is scoped to a subset of threads.
+// app-server:status / provider:usage-changed aren't thread-scoped and stay
+// unaffected.
 function remoteEventThreadId(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const params = (payload as { params?: Record<string, unknown> }).params;
@@ -747,13 +773,27 @@ function sendToRenderer(channel: string, payload: unknown): void {
   if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, payload);
   if (!remoteServer) return;
   if (remoteAllowlistCache) {
-    if (channel === "ask:request") return;
     if (channel === "app-server:event") {
       const threadId = remoteEventThreadId(payload);
       if (threadId && !remoteAllowlistCache.has(threadId)) return;
     }
   }
   remoteServer.broadcast(channel, channel === "remote:status" ? sanitizeRemoteStatus(payload as RemoteControlStatus) : payload);
+}
+
+function usageProviderFromRaw(provider: unknown): UsageCacheProvider | undefined {
+  const normalized = provider === "claude" ? "claude-code" : provider;
+  return isUsageCacheProvider(normalized as ProviderId | "unknown") ? normalized as UsageCacheProvider : undefined;
+}
+
+async function notifyProviderStateChanged(provider?: unknown): Promise<void> {
+  const usageProvider = usageProviderFromRaw(provider);
+  if (usageProvider) clearProviderUsageCache(usageProvider);
+  restartAppServer();
+  const [status, providers] = await Promise.all([combinedAuthStatus(), providerSettingsStore.load()]);
+  sendToRenderer("provider:auth", status);
+  sendToRenderer("providers:changed", providers);
+  sendToRenderer("provider:usage-changed", { provider: usageProvider ?? "unknown", completed: true, at: Date.now() });
 }
 
 function emitRemoteStatus(): void {
@@ -2090,7 +2130,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", async (_event, input) => {
     const saved = await providerSettingsStore.select(input);
-    sendToRenderer("providers:changed", saved);
+    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
     return saved;
   });
   ipcMain.handle("providers:save-key", async (_event, input) => {
@@ -2113,33 +2153,38 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("providers:refresh-models", (_event, input) => refreshProviderModels(input.provider, input.accountId));
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
-    if (input.provider === "codex") { clearProviderUsageCache("codex"); codexCliLogin("codex"); return null; }
+    if (input.provider === "codex") {
+      codexCliLogin("codex");
+      void notifyProviderStateChanged("codex").catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
+      return null;
+    }
     if (input.provider === "antigravity") {
       return antigravityLogin(() => {
-        clearProviderUsageCache("antigravity");
-        void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status));
+        void notifyProviderStateChanged("antigravity").catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
       });
     }
     const oauthProvider = input.provider === "claude" ? "claude-code" : "copilot";
     return oauthLogin(oauthProvider, () => {
-      clearProviderUsageCache(input.provider === "claude" ? "claude-code" : "copilot");
-      void combinedAuthStatus().then((status) => sendToRenderer("provider:auth", status));
+      void notifyProviderStateChanged(oauthProvider).catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
     });
   });
   ipcMain.handle("providers:logout", async (_event, input) => {
-    if (input.provider === "codex") { await codexCliLogout("codex"); clearProviderUsageCache("codex"); restartAppServer(); }
+    let changedProvider: UsageCacheProvider | undefined;
+    if (input.provider === "codex") {
+      await codexCliLogout("codex");
+      changedProvider = "codex";
+    }
     else if (input.provider === "antigravity") {
       await antigravityLogout(input.accountId);
-      clearProviderUsageCache("antigravity");
+      changedProvider = "antigravity";
     }
     else {
       const provider = input.provider === "claude" ? "claude-code" : "copilot";
       await oauthLogout(provider, input.accountId);
-      clearProviderUsageCache(provider);
+      changedProvider = provider;
     }
-    const status = await combinedAuthStatus();
-    sendToRenderer("provider:auth", status);
-    return status;
+    await notifyProviderStateChanged(changedProvider);
+    return combinedAuthStatus();
   });
   ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
   handle("providers:usage", async (input) => {

@@ -789,12 +789,12 @@ button:active:not(:disabled) { transform: scale(.96); }
 .send-button:disabled { background: #454545; color: #838383; }
 .stop-button { color: #303030; }
 
-.environment-card { position: absolute; z-index: 6; top: 14px; right: 16px; width: min(300px, calc(100% - 24px)); border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
+.environment-card { position: absolute; z-index: 6; top: 14px; right: 16px; width: min(300px, calc(100% - 24px)); max-height: min(680px, calc(100vh - 112px)); overflow-y: auto; overscroll-behavior: contain; border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
 .environment-card header { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 8px; color: #a7a7a7; font-size: 12px; }
 .environment-card header button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #a7a7a7; font-size: 18px; }
 .environment-card header button:hover { background: #3a3a3a; }
 .environment-row { display: flex; width: 100%; justify-content: space-between; align-items: center; border: 0; border-radius: 8px; background: transparent; color: #e0e0e0; padding: 7px 8px; text-align: left; font-size: 13px; }
-.environment-row > span { display: flex; gap: 9px; align-items: center; }.environment-row svg { width: 15px; height: 15px; color: #b8b8b8; }
+.environment-row > span { display: flex; min-width: 0; gap: 9px; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.environment-row svg { flex: 0 0 15px; width: 15px; height: 15px; color: #b8b8b8; }
 .environment-row:hover { background: #383838; }
 .environment-row strong { font-weight: 500; }
 .environment-row i { color: #57d87a; font-style: normal; }

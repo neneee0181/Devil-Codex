@@ -590,6 +590,17 @@ button {
   gap: 8px;
 }
 
+.permission-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.permission-panel label > span {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
 /* ---------- Create thread form ---------- */
 
 .create-thread-form {

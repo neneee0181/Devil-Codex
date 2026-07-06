@@ -17,11 +17,10 @@ import {
   Loader2,
   MessageSquare,
   Paperclip,
-  Plug,
   PlusCircle,
-  RefreshCw,
   Search,
   Send,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -54,7 +53,7 @@ import type {
   ThreadRef,
   ThreadSummary,
 } from "../shared/contracts";
-import { RemoteBridge, clearStoredToken, consumeHashToken, isAppServerEvent, isAskRequest, storedToken } from "./ws-bridge";
+import { RemoteBridge, consumeHashToken, isAppServerEvent, isAskRequest, storedToken } from "./ws-bridge";
 import { GlowRing } from "./GlowRing";
 import { MobileMarkdown } from "./Markdown";
 import "./styles.css";
@@ -287,7 +286,7 @@ function App(): React.JSX.Element {
   const [respondingApproval, setRespondingApproval] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
-  const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | null>(null);
+  const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | "permissions" | null>(null);
   const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
@@ -633,15 +632,6 @@ function App(): React.JSX.Element {
     }
   }
 
-  async function connectRuntime(): Promise<void> {
-    try {
-      const status = await bridge.call<RuntimeStatus>("runtime:connect");
-      setRuntimeStatus(status);
-    } catch (error) {
-      setBootstrapError(String(error));
-    }
-  }
-
   async function createThread(): Promise<void> {
     if (!createDraft.cwd.trim() || !createDraft.model.trim()) return;
     try {
@@ -666,6 +656,15 @@ function App(): React.JSX.Element {
       forceScrollToBottomRef.current = true;
       setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
       await refreshSlashCommands(thread.cwd, thread.model);
+    } catch (error) {
+      setBootstrapError(String(error));
+    }
+  }
+
+  async function connectRuntime(): Promise<void> {
+    try {
+      const status = await bridge.call<RuntimeStatus>("runtime:connect");
+      setRuntimeStatus(status);
     } catch (error) {
       setBootstrapError(String(error));
     }
@@ -782,6 +781,15 @@ function App(): React.JSX.Element {
     }
   }
 
+  async function updateRemotePermissions(patch: Partial<Pick<CodexSettings, "approvalPolicy" | "sandboxMode" | "reasoningEffort" | "responseSpeed">>): Promise<void> {
+    try {
+      const next = await bridge.call<CodexSettings>("settings:update-permissions", patch);
+      setCodexSettings(next);
+    } catch (error) {
+      setBootstrapError(String(error));
+    }
+  }
+
   const routeTab = route.view === "thread" ? "thread" : route.view;
   const currentUsageText = usageHeadline(threadHistory);
   const projectGroups = new Map<string, ThreadSummary[]>();
@@ -811,23 +819,9 @@ function App(): React.JSX.Element {
                 <p>{currentThread ? threadLabel(currentThread) : runtimeStatus?.cwd || "원격 세션 대기"}</p>
               </div>
             </div>
-            <div className="status-pill">
+            <button type="button" className="status-pill" onClick={() => void connectRuntime()} disabled={bridgeState.state !== "ready"}>
               <span className={`status-dot ${bridgeState.state}`} />
               <span>{bridgeState.state === "ready" ? "연결됨" : bridgeState.reason ?? bridgeState.state}</span>
-            </div>
-          </div>
-          <div className="toolbar">
-            <button type="button" className="icon-btn primary" onClick={() => void connectRuntime()} disabled={bridgeState.state !== "ready"}>
-              <Plug size={14} />런타임 연결
-            </button>
-            <button type="button" className="icon-btn" onClick={() => void refreshProjects("")} disabled={bridgeState.state !== "ready"}>
-              <RefreshCw size={14} />목록
-            </button>
-            <button type="button" className="icon-btn" onClick={() => void refreshUsage(true)} disabled={bridgeState.state !== "ready"}>
-              <Gauge size={14} />사용량
-            </button>
-            <button type="button" className="icon-btn" onClick={() => { clearStoredToken(); window.location.reload(); }}>
-              <XCircle size={14} />토큰 제거
             </button>
           </div>
         </header>
@@ -1082,6 +1076,13 @@ function App(): React.JSX.Element {
                         >
                           <SlidersHorizontal size={14} />모델
                         </button>
+                        <button
+                          type="button"
+                          className={`chip thread-toggle ${threadPanel === "permissions" ? "active" : ""}`}
+                          onClick={() => setThreadPanel((current) => current === "permissions" ? null : "permissions")}
+                        >
+                          <ShieldCheck size={14} />권한
+                        </button>
                       </div>
 
                       {threadPanel === "info" && (
@@ -1134,6 +1135,55 @@ function App(): React.JSX.Element {
                             ))}
                           </select>
                           <div className="tiny wrap-anywhere">기본 선택: {modelSourceLabel}</div>
+                        </div>
+                      )}
+
+                      {threadPanel === "permissions" && (
+                        <div className="thread-panel permission-panel">
+                          <label>
+                            <span>승인</span>
+                            <select
+                              value={codexSettings?.approvalPolicy ?? "on-request"}
+                              onChange={(event) => void updateRemotePermissions({ approvalPolicy: event.target.value })}
+                            >
+                              <option value="on-request">필요 시 요청</option>
+                              <option value="never">항상 허용</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>샌드박스</span>
+                            <select
+                              value={codexSettings?.sandboxMode ?? "workspace-write"}
+                              onChange={(event) => void updateRemotePermissions({ sandboxMode: event.target.value })}
+                            >
+                              <option value="read-only">읽기 전용</option>
+                              <option value="workspace-write">작업공간 쓰기</option>
+                              <option value="danger-full-access">전체 권한</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>추론</span>
+                            <select
+                              value={codexSettings?.reasoningEffort ?? "medium"}
+                              onChange={(event) => void updateRemotePermissions({ reasoningEffort: event.target.value as CodexSettings["reasoningEffort"] })}
+                            >
+                              <option value="low">낮음</option>
+                              <option value="medium">보통</option>
+                              <option value="high">높음</option>
+                              <option value="xhigh">매우 높음</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>응답 속도</span>
+                            <select
+                              value={codexSettings?.responseSpeed ?? "standard"}
+                              onChange={(event) => void updateRemotePermissions({ responseSpeed: event.target.value as CodexSettings["responseSpeed"] })}
+                            >
+                              <option value="standard">표준</option>
+                              <option value="fast">빠름</option>
+                            </select>
+                          </label>
+                          <div className="tiny wrap-anywhere">변경한 권한은 PC 앱과 원격 웹에 WebSocket으로 동기화되고 다음 요청부터 적용됩니다.</div>
                         </div>
                       )}
 
