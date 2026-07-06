@@ -287,9 +287,11 @@ const REMOTE_ALLOWED_CHANNELS = new Set<string>([
   "runtime:connect",
   "providers:usage",
   "providers:load",
+  "providers:select",
   "settings:load",
   "codex:models",
   "claude:slash-commands",
+  "remote:status",
   "remote:scope",
 ]);
 const REMOTE_ALLOWED_EVENTS = new Set<string>([
@@ -297,6 +299,7 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "ask:request",
   "app-server:status",
   "provider:usage-changed",
+  "remote:status",
   "settings:changed",
   "providers:changed",
 ]);
@@ -335,6 +338,11 @@ function filterRemoteAllowed<T extends { id: string }>(list: T[]): T[] {
 }
 function requireRemoteAllowed(id: string | undefined): void {
   if (remoteAllowlistCache && (!id || !remoteAllowlistCache.has(id))) remoteAccessDenied();
+}
+
+function sanitizeRemoteStatus(status: RemoteControlStatus): RemoteControlStatus {
+  const { url: _url, qrDataUrl: _qrDataUrl, tokenPreview: _tokenPreview, ...safe } = status;
+  return safe;
 }
 // Remote (phone/browser) clients dispatch through this map instead of the raw
 // `ipcHandlers` the local renderer uses, so an active allowlist (Settings ->
@@ -375,7 +383,13 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
       return createBase(input);
     });
   }
+  remote.set("remote:status", async () => sanitizeRemoteStatus(await remoteStatus()));
   remote.set("remote:scope", () => ({ restricted: Boolean(remoteAllowlistCache) }));
+  remote.set("providers:select", async (input) => {
+    const saved = await providerSettingsStore.select(input as { provider: ProviderId; model: string; accountId?: string });
+    sendToRenderer("providers:changed", saved);
+    return saved;
+  });
   return remote;
 }
 const MAX_THREAD_APP_SERVERS = 8;
@@ -739,7 +753,13 @@ function sendToRenderer(channel: string, payload: unknown): void {
       if (threadId && !remoteAllowlistCache.has(threadId)) return;
     }
   }
-  remoteServer.broadcast(channel, payload);
+  remoteServer.broadcast(channel, channel === "remote:status" ? sanitizeRemoteStatus(payload as RemoteControlStatus) : payload);
+}
+
+function emitRemoteStatus(): void {
+  void remoteStatus()
+    .then((status) => sendToRenderer("remote:status", status))
+    .catch(() => undefined);
 }
 
 function sendCommand(command: string): void {
@@ -1672,6 +1692,9 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
         : await dialog.showMessageBox(options);
       return result.response === 0;
     },
+    onClientStateChanged: () => {
+      emitRemoteStatus();
+    },
   });
   const started = await server.start({ host: bindHost, port: REMOTE_CONTROL_PORT, ...(tls ? { tls } : {}) });
   remoteServer = server;
@@ -1690,7 +1713,9 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
   }
 
   await settingsStore.save({ ...previous, remoteControlEnabled: true, remoteControlMode: mode });
-  return remoteStatus();
+  const status = await remoteStatus();
+  sendToRenderer("remote:status", status);
+  return status;
 }
 
 async function stopRemoteControl(options: { saveSettings: boolean } = { saveSettings: true }): Promise<RemoteControlStatus> {
@@ -1704,19 +1729,25 @@ async function stopRemoteControl(options: { saveSettings: boolean } = { saveSett
     const previous = await settingsStore.load();
     await settingsStore.save({ ...previous, remoteControlEnabled: false });
   }
-  return remoteStatus();
+  const status = await remoteStatus();
+  sendToRenderer("remote:status", status);
+  return status;
 }
 
 async function regenerateRemoteToken(): Promise<RemoteControlStatus> {
   await remoteAuth().regenerateToken();
   for (const client of remoteServer?.listClients() ?? []) remoteServer?.disconnect(client.deviceId);
-  return remoteStatus();
+  const status = await remoteStatus();
+  sendToRenderer("remote:status", status);
+  return status;
 }
 
 async function revokeRemoteDevice(deviceId: string): Promise<RemoteControlStatus> {
   await remoteAuth().revokeDevice(deviceId);
   remoteServer?.disconnect(deviceId);
-  return remoteStatus();
+  const status = await remoteStatus();
+  sendToRenderer("remote:status", status);
+  return status;
 }
 
 async function startRemoteFromSettings(): Promise<void> {

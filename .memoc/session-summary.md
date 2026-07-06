@@ -3,26 +3,25 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-07-04T08:44:44
-updated: 2026-07-06T13:45:00
+updated: 2026-07-06T14:40:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-06T13:45:00+09:00
+Last: 2026-07-06T14:40:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- Remote-control MVP implemented: tailnet default, Funnel opt-in, mobile PWA core UI.
+- Remote-control mobile v0.1.55 ready: responsive chat/usage, image attachments, model picker, remote status WS.
 
 ## Changed
-- Added `remote-server/auth/tailscale` main modules, WS IPC bridge allowlist, token+device approval+rate limit, QR/status Settings UI.
-- Added `src/mobile` PWA and `build:mobile`; package includes `dist-mobile/**`; deps `ws`, `qrcode`.
+- Mobile thread view now uses compact toolbar with info/skills/model panels, internal scroll, image previews/send, latest-history model preference.
+- Remote WS now allows safe `remote:status`/`providers:select`; Settings subscribes to live remote status. Remote status strips URL/QR/token for remote clients.
 
 ## Open Tasks
-- Manual device test: Tailscale phone QR -> approve -> list/read/send/approval. Funnel LTE test still needed.
-- Feature-gap backlog: plan mode (both), manual /compact (claude), native codex /review.
+- Manual iPhone Safari test: compact chat, long code scroll, image-only send, model switch, Settings device live update.
 
 ## Resume
-- Passed: `npm run build` (renderer + mobile + main). Build output `dist-mobile/` is generated, not source.
+- Passed: `npm run build`; `git diff --check` only CRLF warnings. Build output `dist-mobile/` is generated, not source.

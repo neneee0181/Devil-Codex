@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppCommand, DevilCodexApi } from "./contracts.cjs";
+import type { AppCommand, DevilCodexApi, RemoteControlStatus } from "./contracts.cjs";
 
 const api: DevilCodexApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -112,6 +112,11 @@ const api: DevilCodexApi = {
   remoteRegenerateToken: () => ipcRenderer.invoke("remote:regenerate-token"),
   remoteRevokeDevice: (input) => ipcRenderer.invoke("remote:revoke-device", input),
   remoteScope: () => ipcRenderer.invoke("remote:scope"),
+  onRemoteStatus: (listener: (status: RemoteControlStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("remote:status", handler);
+    return () => ipcRenderer.removeListener("remote:status", handler);
+  },
   translate: (input) => ipcRenderer.invoke("translate:text", input),
   loadProviderSettings: () => ipcRenderer.invoke("providers:load"),
   selectProvider: (input) => ipcRenderer.invoke("providers:select", input),

@@ -15,9 +15,11 @@ export type RemoteCallChannel =
   | "runtime:connect"
   | "providers:usage"
   | "providers:load"
+  | "providers:select"
   | "settings:load"
   | "codex:models"
   | "claude:slash-commands"
+  | "remote:status"
   | "remote:scope";
 
 type AuthMessage = { type: "auth"; token: string; deviceId: string; deviceName: string };
@@ -68,9 +70,11 @@ const allowedChannels = new Set<RemoteCallChannel>([
   "runtime:connect",
   "providers:usage",
   "providers:load",
+  "providers:select",
   "settings:load",
   "codex:models",
   "claude:slash-commands",
+  "remote:status",
   "remote:scope",
 ]);
 

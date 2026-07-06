@@ -123,6 +123,12 @@ function RemoteControlSection(): React.JSX.Element {
   };
 
   useEffect(() => { void reload(); }, []);
+  useEffect(() => window.devilCodex.onRemoteStatus((next) => {
+    setStatus(next);
+    setSelectedMode(next.mode);
+    setError(null);
+    setState("ready");
+  }), []);
 
   const runAction = async (kind: "enable" | "disable" | "apply" | "regenerate" | "revoke", task: () => Promise<RemoteControlStatus>): Promise<void> => {
     setAction(kind);

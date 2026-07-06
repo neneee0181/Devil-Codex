@@ -6,18 +6,23 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Bot,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   ChevronUp,
   CircleUserRound,
   FolderKanban,
   Gauge,
+  Info,
   Loader2,
   MessageSquare,
+  Paperclip,
   Plug,
   PlusCircle,
   RefreshCw,
   Search,
   Send,
+  SlidersHorizontal,
+  Sparkles,
   Square,
   Terminal,
   WifiOff,
@@ -44,6 +49,7 @@ import type {
   RemoteScope,
   RuntimeStatus,
   ThreadHistoryItem,
+  ThreadAttachment,
   ThreadRef,
   ThreadSummary,
 } from "../shared/contracts";
@@ -63,6 +69,8 @@ type Route =
 // 더보기" reveals another page of older items already held in threadHistory
 // (thread:read has no server-side pagination, so this windows client-side).
 const HISTORY_PAGE_SIZE = 20;
+const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGE_BATCH_BYTES = 18 * 1024 * 1024;
 
 type CreateThreadDraft = {
   cwd: string;
@@ -70,6 +78,20 @@ type CreateThreadDraft = {
   provider?: ProviderId;
   runtime?: AgentRuntimeId;
   accountId?: string;
+};
+
+type ModelChoice = {
+  provider?: ProviderId;
+  model: string;
+  accountId?: string;
+};
+
+type ComposerImageAttachment = {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  content: string;
 };
 
 function routeFromHash(): Route {
@@ -141,6 +163,46 @@ function messageText(item: ThreadHistoryItem): string {
   return item.text?.trim() || item.title?.trim() || "";
 }
 
+function modelChoiceKey(choice: Pick<ModelChoice, "provider" | "accountId" | "model">): string {
+  return `${choice.provider ?? ""}:${choice.accountId ?? ""}:${choice.model}`;
+}
+
+function matchModelChoice(options: ModelChoice[], candidate: ModelChoice | null): ModelChoice | null {
+  if (!candidate?.model) return null;
+  return options.find((option) => modelChoiceKey(option) === modelChoiceKey(candidate))
+    ?? options.find((option) => option.provider === candidate.provider && option.model === candidate.model)
+    ?? options.find((option) => option.model === candidate.model)
+    ?? null;
+}
+
+function uniqueModelChoices(options: Array<ModelChoice | null | undefined>): ModelChoice[] {
+  const unique = new Map<string, ModelChoice>();
+  for (const option of options) {
+    if (!option?.model) continue;
+    unique.set(modelChoiceKey(option), option);
+  }
+  return [...unique.values()];
+}
+
+function latestHistoryChoice(history: ThreadHistoryItem[]): ModelChoice | null {
+  let model: string | undefined;
+  let provider: ProviderId | undefined;
+  let accountId: string | undefined;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    if (!model && item.model) model = item.model;
+    if (!provider && item.provider) provider = item.provider;
+    if (!accountId && item.accountId) accountId = item.accountId;
+    if (model && (provider !== undefined || accountId !== undefined)) break;
+  }
+  return model ? { model, provider, accountId } : null;
+}
+
+function attachmentPreview(item: ThreadAttachment): string | null {
+  if (item.kind !== "image") return null;
+  return item.url || item.content || null;
+}
+
 function modelOptions(providerSettings: ProviderSettings | null, codexModels: ProviderModel[]): Array<{ provider: ProviderId; model: string; accountId?: string }> {
   if (!providerSettings) {
     return codexModels.map((model) => ({ provider: "codex", model: model.id }));
@@ -170,6 +232,32 @@ function usageHeadline(history: ThreadHistoryItem[]): string | null {
   return pieces.join(" · ");
 }
 
+function modelChoiceLabel(choice: ModelChoice): string {
+  const parts = [choice.provider, choice.model, choice.accountId].filter(Boolean);
+  return parts.length ? parts.join(" · ") : choice.model;
+}
+
+async function readImageAsDataUrl(file: File): Promise<ComposerImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string" || !reader.result) {
+        reject(new Error(`${file.name} 이미지를 읽지 못했습니다.`));
+        return;
+      }
+      resolve({
+        id: crypto.randomUUID(),
+        name: file.name || `image-${Date.now()}`,
+        mime: file.type || "image/*",
+        size: file.size,
+        content: reader.result,
+      });
+    };
+    reader.onerror = () => reject(reader.error ?? new Error(`${file.name} 이미지를 읽지 못했습니다.`));
+    reader.readAsDataURL(file);
+  });
+}
+
 function App(): React.JSX.Element {
   const bridge = useMemo(() => new RemoteBridge(), []);
   const routeState = useMemo(routeFromHash, []);
@@ -189,6 +277,7 @@ function App(): React.JSX.Element {
   const [threadHistory, setThreadHistory] = useState<ThreadHistoryItem[]>([]);
   const [currentThread, setCurrentThread] = useState<ThreadSummary | ThreadRef | null>(null);
   const [composerText, setComposerText] = useState("");
+  const [composerImages, setComposerImages] = useState<ComposerImageAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
@@ -197,10 +286,14 @@ function App(): React.JSX.Element {
   const [respondingApproval, setRespondingApproval] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
+  const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | null>(null);
+  const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
   const historyRef = useRef<ThreadHistoryItem[]>([]);
   const appRef = useRef<HTMLDivElement | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const composerWrapRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
   const nearBottomRef = useRef(true);
   const pendingScrollAdjustRef = useRef<number | null>(null);
@@ -299,6 +392,9 @@ function App(): React.JSX.Element {
     setVisibleHistoryCount(HISTORY_PAGE_SIZE);
     nearBottomRef.current = true;
     forceScrollToBottomRef.current = true;
+    setThreadPanel(null);
+    setThreadModelKeyState({ key: "", dirty: false });
+    setComposerImages([]);
   }, [route.view, route.view === "thread" ? route.threadId : ""]);
 
   useEffect(() => {
@@ -329,6 +425,13 @@ function App(): React.JSX.Element {
       window.removeEventListener("resize", applyBottomMetrics);
     };
   }, [route.view, currentThread?.id, busy]);
+
+  useLayoutEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) return;
+    input.style.height = "0px";
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 44), 140)}px`;
+  }, [composerText]);
 
   const visibleHistory = useMemo(
     () => threadHistory.slice(Math.max(0, threadHistory.length - visibleHistoryCount)),
@@ -371,6 +474,68 @@ function App(): React.JSX.Element {
   useEffect(() => {
     historyRef.current = threadHistory;
   }, [threadHistory]);
+
+  const availableModels = useMemo<ModelChoice[]>(() => modelOptions(providerSettings, codexModels), [providerSettings, codexModels]);
+  const currentThreadChoice = useMemo<ModelChoice | null>(() => {
+    if (!currentThread) return null;
+    return {
+      model: currentThread.model,
+      provider: "provider" in currentThread ? currentThread.provider : undefined,
+      accountId: "accountId" in currentThread ? currentThread.accountId : undefined,
+    };
+  }, [currentThread]);
+  const historyChoice = useMemo<ModelChoice | null>(() => latestHistoryChoice(threadHistory), [threadHistory]);
+  const settingsChoice = useMemo<ModelChoice | null>(() => {
+    if (providerSettings?.model) {
+      return {
+        provider: providerSettings.provider,
+        accountId: providerSettings.accountId,
+        model: providerSettings.model,
+      };
+    }
+    if (codexSettings?.model) return { provider: "codex", model: codexSettings.model };
+    if (codexModels[0]?.id) return { provider: "codex", model: codexModels[0].id };
+    return null;
+  }, [providerSettings, codexSettings, codexModels]);
+  const threadModelChoices = useMemo<ModelChoice[]>(
+    () => uniqueModelChoices([...availableModels, historyChoice, currentThreadChoice, settingsChoice]),
+    [availableModels, historyChoice, currentThreadChoice, settingsChoice],
+  );
+  const preferredThreadModel = useMemo<{ choice: ModelChoice | null; source: "history" | "thread" | "settings" | "fallback" | null }>(() => {
+    const candidates = [
+      { choice: historyChoice, source: "history" as const },
+      { choice: currentThreadChoice, source: "thread" as const },
+      { choice: settingsChoice, source: "settings" as const },
+    ];
+    for (const candidate of candidates) {
+      if (!candidate.choice?.model) continue;
+      return { choice: matchModelChoice(threadModelChoices, candidate.choice) ?? candidate.choice, source: candidate.source };
+    }
+    return { choice: threadModelChoices[0] ?? null, source: threadModelChoices[0] ? "fallback" : null };
+  }, [threadModelChoices, historyChoice, currentThreadChoice, settingsChoice]);
+  const selectedThreadModel = useMemo<ModelChoice | null>(() => {
+    if (threadModelKeyState.key) {
+      const exact = threadModelChoices.find((option) => modelChoiceKey(option) === threadModelKeyState.key);
+      if (exact) return exact;
+    }
+    return preferredThreadModel.choice;
+  }, [threadModelChoices, threadModelKeyState.key, preferredThreadModel.choice]);
+
+  useEffect(() => {
+    if (route.view !== "thread") return;
+    setThreadModelKeyState((current) => {
+      const currentValid = current.key && threadModelChoices.some((option) => modelChoiceKey(option) === current.key);
+      if (current.dirty && currentValid) return current;
+      const fallbackKey = preferredThreadModel.choice ? modelChoiceKey(preferredThreadModel.choice) : "";
+      if (current.key === fallbackKey && current.dirty === false) return current;
+      return { key: fallbackKey, dirty: false };
+    });
+  }, [route.view, threadModelChoices, preferredThreadModel.choice]);
+
+  useEffect(() => {
+    if (route.view !== "thread" || !currentThread?.cwd) return;
+    void refreshSlashCommands(currentThread.cwd, selectedThreadModel?.model || currentThread.model);
+  }, [route.view, currentThread?.cwd, currentThread?.model, selectedThreadModel?.model]);
 
   useEffect(() => {
     const unsubApp = bridge.subscribe<unknown>("app-server:event", (payload) => {
@@ -498,24 +663,58 @@ function App(): React.JSX.Element {
     }
   }
 
+  async function handleAttachImages(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const files = Array.from(event.target.files ?? []).filter((file) => file.type.startsWith("image/"));
+    event.target.value = "";
+    if (!files.length) return;
+    const oversized = files.find((file) => file.size > MAX_IMAGE_FILE_BYTES);
+    if (oversized) {
+      setBootstrapError(`${oversized.name} 파일이 너무 큽니다. 모바일 원격 첨부는 이미지당 최대 8MB까지 지원합니다.`);
+      return;
+    }
+    const nextSize = composerImages.reduce((total, image) => total + image.size, 0) + files.reduce((total, file) => total + file.size, 0);
+    if (nextSize > MAX_IMAGE_BATCH_BYTES) {
+      setBootstrapError("첨부 이미지 합계가 너무 큽니다. 한 번에 최대 18MB까지 선택할 수 있습니다.");
+      return;
+    }
+    try {
+      const images = await Promise.all(files.map((file) => readImageAsDataUrl(file)));
+      setComposerImages((current) => [...current, ...images]);
+      if (nearBottomRef.current) forceScrollToBottomRef.current = true;
+    } catch (error) {
+      setBootstrapError(String(error));
+    }
+  }
+
   async function sendTurn(): Promise<void> {
     const meta = threadMeta(currentThread);
     const text = composerText.trim();
-    if (!meta || !text) return;
+    const attachments: ThreadAttachment[] = composerImages.map((image) => ({
+      name: image.name,
+      kind: "image",
+      mime: image.mime,
+      size: image.size,
+      content: image.content,
+      url: image.content,
+    }));
+    const targetModel = selectedThreadModel ?? { provider: meta?.provider, model: meta?.model ?? "", accountId: meta?.accountId };
+    if (!meta || (!text && !attachments.length) || !targetModel.model) return;
     const optimistic: ThreadHistoryItem = {
       id: crypto.randomUUID(),
       kind: "user",
       text,
+      attachments,
       turnId: `local-${Date.now()}`,
       runtime: meta.runtime,
-      provider: meta.provider,
-      model: meta.model,
-      accountId: meta.accountId,
+      provider: targetModel.provider ?? meta.provider,
+      model: targetModel.model,
+      accountId: targetModel.accountId ?? meta.accountId,
     };
     const next = [...historyRef.current, optimistic];
     historyRef.current = next;
     setThreadHistory(next);
     setComposerText("");
+    setComposerImages([]);
     setBusy(true);
     if (nearBottomRef.current) forceScrollToBottomRef.current = true;
     try {
@@ -523,10 +722,12 @@ function App(): React.JSX.Element {
         threadId: currentThread?.id,
         cwd: meta.cwd,
         text,
-        model: meta.model,
+        model: targetModel.model,
         runtime: meta.runtime,
-        provider: meta.provider,
-        accountId: meta.accountId,
+        provider: targetModel.provider ?? meta.provider,
+        accountId: targetModel.accountId ?? meta.accountId,
+        attachments: attachments.map((item) => item.content ?? item.url ?? "").filter(Boolean),
+        attachmentDetails: attachments,
         approvalPolicy: codexSettings?.approvalPolicy,
         sandboxMode: codexSettings?.sandboxMode,
         reasoningEffort: codexSettings?.reasoningEffort,
@@ -574,7 +775,6 @@ function App(): React.JSX.Element {
   }
 
   const routeTab = route.view === "thread" ? "thread" : route.view;
-  const availableModels = modelOptions(providerSettings, codexModels);
   const currentUsageText = usageHeadline(threadHistory);
   const projectGroups = new Map<string, ThreadSummary[]>();
   for (const item of projectSummaries) {
@@ -582,6 +782,14 @@ function App(): React.JSX.Element {
     bucket.push(item);
     projectGroups.set(item.cwd, bucket);
   }
+  const hasComposerContent = composerText.trim().length > 0 || composerImages.length > 0;
+  const modelSourceLabel = preferredThreadModel.source === "history"
+    ? "최신 히스토리 기준"
+    : preferredThreadModel.source === "thread"
+      ? "스레드 메타 기준"
+      : preferredThreadModel.source === "settings"
+        ? "현재 설정 기준"
+        : "사용 가능 모델 기준";
 
   return (
     <div ref={appRef} className={`mobile-app ${route.view === "thread" ? "thread-app" : ""}`}>
@@ -828,36 +1036,104 @@ function App(): React.JSX.Element {
               <section key="thread" className="section thread-section">
                 <div className="thread-layout">
                   {currentThread && (
-                    <div className="card row-card glow-card glow-host">
+                    <div className="card thread-toolbar glow-card glow-host">
                       <GlowRing />
-                      <div className="row-head">
-                        <div className="row-title-group">
-                          <div className="row-icon"><MessageSquare size={16} /></div>
-                          <span className="row-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
+                      <div className="thread-summary">
+                        <div className="thread-summary-copy">
+                          <div className="row-title-group">
+                            <div className="row-icon"><MessageSquare size={16} /></div>
+                            <span className="row-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
+                          </div>
+                          <div className="thread-summary-subtitle">{selectedThreadModel ? modelChoiceLabel(selectedThreadModel) : currentThread.model}</div>
                         </div>
-                        <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
+                        <div className="thread-summary-side">
+                          <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
+                          <ChevronDown size={16} className={`thread-chevron ${threadPanel ? "open" : ""}`} />
+                        </div>
                       </div>
-                      <div className="muted">{currentThread.cwd}</div>
-                      <div className="badge-row">
-                        <span className="badge accent">{currentThread.model}</span>
-                        {"provider" in currentThread && currentThread.provider && <span className="badge">{currentThread.provider}</span>}
-                        {currentUsageText && <span className="badge">{currentUsageText}</span>}
-                      </div>
-                    </div>
-                  )}
 
-                  {slashCommands.length > 0 && (
-                    <div className="chip-row">
-                      {slashCommands.map((command) => (
+                      <div className="thread-toggle-row">
                         <button
                           type="button"
-                          key={command.name}
-                          className="chip"
-                          onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
+                          className={`chip thread-toggle ${threadPanel === "info" ? "active" : ""}`}
+                          onClick={() => setThreadPanel((current) => current === "info" ? null : "info")}
                         >
-                          /{command.name}
+                          <Info size={14} />정보
                         </button>
-                      ))}
+                        <button
+                          type="button"
+                          className={`chip thread-toggle ${threadPanel === "slash" ? "active" : ""}`}
+                          onClick={() => setThreadPanel((current) => current === "slash" ? null : "slash")}
+                        >
+                          <Sparkles size={14} />스킬
+                        </button>
+                        <button
+                          type="button"
+                          className={`chip thread-toggle ${threadPanel === "model" ? "active" : ""}`}
+                          onClick={() => setThreadPanel((current) => current === "model" ? null : "model")}
+                        >
+                          <SlidersHorizontal size={14} />모델
+                        </button>
+                      </div>
+
+                      {threadPanel === "info" && (
+                        <div className="thread-panel">
+                          <div className="thread-panel-info">
+                            <div className="muted wrap-anywhere">{currentThread.cwd}</div>
+                            <div className="badge-row">
+                              <span className="badge accent">{selectedThreadModel?.model ?? currentThread.model}</span>
+                              {(selectedThreadModel?.provider || ("provider" in currentThread ? currentThread.provider : undefined)) && (
+                                <span className="badge">{selectedThreadModel?.provider ?? ("provider" in currentThread ? currentThread.provider : undefined)}</span>
+                              )}
+                              {(selectedThreadModel?.accountId || ("accountId" in currentThread ? currentThread.accountId : undefined)) && (
+                                <span className="badge">{selectedThreadModel?.accountId ?? ("accountId" in currentThread ? currentThread.accountId : undefined)}</span>
+                              )}
+                              {currentUsageText && <span className="badge">{currentUsageText}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {threadPanel === "slash" && slashCommands.length > 0 && (
+                        <div className="thread-panel">
+                          <div className="chip-row">
+                            {slashCommands.map((command) => (
+                              <button
+                                type="button"
+                                key={command.name}
+                                className="chip"
+                                onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
+                              >
+                                /{command.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {threadPanel === "model" && (
+                        <div className="thread-panel">
+                          <select
+                            value={selectedThreadModel ? modelChoiceKey(selectedThreadModel) : ""}
+                            onChange={(event) => {
+                              setThreadModelKeyState({ key: event.target.value, dirty: true });
+                            }}
+                          >
+                            {threadModelChoices.map((item) => (
+                              <option key={modelChoiceKey(item)} value={modelChoiceKey(item)}>
+                                {modelChoiceLabel(item)}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="tiny wrap-anywhere">기본 선택: {modelSourceLabel}</div>
+                        </div>
+                      )}
+
+                      {threadPanel === "slash" && slashCommands.length === 0 && (
+                        <div className="thread-panel">
+                          <div className="tiny wrap-anywhere">이 스레드에서 사용할 slash command가 아직 없습니다.</div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -943,21 +1219,59 @@ function App(): React.JSX.Element {
         {route.view === "thread" && currentThread && (
           <div ref={composerWrapRef} className="composer-wrap">
             <div className="composer card">
-              <textarea
-                value={composerText}
-                onChange={(event) => setComposerText(event.target.value)}
-                placeholder="메시지를 입력하세요"
-                rows={1}
+              <input
+                ref={attachmentInputRef}
+                className="composer-file-input"
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={(event) => void handleAttachImages(event)}
               />
-              {busy ? (
-                <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-stop" onClick={() => void interruptTurn()} title="중단">
-                  <Square size={16} />
-                </motion.button>
-              ) : (
-                <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-send" onClick={() => void sendTurn()} disabled={!composerText.trim()} title="보내기">
-                  <Send size={17} />
-                </motion.button>
+              {composerImages.length > 0 && (
+                <div className="composer-attachments">
+                  {composerImages.map((image) => (
+                    <div key={image.id} className="composer-attachment">
+                      <img src={image.content} alt={image.name} className="composer-thumb" />
+                      <button
+                        type="button"
+                        className="composer-remove"
+                        onClick={() => setComposerImages((current) => current.filter((item) => item.id !== image.id))}
+                        aria-label={`${image.name} 제거`}
+                      >
+                        <XCircle size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
+              <div className="composer-main">
+                <motion.button
+                  whileTap={{ scale: 0.94 }}
+                  type="button"
+                  className="composer-attach"
+                  onClick={() => attachmentInputRef.current?.click()}
+                  title="이미지 첨부"
+                >
+                  <Paperclip size={16} />
+                  <span>{composerImages.length ? `${composerImages.length}` : ""}</span>
+                </motion.button>
+                <textarea
+                  ref={composerInputRef}
+                  value={composerText}
+                  onChange={(event) => setComposerText(event.target.value)}
+                  placeholder="메시지를 입력하세요"
+                  rows={1}
+                />
+                {busy ? (
+                  <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-stop" onClick={() => void interruptTurn()} title="중단">
+                    <Square size={16} />
+                  </motion.button>
+                ) : (
+                  <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-send" onClick={() => void sendTurn()} disabled={!hasComposerContent} title="보내기">
+                    <Send size={17} />
+                  </motion.button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -1005,6 +1319,10 @@ const MessageBlock = memo(function MessageBlock({ item }: { item: ThreadHistoryI
   const kind = item.kind === "user" ? "user" : item.kind === "agent" ? "agent" : "system";
   const label = kind === "user" ? "나" : kind === "agent" ? "에이전트" : item.title || "시스템";
   const Icon = kind === "user" ? CircleUserRound : kind === "agent" ? Bot : Terminal;
+  const imageAttachments = (item.attachments ?? []).map((attachment) => ({
+    name: attachment.name,
+    src: attachmentPreview(attachment),
+  })).filter((attachment): attachment is { name: string; src: string } => Boolean(attachment.src));
   return (
     <div className={`msg-row ${kind}`}>
       <div className="msg-avatar"><Icon size={15} /></div>
@@ -1013,7 +1331,14 @@ const MessageBlock = memo(function MessageBlock({ item }: { item: ThreadHistoryI
           <strong>{label}</strong>
           {(item.model || item.runtime) && <span>· {item.model || item.runtime}</span>}
         </div>
-        {messageText(item) ? <MobileMarkdown text={messageText(item)} /> : <div className="msg-body">(비어 있음)</div>}
+        {messageText(item) ? <MobileMarkdown text={messageText(item)} /> : (!imageAttachments.length && <div className="msg-body">(비어 있음)</div>)}
+        {imageAttachments.length > 0 && (
+          <div className="message-attachments">
+            {imageAttachments.map((attachment, index) => (
+              <img key={`${item.id}:${index}`} src={attachment.src} alt={attachment.name} className="message-thumb" />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

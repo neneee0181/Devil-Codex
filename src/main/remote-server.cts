@@ -15,6 +15,7 @@ export interface RemoteServerOptions {
   allowedEvents: Set<string>;
   auth: RemoteAuthStore;
   onDeviceApprovalNeeded: (device: { deviceId: string; deviceName: string }) => Promise<boolean>;
+  onClientStateChanged?: () => void;
   staticDir: string;
   version?: string;
   heartbeatIntervalMs?: number;
@@ -57,6 +58,7 @@ interface ClientState {
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_MISSED_HEARTBEATS = 2;
+const MAX_REMOTE_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
 const MIME_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -139,7 +141,7 @@ export class RemoteServer {
     const server = input.tls
       ? createHttpsServer({ cert: input.tls.cert, key: input.tls.key }, (req, res) => void this.handleHttp(req, res))
       : createHttpServer((req, res) => void this.handleHttp(req, res));
-    const wsServer = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+    const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_REMOTE_WS_PAYLOAD_BYTES });
 
     server.on("upgrade", (request, socket, head) => {
       let url: URL;
@@ -316,10 +318,10 @@ export class RemoteServer {
       current.missedHeartbeats = 0;
     });
     socket.on("close", () => {
-      this.clients.delete(socket);
+      this.removeClient(socket);
     });
     socket.on("error", () => {
-      this.clients.delete(socket);
+      this.removeClient(socket);
     });
     socket.on("message", (data, isBinary) => {
       void this.handleSocketMessage(client, data, isBinary);
@@ -414,6 +416,7 @@ export class RemoteServer {
       client.connectedAt = Date.now();
       client.missedHeartbeats = 0;
       sendJson(client.socket, { type: "auth-ok" });
+      this.options.onClientStateChanged?.();
       return;
     }
 
@@ -455,6 +458,7 @@ export class RemoteServer {
     client.connectedAt = Date.now();
     client.missedHeartbeats = 0;
     sendJson(client.socket, { type: "auth-ok" });
+    this.options.onClientStateChanged?.();
   }
 
   private async handleCall(client: ClientState, message: Extract<RemoteInboundMessage, { type: "call" }>): Promise<void> {
@@ -507,5 +511,12 @@ export class RemoteServer {
     if (Buffer.isBuffer(data)) return data.toString("utf8");
     if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
     return Buffer.from(data).toString("utf8");
+  }
+
+  private removeClient(socket: WebSocket): void {
+    const current = this.clients.get(socket);
+    if (!current) return;
+    this.clients.delete(socket);
+    if (current.authenticated) this.options.onClientStateChanged?.();
   }
 }

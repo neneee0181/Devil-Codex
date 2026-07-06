@@ -290,18 +290,20 @@ button {
 
 .thread-layout {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   height: 100%;
   min-height: 0;
 }
 
 .thread-scroll {
-  grid-row: 3;
+  grid-row: 2;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: calc(var(--composer-height) + var(--nav-height) + 24px);
   padding: 0 2px calc(var(--composer-height) + var(--nav-height) + var(--bottom-stack-gap) + var(--nav-edge-offset) + env(safe-area-inset-bottom) + 14px);
   scrollbar-width: none;
 }
@@ -331,6 +333,7 @@ button {
 
 .search-box,
 .composer textarea,
+.thread-panel select,
 .create-thread-form select,
 .create-thread-form input,
 .ask-textarea {
@@ -345,6 +348,7 @@ button {
 
 .search-box:focus,
 .composer textarea:focus,
+.thread-panel select:focus,
 .create-thread-form select:focus,
 .create-thread-form input:focus,
 .ask-textarea:focus {
@@ -419,6 +423,7 @@ button {
   min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -465,6 +470,14 @@ button {
   white-space: nowrap;
 }
 
+.wrap-anywhere {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .badge-row,
 .chip-row {
   display: flex;
@@ -478,6 +491,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  max-width: 100%;
   min-height: 26px;
   padding: 0 10px;
   border-radius: 999px;
@@ -486,6 +501,9 @@ button {
   color: var(--text-dim);
   font-size: 0.72rem;
   font-weight: 500;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .badge.accent {
@@ -502,6 +520,74 @@ button {
   background: var(--accent-soft);
   border-color: rgba(255, 47, 86, 0.5);
   color: #ffdde2;
+}
+
+.thread-toolbar {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+}
+
+.thread-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.thread-summary-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.thread-summary-subtitle {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.thread-summary-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.thread-chevron {
+  color: var(--text-faint);
+  transition: transform 0.16s ease;
+}
+
+.thread-chevron.open {
+  transform: rotate(180deg);
+}
+
+.thread-toggle-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.thread-toggle {
+  flex-shrink: 0;
+}
+
+.thread-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.thread-panel-info {
+  display: grid;
+  gap: 8px;
 }
 
 /* ---------- Create thread form ---------- */
@@ -527,12 +613,19 @@ button {
 .msg-row {
   display: flex;
   gap: 9px;
-  max-width: 92%;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.msg-row.agent,
+.msg-row.system {
+  padding-right: clamp(16px, 9vw, 72px);
 }
 
 .msg-row.user {
   flex-direction: row-reverse;
-  margin-left: auto;
+  padding-left: clamp(16px, 9vw, 72px);
 }
 
 .msg-avatar {
@@ -560,6 +653,9 @@ button {
   border-radius: var(--radius-sm);
   padding: 10px 13px;
   min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  overflow: hidden;
 }
 
 .msg-row.agent .bubble {
@@ -582,6 +678,7 @@ button {
 .msg-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 3px;
   color: var(--text-faint);
@@ -595,7 +692,24 @@ button {
 .msg-body {
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   font-size: 0.88rem;
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .load-more-button {
@@ -715,6 +829,7 @@ button {
 }
 
 .markdown-table-wrap {
+  max-width: 100%;
   overflow-x: auto;
   margin: 0 0 8px;
 }
@@ -739,6 +854,7 @@ button {
 }
 
 .markdown-code {
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   background: #0d0a0d;
@@ -872,15 +988,77 @@ button {
 
 .composer {
   padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.composer-file-input {
+  display: none;
+}
+
+.composer-main {
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  min-width: 0;
+}
+
+.composer-attachments {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.composer-attachment {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.composer-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.composer-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(10, 7, 10, 0.78);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.composer-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  flex-shrink: 0;
 }
 
 .composer textarea {
   flex: 1;
+  min-width: 0;
   min-height: 44px;
   max-height: 140px;
+  overflow-y: auto;
   resize: none;
   border-radius: var(--radius-md);
 }
@@ -935,7 +1113,22 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.usage-card .row-title-group,
+.usage-card .usage-head strong,
+.usage-card .muted,
+.usage-card .tiny,
+.usage-card .badge,
+.usage-card .split-line > * {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .usage-row {
@@ -1154,6 +1347,7 @@ button {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
