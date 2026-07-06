@@ -17,8 +17,9 @@ const defaults: CodexSettings = {
   englishOutput: false,
   remoteControlEnabled: false,
   remoteControlMode: "tailnet",
+  remoteAllowedThreadIds: [],
 };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode" } as const;
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode", remoteAllowedThreadIds: "remote_allowed_thread_ids" } as const;
 // NOTE: `model_reasoning_effort` and `service_tier` are shared with stock
 // Codex, which writes them from its own model picker. Devil now reads them in
 // load() and writes them in save() so the two apps stay in sync — the renderer
@@ -57,8 +58,23 @@ function readBoolean(source: string, key: string): boolean | undefined {
   return match ? match[1] === "true" : undefined;
 }
 
-function formatValue(value: string | boolean): string {
-  return typeof value === "boolean" ? String(value) : JSON.stringify(value);
+function formatValue(value: string | boolean | string[]): string {
+  if (typeof value === "boolean") return String(value);
+  // Arrays serialize as a plain JSON/TOML array literal (e.g. ["a","b"]) -
+  // valid TOML syntax, so stock Codex's own parser just ignores this
+  // Devil-only key instead of choking on it.
+  return JSON.stringify(value);
+}
+
+function readArray(source: string, key: string): string[] | undefined {
+  const match = source.match(new RegExp(`^\\s*${key}\\s*=\\s*(\\[[^\\]]*\\])`, "m"));
+  if (!match) return undefined;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // Strip a root key line wherever it currently sits in the file (it may have
@@ -97,6 +113,7 @@ export class CodexSettingsStore {
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
         remoteControlEnabled: readBoolean(source, keys.remoteControlEnabled) ?? defaults.remoteControlEnabled,
         remoteControlMode: readRemoteControlMode(source) ?? defaults.remoteControlMode,
+        remoteAllowedThreadIds: readArray(source, keys.remoteAllowedThreadIds) ?? defaults.remoteAllowedThreadIds,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults;

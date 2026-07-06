@@ -17,7 +17,8 @@ export type RemoteCallChannel =
   | "providers:load"
   | "settings:load"
   | "codex:models"
-  | "claude:slash-commands";
+  | "claude:slash-commands"
+  | "remote:scope";
 
 type AuthMessage = { type: "auth"; token: string; deviceId: string; deviceName: string };
 type CallMessage = { type: "call"; id: number; channel: RemoteCallChannel; input?: unknown };
@@ -70,6 +71,7 @@ const allowedChannels = new Set<RemoteCallChannel>([
   "settings:load",
   "codex:models",
   "claude:slash-commands",
+  "remote:scope",
 ]);
 
 function wsUrl(): string {

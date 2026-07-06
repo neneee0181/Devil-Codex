@@ -5,7 +5,7 @@ import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
 import { estimateProviderUsageCost } from "./providerPricing";
-import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile } from "../shared/contracts";
+import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile, ThreadSummary } from "../shared/contracts";
 
 type Config = {
   approval: string;
@@ -101,6 +101,12 @@ function RemoteControlSection(): React.JSX.Element {
   const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | null>(null);
   const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("tailnet");
   const [error, setError] = useState<string | null>(null);
+  const scopeCodex = useCodexSettings();
+  const allowedThreadIds = scopeCodex.settings?.remoteAllowedThreadIds ?? [];
+  const setAllowedThreadIds = (ids: string[]): void => {
+    if (!scopeCodex.settings) return;
+    scopeCodex.save({ ...scopeCodex.settings, remoteAllowedThreadIds: ids });
+  };
 
   const reload = async (): Promise<void> => {
     setState("loading");
@@ -227,7 +233,85 @@ function RemoteControlSection(): React.JSX.Element {
         </div>
       </Row>
     </div>
+
+    <div className="setting-card" style={{ marginTop: 16 }}>
+      <Row title="허용 스레드" detail="특정 프로젝트의 특정 스레드만 골라 원격 접속을 그 스레드로 제한합니다. 승인된 기기라도 여기서 허용하지 않은 스레드는 목록/대화/전송 전부 차단됩니다.">
+        <span style={{ color: "#9a9a9a", fontSize: 12 }}>{allowedThreadIds.length ? `${allowedThreadIds.length}개 스레드로 제한 중` : "제한 없음 (전체 접근)"}</span>
+      </Row>
+      <AllowedThreadsPicker allowed={allowedThreadIds} onChange={setAllowedThreadIds} />
+    </div>
   </>;
+}
+
+function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChange: (ids: string[]) => void }): React.JSX.Element {
+  const [loading, setLoading] = useState(true);
+  const [allThreads, setAllThreads] = useState<ThreadSummary[]>([]);
+  const [selectedCwd, setSelectedCwd] = useState("");
+
+  const reload = async (): Promise<void> => {
+    setLoading(true);
+    try {
+      const [codexThreads, claudeThreads] = await Promise.all([
+        window.devilCodex.listProjects({ archived: false, runtime: "codex" }).catch(() => [] as ThreadSummary[]),
+        window.devilCodex.listProjects({ archived: false, runtime: "claude-code" }).catch(() => [] as ThreadSummary[]),
+      ]);
+      const merged = [...codexThreads, ...claudeThreads];
+      setAllThreads(merged);
+      setSelectedCwd((current) => current || merged[0]?.cwd || "");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void reload(); }, []);
+
+  const byCwd = useMemo(() => {
+    const map = new Map<string, ThreadSummary[]>();
+    for (const thread of allThreads) map.set(thread.cwd, [...(map.get(thread.cwd) ?? []), thread]);
+    return map;
+  }, [allThreads]);
+  const byId = useMemo(() => new Map(allThreads.map((thread) => [thread.id, thread])), [allThreads]);
+  const projectCwds = useMemo(() => [...byCwd.keys()].sort(), [byCwd]);
+  const threadsForSelected = selectedCwd ? byCwd.get(selectedCwd) ?? [] : [];
+
+  const toggle = (id: string): void => onChange(allowed.includes(id) ? allowed.filter((item) => item !== id) : [...allowed, id]);
+
+  return <div style={{ display: "grid", gap: 12, marginTop: 4 }}>
+    <p className="section-help" style={{ margin: 0 }}>비워두면 이 PC의 모든 스레드에 원격 접근이 가능합니다. 하나라도 추가하면 원격 클라이언트는 아래 목록의 스레드만 보고 이어서 대화할 수 있습니다.</p>
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <select value={selectedCwd} onChange={(event) => setSelectedCwd(event.target.value)} style={{ flex: 1, minWidth: 200 }}>
+        {!projectCwds.length && <option value="">프로젝트 없음</option>}
+        {projectCwds.map((cwd) => <option key={cwd} value={cwd}>{cwd}</option>)}
+      </select>
+      <button type="button" className="secondary" onClick={() => void reload()} disabled={loading}>{loading ? "불러오는 중…" : "새로고침"}</button>
+    </div>
+    <div style={{ display: "grid", gap: 6, maxHeight: 220, overflow: "auto" }}>
+      {threadsForSelected.length ? threadsForSelected.map((thread) => (
+        <label key={thread.id} style={{ ...listItemStyle, cursor: "pointer" }}>
+          <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
+            <strong style={listStrongStyle}>{thread.title || thread.id}</strong>
+            <small style={listSmallStyle}>{thread.model}{thread.runtime ? ` · ${thread.runtime}` : ""}</small>
+          </span>
+          <input type="checkbox" checked={allowed.includes(thread.id)} onChange={() => toggle(thread.id)} />
+        </label>
+      )) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>{selectedCwd ? "이 프로젝트에 스레드가 없습니다." : "먼저 프로젝트를 선택하세요."}</span>}
+    </div>
+    <div>
+      <strong style={{ fontSize: 13 }}>현재 허용된 스레드 ({allowed.length})</strong>
+      <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+        {allowed.length ? allowed.map((id) => {
+          const thread = byId.get(id);
+          return <div key={id} style={listItemStyle}>
+            <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
+              <strong style={listStrongStyle}>{thread?.title || id}</strong>
+              <small style={listSmallStyle}>{thread?.cwd ?? "알 수 없는 프로젝트"}</small>
+            </span>
+            <button type="button" className="secondary" onClick={() => toggle(id)}>제거</button>
+          </div>;
+        }) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>허용된 스레드가 없습니다 (전체 접근).</span>}
+      </div>
+    </div>
+  </div>;
 }
 
 function Row({ title, detail, children }: { title: string; detail?: string; children: React.ReactNode }): React.JSX.Element { return <div className="setting-row"><div><strong>{title}</strong>{detail && <p>{detail}</p>}</div><div>{children}</div></div>; }

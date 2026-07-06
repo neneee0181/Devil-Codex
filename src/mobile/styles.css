@@ -1,26 +1,34 @@
+/*
+  Palette lifted straight from the Devil Codex app icon (build/icon.png): a
+  red/crimson devil mascot with coral horn highlights on a near-black,
+  warm-tinted vignette - deliberately warm, not the generic
+  violet/cyan "AI app" neon look.
+*/
 :root {
   color-scheme: dark;
-  --bg: #07070b;
+  --bg: #0a070a;
   --surface: rgba(255, 255, 255, 0.045);
   --surface-strong: rgba(255, 255, 255, 0.08);
   --surface-press: rgba(255, 255, 255, 0.12);
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
-  --text: #f5f6fb;
-  --text-dim: #9a9dae;
-  --text-faint: #66697b;
-  --accent-1: #8b5cf6;
-  --accent-2: #22d3ee;
-  --accent-grad: linear-gradient(135deg, var(--accent-1) 0%, #6d8dff 55%, var(--accent-2) 100%);
-  --accent-soft: rgba(139, 92, 246, 0.16);
+  --text: #f7f2f3;
+  --text-dim: #a99ea3;
+  --text-faint: #746a6f;
+  --accent-1: #ff2f56;
+  --accent-2: #ff8a5c;
+  --accent-3: #ff8fb3;
+  --accent-grad: linear-gradient(135deg, #ff2f56 0%, #ff5a63 45%, #ff9166 100%);
+  --accent-conic: conic-gradient(from 0deg, #ff2f56, #ff9166, #ff8fb3, #ff2f56);
+  --accent-soft: rgba(255, 47, 86, 0.16);
   --success: #34d399;
-  --danger: #fb7185;
+  --danger: #ff5470;
   --warning: #fbbf24;
   --radius-xs: 10px;
   --radius-sm: 14px;
   --radius-md: 18px;
   --radius-lg: 26px;
-  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px -20px rgba(0, 0, 0, 0.65);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px -20px rgba(0, 0, 0, 0.7);
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -43,8 +51,8 @@ body,
 body {
   min-height: 100vh;
   background:
-    radial-gradient(560px 360px at 12% -6%, rgba(139, 92, 246, 0.22), transparent 60%),
-    radial-gradient(520px 420px at 110% 10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(560px 360px at 12% -6%, rgba(255, 47, 86, 0.20), transparent 60%),
+    radial-gradient(520px 420px at 110% 8%, rgba(255, 138, 92, 0.12), transparent 60%),
     var(--bg);
   background-attachment: fixed;
 }
@@ -123,7 +131,7 @@ button {
   background: var(--accent-grad);
   color: #0b0713;
   flex-shrink: 0;
-  box-shadow: 0 6px 18px -6px rgba(139, 92, 246, 0.75);
+  box-shadow: 0 6px 18px -6px rgba(255, 47, 86, 0.75);
 }
 
 .title-block {
@@ -264,7 +272,7 @@ button {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(180px 120px at 0% 0%, rgba(139, 92, 246, 0.16), transparent 70%);
+  background: radial-gradient(180px 120px at 0% 0%, rgba(255, 47, 86, 0.16), transparent 70%);
   pointer-events: none;
 }
 
@@ -291,7 +299,7 @@ button {
 .ask-textarea:focus {
   outline: none;
   border-color: var(--accent-1);
-  background: rgba(139, 92, 246, 0.06);
+  background: rgba(255, 47, 86, 0.06);
 }
 
 .search-wrap {
@@ -426,8 +434,8 @@ button {
 
 .badge.accent {
   background: var(--accent-soft);
-  border-color: rgba(139, 92, 246, 0.35);
-  color: #d9ccff;
+  border-color: rgba(255, 47, 86, 0.35);
+  color: #ffd6dd;
 }
 
 .chip {
@@ -436,8 +444,8 @@ button {
 
 .chip.active {
   background: var(--accent-soft);
-  border-color: rgba(139, 92, 246, 0.5);
-  color: #e4dbff;
+  border-color: rgba(255, 47, 86, 0.5);
+  color: #ffdde2;
 }
 
 /* ---------- Create thread form ---------- */
@@ -504,8 +512,8 @@ button {
 }
 
 .msg-row.user .bubble {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.32), rgba(34, 211, 238, 0.18));
-  border: 1px solid rgba(139, 92, 246, 0.4);
+  background: linear-gradient(135deg, rgba(255, 47, 86, 0.34), rgba(255, 138, 92, 0.2));
+  border: 1px solid rgba(255, 47, 86, 0.4);
   border-top-right-radius: 4px;
 }
 
@@ -556,8 +564,8 @@ button {
 }
 
 .activity-entry.inProgress {
-  background: rgba(34, 211, 238, 0.06);
-  border-color: rgba(34, 211, 238, 0.22);
+  background: rgba(251, 191, 36, 0.07);
+  border-color: rgba(251, 191, 36, 0.24);
 }
 
 .entry-head {
@@ -823,7 +831,7 @@ button {
 
 .decision-btn.active {
   background: var(--accent-soft);
-  border-color: rgba(139, 92, 246, 0.5);
+  border-color: rgba(255, 47, 86, 0.5);
 }
 
 .decision-btn.accept {
@@ -906,7 +914,58 @@ button {
   to { transform: rotate(360deg); }
 }
 
-@media (min-width: 860px) {
+/* ---------- Glow border (pointer-tracked accent ring) ---------- */
+/* Ported from the "glowing-effect" spotlight-card pattern to plain CSS
+   custom properties + `motion` (no Tailwind/shadcn in this project) so hero
+   cards pick up the same conic-gradient accent ring on desktop/tablet
+   pointers. No-ops gracefully on touch (no pointermove -> stays at rest). */
+
+.glow-host {
+  position: relative;
+}
+
+.glow-ring {
+  --active: 0;
+  --start: 0;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 1;
+}
+
+.glow-ring::after {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--glow-width, 1.5px));
+  border-radius: inherit;
+  border: var(--glow-width, 1.5px) solid transparent;
+  background: var(--accent-conic);
+  background-attachment: fixed;
+  opacity: var(--active);
+  transition: opacity 0.35s ease;
+  -webkit-mask-image: linear-gradient(#0000, #0000), conic-gradient(from calc((var(--start) - var(--glow-spread, 55)) * 1deg), #0000 0deg, #fff, #0000 calc(var(--glow-spread, 55) * 2deg));
+  mask-image: linear-gradient(#0000, #0000), conic-gradient(from calc((var(--start) - var(--glow-spread, 55)) * 1deg), #0000 0deg, #fff, #0000 calc(var(--glow-spread, 55) * 2deg));
+  -webkit-mask-clip: padding-box, border-box;
+  mask-clip: padding-box, border-box;
+  -webkit-mask-composite: intersect;
+  mask-composite: intersect;
+}
+
+/* ---------- Responsive: tablet + desktop browser ---------- */
+
+@media (min-width: 640px) {
+  .content {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .list-stack.grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 860px) and (max-width: 1023px) {
   .shell {
     max-width: 860px;
     margin: 0 auto;
@@ -915,5 +974,84 @@ button {
   .nav {
     left: max(14px, calc(50vw - 416px));
     right: max(14px, calc(50vw - 416px));
+  }
+}
+
+/* >=1024px: enough room for a persistent side rail instead of a thumb-reach
+   bottom bar, mirroring the desktop app's own sidebar+content layout so the
+   "remote" experience feels like a window onto the same product, not a
+   separate phone-only skin. */
+@media (min-width: 1024px) {
+  .shell {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    max-width: 1180px;
+    height: 100vh;
+    margin: 0 auto;
+  }
+
+  .topbar {
+    grid-column: 2;
+  }
+
+  .content {
+    grid-column: 2;
+    max-width: 920px;
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+
+  .composer-wrap {
+    grid-column: 2;
+    max-width: 920px;
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+
+  .list-stack.grid-2 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .nav {
+    position: sticky;
+    grid-column: 1;
+    grid-row: 1 / -1;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    top: 16px;
+    height: calc(100vh - 32px);
+    width: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 14px 8px;
+    border-radius: var(--radius-lg);
+  }
+
+  .nav-btn {
+    flex-direction: column;
+    min-height: 60px;
+    font-size: 0.64rem;
+  }
+
+  .nav-pill {
+    border-radius: var(--radius-sm);
+  }
+
+  .overlay {
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-sheet {
+    max-width: 480px;
+    border-radius: 24px;
+    border-bottom: 1px solid var(--border-strong);
+  }
+
+  .modal-grip {
+    display: none;
   }
 }

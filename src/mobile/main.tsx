@@ -40,12 +40,14 @@ import type {
   ProviderSettings,
   ProviderUsageEntry,
   ProviderUsageReport,
+  RemoteScope,
   RuntimeStatus,
   ThreadHistoryItem,
   ThreadRef,
   ThreadSummary,
 } from "../shared/contracts";
 import { RemoteBridge, clearStoredToken, consumeHashToken, isAppServerEvent, isAskRequest, storedToken } from "./ws-bridge";
+import { GlowRing } from "./GlowRing";
 import "./styles.css";
 
 consumeHashToken();
@@ -171,6 +173,7 @@ function App(): React.JSX.Element {
   const [codexModels, setCodexModels] = useState<ProviderModel[]>([]);
   const [slashCommands, setSlashCommands] = useState<ClaudeSlashCommandInfo[]>([]);
   const [usageReport, setUsageReport] = useState<ProviderUsageReport | null>(null);
+  const [remoteScope, setRemoteScope] = useState<RemoteScope | null>(null);
   const [projectSummaries, setProjectSummaries] = useState<ThreadSummary[]>([]);
   const [threadSummaries, setThreadSummaries] = useState<ThreadSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("");
@@ -225,18 +228,20 @@ function App(): React.JSX.Element {
   async function bootstrap(): Promise<void> {
     setBootstrapError(null);
     try {
-      const [runtime, settings, providers, usage, models] = await Promise.all([
+      const [runtime, settings, providers, usage, models, scope] = await Promise.all([
         bridge.call<RuntimeStatus>("runtime:status"),
         bridge.call<CodexSettings>("settings:load"),
         bridge.call<ProviderSettings>("providers:load"),
         bridge.call<ProviderUsageReport>("providers:usage", { force: true }),
         bridge.call<ProviderModel[]>("codex:models"),
+        bridge.call<RemoteScope>("remote:scope").catch(() => ({ restricted: false })),
       ]);
       setRuntimeStatus(runtime);
       setCodexSettings(settings);
       setProviderSettings(providers);
       setUsageReport(usage);
       setCodexModels(models);
+      setRemoteScope(scope);
       const defaultChoice = providers.provider ? { provider: providers.provider, model: providers.model, accountId: providers.accountId } : undefined;
       setCreateDraft((current) => ({
         cwd: current.cwd,
@@ -531,96 +536,14 @@ function App(): React.JSX.Element {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.18, ease: "easeOut" }}
               >
-                <div className="search-wrap">
-                  <Search size={16} />
-                  <input
-                    className="search-box"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void refreshProjects(event.currentTarget.value);
-                    }}
-                    placeholder="프로젝트 또는 스레드 검색"
-                  />
-                </div>
-
-                <div className="card row-card glow-card">
-                  <div className="row-head">
-                    <div className="row-title-group">
-                      <div className="row-icon"><PlusCircle size={16} /></div>
-                      <span className="row-title">새 스레드</span>
-                    </div>
-                    <span className="tiny">허용 채널만 사용</span>
-                  </div>
-                  <div className="create-thread-form">
-                    <input
-                      value={createDraft.cwd}
-                      onChange={(event) => setCreateDraft((current) => ({ ...current, cwd: event.target.value }))}
-                      placeholder="프로젝트 경로"
-                    />
-                    <select
-                      value={`${createDraft.provider ?? ""}:${createDraft.accountId ?? ""}:${createDraft.model}`}
-                      onChange={(event) => {
-                        const picked = availableModels.find((item) => `${item.provider}:${item.accountId ?? ""}:${item.model}` === event.target.value);
-                        if (!picked) return;
-                        setCreateDraft((current) => ({ ...current, provider: picked.provider, accountId: picked.accountId, model: picked.model }));
-                      }}
-                    >
-                      {availableModels.map((item) => (
-                        <option key={`${item.provider}:${item.accountId ?? ""}:${item.model}`} value={`${item.provider}:${item.accountId ?? ""}:${item.model}`}>
-                          {item.provider} · {item.model}{item.accountId ? ` · ${item.accountId}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                    <motion.button whileTap={{ scale: 0.97 }} type="button" className="icon-btn primary" onClick={() => void createThread()} disabled={bridgeState.state !== "ready"}>
-                      <PlusCircle size={16} />새 스레드 열기
-                    </motion.button>
-                  </div>
-                </div>
-
-                <div className="section-label">
-                  프로젝트<span className="count">{projectGroups.size}</span>
-                </div>
-                <div className="list-stack">
-                  {[...projectGroups.entries()].map(([cwd, items], index) => (
-                    <motion.button
-                      type="button"
-                      key={cwd}
-                      className="card row-card"
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: Math.min(index, 8) * 0.03, duration: 0.18 }}
-                      whileTap={{ scale: 0.985 }}
-                      onClick={() => {
-                        setSelectedProject(cwd);
-                        void refreshThreads(cwd);
-                      }}
-                    >
-                      <div className="row-head">
-                        <div className="row-title-group">
-                          <div className="row-icon"><FolderKanban size={16} /></div>
-                          <span className="row-title">{basename(cwd)}</span>
-                        </div>
-                        <ChevronRight size={16} className="tiny" />
-                      </div>
-                      <div className="muted">{cwd}</div>
-                      <div className="badge-row">
-                        <span className="badge">{items.length}개 스레드</span>
-                        <span className="badge">{items[0]?.runtime ?? "runtime?"}</span>
-                        <span className="badge">{formatRelative(items[0]?.updatedAt)}</span>
-                      </div>
-                    </motion.button>
-                  ))}
-                </div>
-
-                {selectedProject && (
-                  <div className="section">
-                    <div className="split-line">
-                      <span className="section-label" style={{ padding: 0 }}>{basename(selectedProject)}</span>
-                      <span className="tiny">{selectedProject}</span>
+                {remoteScope?.restricted ? (
+                  <>
+                    <p className="section-help" style={{ margin: 0 }}>이 기기는 PC의 설정 → 원격 제어 → 허용 스레드에서 지정한 스레드만 볼 수 있습니다.</p>
+                    <div className="section-label">
+                      허용된 스레드<span className="count">{projectSummaries.length}</span>
                     </div>
                     <div className="list-stack">
-                      {threadSummaries.map((thread, index) => (
+                      {projectSummaries.map((thread, index) => (
                         <motion.button
                           type="button"
                           key={thread.id}
@@ -631,6 +554,7 @@ function App(): React.JSX.Element {
                           whileTap={{ scale: 0.985 }}
                           onClick={() => {
                             setCurrentThread(thread);
+                            setSelectedProject(thread.cwd);
                             setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
                           }}
                         >
@@ -641,23 +565,154 @@ function App(): React.JSX.Element {
                             </div>
                             <span className="tiny">{formatRelative(thread.updatedAt)}</span>
                           </div>
-                          <div className="muted">{thread.preview || "미리보기 없음"}</div>
+                          <div className="muted">{basename(thread.cwd)}</div>
                           <div className="badge-row">
                             <span className="badge accent">{thread.model}</span>
-                            {thread.provider && <span className="badge">{thread.provider}</span>}
                             {thread.runtime && <span className="badge">{thread.runtime}</span>}
                           </div>
                         </motion.button>
                       ))}
-                      {!threadSummaries.length && (
+                      {!projectSummaries.length && (
                         <div className="empty-card card">
                           <MessageSquare size={22} />
-                          <strong>스레드 없음</strong>
-                          <div className="muted" style={{ whiteSpace: "normal" }}>선택한 프로젝트에 표시할 스레드가 없습니다.</div>
+                          <strong>허용된 스레드 없음</strong>
+                          <div className="muted" style={{ whiteSpace: "normal" }}>PC의 설정 → 원격 제어 → 허용 스레드에서 이 기기가 볼 스레드를 먼저 추가하세요.</div>
                         </div>
                       )}
                     </div>
-                  </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="search-wrap">
+                      <Search size={16} />
+                      <input
+                        className="search-box"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void refreshProjects(event.currentTarget.value);
+                        }}
+                        placeholder="프로젝트 또는 스레드 검색"
+                      />
+                    </div>
+
+                    <div className="card row-card glow-card glow-host">
+                      <GlowRing />
+                      <div className="row-head">
+                        <div className="row-title-group">
+                          <div className="row-icon"><PlusCircle size={16} /></div>
+                          <span className="row-title">새 스레드</span>
+                        </div>
+                        <span className="tiny">허용 채널만 사용</span>
+                      </div>
+                      <div className="create-thread-form">
+                        <input
+                          value={createDraft.cwd}
+                          onChange={(event) => setCreateDraft((current) => ({ ...current, cwd: event.target.value }))}
+                          placeholder="프로젝트 경로"
+                        />
+                        <select
+                          value={`${createDraft.provider ?? ""}:${createDraft.accountId ?? ""}:${createDraft.model}`}
+                          onChange={(event) => {
+                            const picked = availableModels.find((item) => `${item.provider}:${item.accountId ?? ""}:${item.model}` === event.target.value);
+                            if (!picked) return;
+                            setCreateDraft((current) => ({ ...current, provider: picked.provider, accountId: picked.accountId, model: picked.model }));
+                          }}
+                        >
+                          {availableModels.map((item) => (
+                            <option key={`${item.provider}:${item.accountId ?? ""}:${item.model}`} value={`${item.provider}:${item.accountId ?? ""}:${item.model}`}>
+                              {item.provider} · {item.model}{item.accountId ? ` · ${item.accountId}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <motion.button whileTap={{ scale: 0.97 }} type="button" className="icon-btn primary" onClick={() => void createThread()} disabled={bridgeState.state !== "ready"}>
+                          <PlusCircle size={16} />새 스레드 열기
+                        </motion.button>
+                      </div>
+                    </div>
+
+                    <div className="section-label">
+                      프로젝트<span className="count">{projectGroups.size}</span>
+                    </div>
+                    <div className="list-stack grid-2">
+                      {[...projectGroups.entries()].map(([cwd, items], index) => (
+                        <motion.button
+                          type="button"
+                          key={cwd}
+                          className="card row-card"
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: Math.min(index, 8) * 0.03, duration: 0.18 }}
+                          whileTap={{ scale: 0.985 }}
+                          onClick={() => {
+                            setSelectedProject(cwd);
+                            void refreshThreads(cwd);
+                          }}
+                        >
+                          <div className="row-head">
+                            <div className="row-title-group">
+                              <div className="row-icon"><FolderKanban size={16} /></div>
+                              <span className="row-title">{basename(cwd)}</span>
+                            </div>
+                            <ChevronRight size={16} className="tiny" />
+                          </div>
+                          <div className="muted">{cwd}</div>
+                          <div className="badge-row">
+                            <span className="badge">{items.length}개 스레드</span>
+                            <span className="badge">{items[0]?.runtime ?? "runtime?"}</span>
+                            <span className="badge">{formatRelative(items[0]?.updatedAt)}</span>
+                          </div>
+                        </motion.button>
+                      ))}
+                    </div>
+
+                    {selectedProject && (
+                      <div className="section">
+                        <div className="split-line">
+                          <span className="section-label" style={{ padding: 0 }}>{basename(selectedProject)}</span>
+                          <span className="tiny">{selectedProject}</span>
+                        </div>
+                        <div className="list-stack">
+                          {threadSummaries.map((thread, index) => (
+                            <motion.button
+                              type="button"
+                              key={thread.id}
+                              className="card row-card"
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: Math.min(index, 8) * 0.03, duration: 0.18 }}
+                              whileTap={{ scale: 0.985 }}
+                              onClick={() => {
+                                setCurrentThread(thread);
+                                setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
+                              }}
+                            >
+                              <div className="row-head">
+                                <div className="row-title-group">
+                                  <div className="row-icon"><MessageSquare size={16} /></div>
+                                  <span className="row-title">{thread.title || thread.id}</span>
+                                </div>
+                                <span className="tiny">{formatRelative(thread.updatedAt)}</span>
+                              </div>
+                              <div className="muted">{thread.preview || "미리보기 없음"}</div>
+                              <div className="badge-row">
+                                <span className="badge accent">{thread.model}</span>
+                                {thread.provider && <span className="badge">{thread.provider}</span>}
+                                {thread.runtime && <span className="badge">{thread.runtime}</span>}
+                              </div>
+                            </motion.button>
+                          ))}
+                          {!threadSummaries.length && (
+                            <div className="empty-card card">
+                              <MessageSquare size={22} />
+                              <strong>스레드 없음</strong>
+                              <div className="muted" style={{ whiteSpace: "normal" }}>선택한 프로젝트에 표시할 스레드가 없습니다.</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </motion.section>
             )}
@@ -672,7 +727,8 @@ function App(): React.JSX.Element {
                 transition={{ duration: 0.18, ease: "easeOut" }}
               >
                 {currentThread && (
-                  <div className="card row-card glow-card">
+                  <div className="card row-card glow-card glow-host">
+                    <GlowRing />
                     <div className="row-head">
                       <div className="row-title-group">
                         <div className="row-icon"><MessageSquare size={16} /></div>

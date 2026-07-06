@@ -111,6 +111,7 @@ const api: DevilCodexApi = {
   remoteDisable: () => ipcRenderer.invoke("remote:disable"),
   remoteRegenerateToken: () => ipcRenderer.invoke("remote:regenerate-token"),
   remoteRevokeDevice: (input) => ipcRenderer.invoke("remote:revoke-device", input),
+  remoteScope: () => ipcRenderer.invoke("remote:scope"),
   translate: (input) => ipcRenderer.invoke("translate:text", input),
   loadProviderSettings: () => ipcRenderer.invoke("providers:load"),
   selectProvider: (input) => ipcRenderer.invoke("providers:select", input),

@@ -40,7 +40,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -290,6 +290,7 @@ const REMOTE_ALLOWED_CHANNELS = new Set<string>([
   "settings:load",
   "codex:models",
   "claude:slash-commands",
+  "remote:scope",
 ]);
 const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "app-server:event",
@@ -316,6 +317,65 @@ let remotePublicUrl: string | undefined;
 let remoteLastError: string | undefined;
 let remoteLastTailscaleStatus: Awaited<ReturnType<TailscaleCli["status"]>> | undefined;
 let remoteProtocol: "http" | "https" = "http";
+// Sync cache of settings.remoteAllowedThreadIds so sendToRenderer (called
+// synchronously from many hot paths) can gate broadcasts without an await.
+// null = unrestricted (default, matches pre-allowlist behavior). Refreshed
+// once at startup and whenever settings:save touches the allowlist.
+let remoteAllowlistCache: Set<string> | null = null;
+function applyRemoteAllowlistCache(settings: Pick<CodexSettings, "remoteAllowedThreadIds">): void {
+  remoteAllowlistCache = settings.remoteAllowedThreadIds?.length ? new Set(settings.remoteAllowedThreadIds) : null;
+}
+function remoteAccessDenied(): never {
+  throw new Error("이 스레드는 원격 접속 허용 목록에 없습니다. 설정 -> 원격 제어 -> 허용 스레드에서 추가하세요.");
+}
+function filterRemoteAllowed<T extends { id: string }>(list: T[]): T[] {
+  return remoteAllowlistCache ? list.filter((item) => remoteAllowlistCache!.has(item.id)) : list;
+}
+function requireRemoteAllowed(id: string | undefined): void {
+  if (remoteAllowlistCache && (!id || !remoteAllowlistCache.has(id))) remoteAccessDenied();
+}
+// Remote (phone/browser) clients dispatch through this map instead of the raw
+// `ipcHandlers` the local renderer uses, so an active allowlist (Settings ->
+// 원격 제어 -> 허용 스레드) can restrict a remote session to specific threads
+// without touching local desktop access at all. Rebuilt fresh each time
+// remote control (re)starts, by which point every handle() call below has
+// already registered (see ipcHandlersReady ordering notes at startRemoteFromSettings).
+function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
+  const remote = new Map(ipcHandlers);
+  const wrapList = (channel: string): void => {
+    const base = ipcHandlers.get(channel);
+    if (!base) return;
+    remote.set(channel, async (input) => {
+      const result = await base(input);
+      return Array.isArray(result) ? filterRemoteAllowed(result as Array<{ id: string }>) : result;
+    });
+  };
+  const wrapSingle = (channel: string, idOf: (input: unknown) => string | undefined): void => {
+    const base = ipcHandlers.get(channel);
+    if (!base) return;
+    remote.set(channel, async (input) => {
+      requireRemoteAllowed(idOf(input));
+      return base(input);
+    });
+  };
+  wrapList("thread:list");
+  wrapList("thread:search");
+  wrapList("thread:projects");
+  wrapSingle("thread:read", (input) => (input as { id?: string } | undefined)?.id);
+  wrapSingle("thread:resume", (input) => (input as { id?: string } | undefined)?.id);
+  wrapSingle("turn:send", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:interrupt", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("approval:respond", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  const createBase = ipcHandlers.get("thread:create");
+  if (createBase) {
+    remote.set("thread:create", async (input) => {
+      if (remoteAllowlistCache) remoteAccessDenied();
+      return createBase(input);
+    });
+  }
+  remote.set("remote:scope", () => ({ restricted: Boolean(remoteAllowlistCache) }));
+  return remote;
+}
 const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
@@ -652,9 +712,32 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
   return items.some((item) => item.kind === "agent" && item.runtime === "claude-code" && (item.provider ?? "claude-code") === "claude-code");
 }
 
+// app-server:event carries a threadId; when a remote allowlist is active, a
+// remote client must never see it for a thread it isn't scoped to (otherwise
+// a phone limited to one thread could still watch an unrelated project's
+// tool calls stream by). ask:request has no threadId in its payload at all
+// (it's a global "ask the human" signal, not thread-scoped data) so there's
+// no way to check it against the allowlist - safest is to just not forward
+// it to a restricted remote client; the local desktop dialog still fires
+// either way. app-server:status / provider:usage-changed aren't thread-scoped
+// and stay unaffected.
+function remoteEventThreadId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const params = (payload as { params?: Record<string, unknown> }).params;
+  return typeof params?.threadId === "string" ? params.threadId : undefined;
+}
+
 function sendToRenderer(channel: string, payload: unknown): void {
   if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, payload);
-  remoteServer?.broadcast(channel, payload);
+  if (!remoteServer) return;
+  if (remoteAllowlistCache) {
+    if (channel === "ask:request") return;
+    if (channel === "app-server:event") {
+      const threadId = remoteEventThreadId(payload);
+      if (threadId && !remoteAllowlistCache.has(threadId)) return;
+    }
+  }
+  remoteServer.broadcast(channel, payload);
 }
 
 function sendCommand(command: string): void {
@@ -1566,7 +1649,7 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
   const tls = dnsName && mode === "tailnet" ? await maybeTailscaleTls(dnsName) : undefined;
   remoteProtocol = tls ? "https" : "http";
   const server = new RemoteServer({
-    handlers: ipcHandlers,
+    handlers: buildRemoteIpcHandlers(),
     allowedChannels: REMOTE_ALLOWED_CHANNELS,
     allowedEvents: REMOTE_ALLOWED_EVENTS,
     auth,
@@ -1636,6 +1719,7 @@ async function revokeRemoteDevice(deviceId: string): Promise<RemoteControlStatus
 
 async function startRemoteFromSettings(): Promise<void> {
   const settings = await settingsStore.load();
+  applyRemoteAllowlistCache(settings);
   if (!settings.remoteControlEnabled) return;
   try {
     await startRemoteControl(settings.remoteControlMode);
@@ -1944,12 +2028,18 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("settings:save", async (_event, input) => {
     const previous = await settingsStore.load();
     const next = await settingsStore.save(input);
+    applyRemoteAllowlistCache(next);
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
     if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
     if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
     if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
       if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
       else await stopRemoteControl();
+    } else if (remoteServer && previous.remoteAllowedThreadIds.join(",") !== next.remoteAllowedThreadIds.join(",")) {
+      // Allowlist changed while already running: rebuild the gated handler
+      // map so the next remote call sees the new scope immediately (no
+      // server bounce needed - existing WS connections stay open).
+      remoteServer.setHandlers(buildRemoteIpcHandlers());
     }
     return next;
   });
@@ -1958,6 +2048,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("remote:disable", () => stopRemoteControl());
   ipcMain.handle("remote:regenerate-token", () => regenerateRemoteToken());
   ipcMain.handle("remote:revoke-device", (_event, input: { deviceId?: string }) => revokeRemoteDevice(String(input?.deviceId ?? "")));
+  // Local desktop access is always unrestricted - this only exists so the
+  // Settings UI/preload surface matches the shape a remote client gets back
+  // from the same channel (which buildRemoteIpcHandlers overrides with the
+  // real allowlist state).
+  ipcMain.handle("remote:scope", () => ({ restricted: false }));
   handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", (_event, input) => providerSettingsStore.select(input));
   ipcMain.handle("providers:save-key", async (_event, input) => {

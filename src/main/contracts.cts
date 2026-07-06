@@ -153,7 +153,14 @@ export interface RemoteDevice { id: string; name: string; hostname?: string; os?
 export interface RemoteClient { id: string; label: string; ip?: string; userAgent?: string; createdAt?: number; lastSeenAt?: number; }
 export interface RemoteTailscaleStatus { installed: boolean; running: boolean; loggedIn: boolean; hostname?: string; tailnet?: string; serviceUrl?: string; error?: string; }
 export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode; url?: string; qrDataUrl?: string; tokenPreview?: string; error?: string; tailscale: RemoteTailscaleStatus; devices: RemoteDevice[]; clients: RemoteClient[]; }
-export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; }
+// Whether this session's remote client is limited to an explicit thread
+// allowlist (Settings -> 원격 제어 -> 허용 스레드). When restricted, the
+// thread:list/thread:search/thread:projects results the same client receives
+// are already filtered server-side to just the allowed threads - this flag
+// only tells the mobile UI whether to show the full project browser or the
+// flat "allowed threads only" view.
+export interface RemoteScope { restricted: boolean; }
+export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; remoteAllowedThreadIds: string[]; }
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
   | "openai" | "anthropic" | "google" | "deepseek"
@@ -373,6 +380,7 @@ export interface DevilCodexApi {
   remoteDisable: () => Promise<RemoteControlStatus>;
   remoteRegenerateToken: () => Promise<RemoteControlStatus>;
   remoteRevokeDevice: (input: { deviceId: string }) => Promise<RemoteControlStatus>;
+  remoteScope: () => Promise<RemoteScope>;
   translate: (input: { text: string; to?: string; from?: string }) => Promise<string>;
   loadProviderSettings: () => Promise<ProviderSettings>;
   selectProvider: (input: { provider: ProviderId; model: string; accountId?: string }) => Promise<ProviderSettings>;

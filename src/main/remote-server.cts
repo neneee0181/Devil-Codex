@@ -122,6 +122,13 @@ export class RemoteServer {
     this.maxMissedHeartbeats = options.maxMissedHeartbeats ?? DEFAULT_MAX_MISSED_HEARTBEATS;
   }
 
+  // Swap the dispatch table live (e.g. the thread allowlist changed) without
+  // dropping existing WebSocket connections or re-running the Tailscale/auth
+  // startup dance.
+  setHandlers(handlers: Map<string, RemoteHandler>): void {
+    this.options.handlers = handlers;
+  }
+
   async start(input: RemoteServerStartInput): Promise<{ port: number }> {
     if (this.server) {
       const address = this.server.address();
