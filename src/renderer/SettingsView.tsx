@@ -118,7 +118,7 @@ function RemoteControlSection(): React.JSX.Element {
 
   useEffect(() => { void reload(); }, []);
 
-  const runAction = async (kind: "enable" | "disable" | "regenerate" | "revoke", task: () => Promise<RemoteControlStatus>): Promise<void> => {
+  const runAction = async (kind: "enable" | "disable" | "apply" | "regenerate" | "revoke", task: () => Promise<RemoteControlStatus>): Promise<void> => {
     setAction(kind);
     setError(null);
     try {

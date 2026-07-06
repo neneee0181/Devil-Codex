@@ -3,8 +3,8 @@
   "short_name": "Devil Remote",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0b1020",
-  "theme_color": "#0b1020",
+  "background_color": "#07070b",
+  "theme_color": "#07070b",
   "description": "Mobile remote control UI for Devil Codex.",
   "lang": "ko"
 }

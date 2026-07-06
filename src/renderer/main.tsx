@@ -1840,13 +1840,24 @@ function App(): React.JSX.Element {
     });
   }, [subagents]);
   useEffect(() => {
+    // Native Codex multi-agent spawns (`collabAgentToolCall` in threadTimeline)
+    // carry no model/provider on the timeline entry itself — only devil's own
+    // delegate_subagent tool reports that inline. For native spawns, look up
+    // the real per-thread model Codex recorded at spawn time (state DB, via
+    // getSubagentInfo) so the side-chat model badge doesn't fall back to
+    // whatever model happens to be selected in the main composer right now.
     for (const agent of subagents) {
-      if (subagentNames[agent.id]) continue;
+      const haveName = Boolean(subagentNames[agent.id]);
+      const haveModel = Boolean(agent.model) || subagentPick[agent.id]?.auto === false;
+      if (haveName && haveModel) continue;
       void window.devilCodex.getSubagentInfo({ id: agent.id }).then((info) => {
         if (info.nickname) setSubagentNames((prev) => prev[agent.id] ? prev : { ...prev, [agent.id]: info.nickname! });
+        if (info.model && !agent.model) {
+          setSubagentPick((prev) => prev[agent.id]?.auto === false ? prev : { ...prev, [agent.id]: { provider: "codex", model: info.model!, auto: false } });
+        }
       }).catch(() => undefined);
     }
-  }, [subagents, subagentNames]);
+  }, [subagents, subagentNames, subagentPick]);
   const namedSubagents = useMemo(() => subagents.map((agent) => ({ ...agent, label: subagentNames[agent.id] || agent.label })), [subagents, subagentNames]);
   useEffect(() => {
     const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));

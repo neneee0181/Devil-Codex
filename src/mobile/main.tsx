@@ -2,6 +2,26 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  Bot,
+  CheckCircle2,
+  ChevronRight,
+  CircleUserRound,
+  FolderKanban,
+  Gauge,
+  Loader2,
+  MessageSquare,
+  Plug,
+  PlusCircle,
+  RefreshCw,
+  Search,
+  Send,
+  Square,
+  Terminal,
+  WifiOff,
+  XCircle,
+} from "lucide-react";
 import { approvalPromptFromEvent } from "../renderer/approvalRequests";
 import { estimateProviderUsageCost } from "../renderer/providerPricing";
 import { applyTimelineEvent } from "../renderer/threadTimeline";
@@ -456,9 +476,12 @@ function App(): React.JSX.Element {
       <div className="shell">
         <header className="topbar">
           <div className="topbar-row">
-            <div className="title-block">
-              <h1>Devil Codex Remote</h1>
-              <p>{currentThread ? threadLabel(currentThread) : runtimeStatus?.cwd || "원격 세션 대기"}</p>
+            <div className="brand">
+              <div className="brand-mark"><Bot size={18} /></div>
+              <div className="title-block">
+                <h1>Devil Codex Remote</h1>
+                <p>{currentThread ? threadLabel(currentThread) : runtimeStatus?.cwd || "원격 세션 대기"}</p>
+              </div>
             </div>
             <div className="status-pill">
               <span className={`status-dot ${bridgeState.state}`} />
@@ -466,201 +489,290 @@ function App(): React.JSX.Element {
             </div>
           </div>
           <div className="toolbar">
-            <button type="button" className="primary" onClick={() => void connectRuntime()} disabled={bridgeState.state !== "ready"}>런타임 연결</button>
-            <button type="button" onClick={() => void refreshProjects("")} disabled={bridgeState.state !== "ready"}>목록 새로고침</button>
-            <button type="button" onClick={() => void refreshUsage(true)} disabled={bridgeState.state !== "ready"}>사용량 새로고침</button>
-            <button type="button" onClick={() => { clearStoredToken(); window.location.reload(); }}>토큰 제거</button>
+            <button type="button" className="icon-btn primary" onClick={() => void connectRuntime()} disabled={bridgeState.state !== "ready"}>
+              <Plug size={14} />런타임 연결
+            </button>
+            <button type="button" className="icon-btn" onClick={() => void refreshProjects("")} disabled={bridgeState.state !== "ready"}>
+              <RefreshCw size={14} />목록
+            </button>
+            <button type="button" className="icon-btn" onClick={() => void refreshUsage(true)} disabled={bridgeState.state !== "ready"}>
+              <Gauge size={14} />사용량
+            </button>
+            <button type="button" className="icon-btn" onClick={() => { clearStoredToken(); window.location.reload(); }}>
+              <XCircle size={14} />토큰 제거
+            </button>
           </div>
         </header>
 
         <main className="content">
           {!storedToken() && (
-            <div className="empty-card">
-              <strong>세션 토큰이 없습니다.</strong>
-              <div className="muted">PC에서 생성한 원격 접속 URL을 열거나 `#t=...` fragment가 포함된 QR 링크를 다시 스캔해야 합니다.</div>
+            <div className="empty-card card">
+              <WifiOff size={24} />
+              <strong>세션 토큰이 없습니다</strong>
+              <div className="muted" style={{ whiteSpace: "normal" }}>PC에서 생성한 원격 접속 URL을 열거나 `#t=...` fragment가 포함된 QR 링크를 다시 스캔해야 합니다.</div>
             </div>
           )}
 
           {bootstrapError && (
-            <div className="empty-card">
+            <div className="empty-card card">
+              <XCircle size={24} />
               <strong>오류</strong>
-              <div className="muted">{bootstrapError}</div>
+              <div className="muted" style={{ whiteSpace: "normal" }}>{bootstrapError}</div>
             </div>
           )}
 
-          {route.view === "projects" && (
-            <section className="section">
-              <input
-                className="search-box"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void refreshProjects(event.currentTarget.value);
-                }}
-                placeholder="프로젝트 또는 스레드 검색"
-              />
-
-              <div className="card project-card">
-                <div className="project-head">
-                  <strong>새 스레드</strong>
-                  <span className="tiny">허용 채널만 사용</span>
-                </div>
-                <div className="create-thread-form">
+          <AnimatePresence mode="wait">
+            {route.view === "projects" && (
+              <motion.section
+                key="projects"
+                className="section"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                <div className="search-wrap">
+                  <Search size={16} />
                   <input
-                    value={createDraft.cwd}
-                    onChange={(event) => setCreateDraft((current) => ({ ...current, cwd: event.target.value }))}
-                    placeholder="프로젝트 경로"
+                    className="search-box"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void refreshProjects(event.currentTarget.value);
+                    }}
+                    placeholder="프로젝트 또는 스레드 검색"
                   />
-                  <select
-                    value={`${createDraft.provider ?? ""}:${createDraft.accountId ?? ""}:${createDraft.model}`}
-                    onChange={(event) => {
-                      const picked = availableModels.find((item) => `${item.provider}:${item.accountId ?? ""}:${item.model}` === event.target.value);
-                      if (!picked) return;
-                      setCreateDraft((current) => ({ ...current, provider: picked.provider, accountId: picked.accountId, model: picked.model }));
-                    }}
-                  >
-                    {availableModels.map((item) => (
-                      <option key={`${item.provider}:${item.accountId ?? ""}:${item.model}`} value={`${item.provider}:${item.accountId ?? ""}:${item.model}`}>
-                        {item.provider} · {item.model}{item.accountId ? ` · ${item.accountId}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="primary" onClick={() => void createThread()} disabled={bridgeState.state !== "ready"}>
-                    새 스레드 열기
-                  </button>
                 </div>
-              </div>
 
-              <div className="list-stack">
-                {[...projectGroups.entries()].map(([cwd, items]) => (
-                  <button
-                    type="button"
-                    key={cwd}
-                    className="card project-card"
-                    onClick={() => {
-                      setSelectedProject(cwd);
-                      void refreshThreads(cwd);
-                    }}
-                  >
-                    <div className="project-head">
-                      <span className="project-title">{basename(cwd)}</span>
-                      <span className="tiny">{items.length} threads</span>
+                <div className="card row-card glow-card">
+                  <div className="row-head">
+                    <div className="row-title-group">
+                      <div className="row-icon"><PlusCircle size={16} /></div>
+                      <span className="row-title">새 스레드</span>
                     </div>
-                    <div className="muted">{cwd}</div>
-                    <div className="badge-row">
-                      <span className="badge">{items[0]?.runtime ?? "runtime?"}</span>
-                      <span className="badge">{formatRelative(items[0]?.updatedAt)}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              {selectedProject && (
-                <div className="section">
-                  <div className="split-line">
-                    <strong>{basename(selectedProject)}</strong>
-                    <span className="tiny">{selectedProject}</span>
+                    <span className="tiny">허용 채널만 사용</span>
                   </div>
-                  <div className="list-stack">
-                    {threadSummaries.map((thread) => (
+                  <div className="create-thread-form">
+                    <input
+                      value={createDraft.cwd}
+                      onChange={(event) => setCreateDraft((current) => ({ ...current, cwd: event.target.value }))}
+                      placeholder="프로젝트 경로"
+                    />
+                    <select
+                      value={`${createDraft.provider ?? ""}:${createDraft.accountId ?? ""}:${createDraft.model}`}
+                      onChange={(event) => {
+                        const picked = availableModels.find((item) => `${item.provider}:${item.accountId ?? ""}:${item.model}` === event.target.value);
+                        if (!picked) return;
+                        setCreateDraft((current) => ({ ...current, provider: picked.provider, accountId: picked.accountId, model: picked.model }));
+                      }}
+                    >
+                      {availableModels.map((item) => (
+                        <option key={`${item.provider}:${item.accountId ?? ""}:${item.model}`} value={`${item.provider}:${item.accountId ?? ""}:${item.model}`}>
+                          {item.provider} · {item.model}{item.accountId ? ` · ${item.accountId}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <motion.button whileTap={{ scale: 0.97 }} type="button" className="icon-btn primary" onClick={() => void createThread()} disabled={bridgeState.state !== "ready"}>
+                      <PlusCircle size={16} />새 스레드 열기
+                    </motion.button>
+                  </div>
+                </div>
+
+                <div className="section-label">
+                  프로젝트<span className="count">{projectGroups.size}</span>
+                </div>
+                <div className="list-stack">
+                  {[...projectGroups.entries()].map(([cwd, items], index) => (
+                    <motion.button
+                      type="button"
+                      key={cwd}
+                      className="card row-card"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: Math.min(index, 8) * 0.03, duration: 0.18 }}
+                      whileTap={{ scale: 0.985 }}
+                      onClick={() => {
+                        setSelectedProject(cwd);
+                        void refreshThreads(cwd);
+                      }}
+                    >
+                      <div className="row-head">
+                        <div className="row-title-group">
+                          <div className="row-icon"><FolderKanban size={16} /></div>
+                          <span className="row-title">{basename(cwd)}</span>
+                        </div>
+                        <ChevronRight size={16} className="tiny" />
+                      </div>
+                      <div className="muted">{cwd}</div>
+                      <div className="badge-row">
+                        <span className="badge">{items.length}개 스레드</span>
+                        <span className="badge">{items[0]?.runtime ?? "runtime?"}</span>
+                        <span className="badge">{formatRelative(items[0]?.updatedAt)}</span>
+                      </div>
+                    </motion.button>
+                  ))}
+                </div>
+
+                {selectedProject && (
+                  <div className="section">
+                    <div className="split-line">
+                      <span className="section-label" style={{ padding: 0 }}>{basename(selectedProject)}</span>
+                      <span className="tiny">{selectedProject}</span>
+                    </div>
+                    <div className="list-stack">
+                      {threadSummaries.map((thread, index) => (
+                        <motion.button
+                          type="button"
+                          key={thread.id}
+                          className="card row-card"
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: Math.min(index, 8) * 0.03, duration: 0.18 }}
+                          whileTap={{ scale: 0.985 }}
+                          onClick={() => {
+                            setCurrentThread(thread);
+                            setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
+                          }}
+                        >
+                          <div className="row-head">
+                            <div className="row-title-group">
+                              <div className="row-icon"><MessageSquare size={16} /></div>
+                              <span className="row-title">{thread.title || thread.id}</span>
+                            </div>
+                            <span className="tiny">{formatRelative(thread.updatedAt)}</span>
+                          </div>
+                          <div className="muted">{thread.preview || "미리보기 없음"}</div>
+                          <div className="badge-row">
+                            <span className="badge accent">{thread.model}</span>
+                            {thread.provider && <span className="badge">{thread.provider}</span>}
+                            {thread.runtime && <span className="badge">{thread.runtime}</span>}
+                          </div>
+                        </motion.button>
+                      ))}
+                      {!threadSummaries.length && (
+                        <div className="empty-card card">
+                          <MessageSquare size={22} />
+                          <strong>스레드 없음</strong>
+                          <div className="muted" style={{ whiteSpace: "normal" }}>선택한 프로젝트에 표시할 스레드가 없습니다.</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </motion.section>
+            )}
+
+            {route.view === "thread" && (
+              <motion.section
+                key="thread"
+                className="section"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                {currentThread && (
+                  <div className="card row-card glow-card">
+                    <div className="row-head">
+                      <div className="row-title-group">
+                        <div className="row-icon"><MessageSquare size={16} /></div>
+                        <span className="row-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
+                      </div>
+                      <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
+                    </div>
+                    <div className="muted">{currentThread.cwd}</div>
+                    <div className="badge-row">
+                      <span className="badge accent">{currentThread.model}</span>
+                      {"provider" in currentThread && currentThread.provider && <span className="badge">{currentThread.provider}</span>}
+                      {currentUsageText && <span className="badge">{currentUsageText}</span>}
+                    </div>
+                  </div>
+                )}
+
+                {slashCommands.length > 0 && (
+                  <div className="chip-row">
+                    {slashCommands.map((command) => (
                       <button
                         type="button"
-                        key={thread.id}
-                        className="thread-row"
-                        onClick={() => {
-                          setCurrentThread(thread);
-                          setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
-                        }}
+                        key={command.name}
+                        className="chip"
+                        onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
                       >
-                        <div className="thread-head">
-                          <span className="thread-title">{thread.title || thread.id}</span>
-                          <span className="tiny">{formatRelative(thread.updatedAt)}</span>
-                        </div>
-                        <div className="muted">{thread.preview || "미리보기 없음"}</div>
-                        <div className="badge-row">
-                          <span className="badge">{thread.model}</span>
-                          {thread.provider && <span className="badge">{thread.provider}</span>}
-                          {thread.runtime && <span className="badge">{thread.runtime}</span>}
-                        </div>
+                        /{command.name}
                       </button>
                     ))}
-                    {!threadSummaries.length && <div className="empty-card"><strong>스레드 없음</strong><div className="muted">선택한 프로젝트에 표시할 스레드가 없습니다.</div></div>}
                   </div>
-                </div>
-              )}
-            </section>
-          )}
+                )}
 
-          {route.view === "thread" && (
-            <section className="section">
-              {currentThread && (
-                <div className="card project-card">
-                  <div className="thread-head">
-                    <span className="thread-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
-                    <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
-                  </div>
-                  <div className="muted">{currentThread.cwd}</div>
-                  <div className="badge-row">
-                    <span className="badge">{currentThread.model}</span>
-                    {"provider" in currentThread && currentThread.provider && <span className="badge">{currentThread.provider}</span>}
-                    {currentUsageText && <span className="badge">{currentUsageText}</span>}
-                  </div>
-                </div>
-              )}
-
-              <div className="chip-row">
-                {slashCommands.map((command) => (
-                  <button
-                    type="button"
-                    key={command.name}
-                    className="chip"
-                    onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
-                  >
-                    /{command.name}
-                  </button>
-                ))}
-              </div>
-
-              <div className="timeline">
-                {loadingThread && <div className="empty-card"><strong>불러오는 중</strong><div className="muted">스레드 기록을 읽고 있습니다.</div></div>}
-                {!loadingThread && threadHistory.map((item) => (
-                  item.kind === "activity"
-                    ? <ActivityBlock key={item.id} item={item} />
-                    : <MessageBlock key={item.id} item={item} />
-                ))}
-                {!loadingThread && !threadHistory.length && <div className="empty-card"><strong>대화 없음</strong><div className="muted">첫 메시지를 보내면 이 스레드의 타임라인이 시작됩니다.</div></div>}
-              </div>
-            </section>
-          )}
-
-          {route.view === "usage" && (
-            <section className="section">
-              <div className="usage-grid">
-                {(usageReport?.entries ?? []).map((entry) => (
-                  <div key={`${entry.provider}:${entry.accountId ?? ""}`} className="usage-card">
-                    <div className="usage-head">
-                      <strong>{entry.label}</strong>
-                      <span className="tiny">{entry.connected ? "connected" : "disconnected"}</span>
+                <div className="timeline">
+                  {loadingThread && (
+                    <div className="empty-card card">
+                      <Loader2 size={22} className="spin" />
+                      <strong>불러오는 중</strong>
+                      <div className="muted" style={{ whiteSpace: "normal" }}>스레드 기록을 읽고 있습니다.</div>
                     </div>
-                    <div className="muted">{entry.accountLabel || entry.accountEmail || entry.provider}</div>
-                    <div className="tiny">{formatUsageWindow(entry)}</div>
-                    {entry.windows.map((window) => (
-                      <div key={window.label}>
-                        <div className="split-line">
-                          <span>{window.label}</span>
-                          <span className="tiny">{Math.round(window.usedPercent)}%</span>
+                  )}
+                  {!loadingThread && threadHistory.map((item) => (
+                    item.kind === "activity"
+                      ? <ActivityBlock key={item.id} item={item} />
+                      : <MessageBlock key={item.id} item={item} />
+                  ))}
+                  {!loadingThread && !threadHistory.length && (
+                    <div className="empty-card card">
+                      <MessageSquare size={22} />
+                      <strong>대화 없음</strong>
+                      <div className="muted" style={{ whiteSpace: "normal" }}>첫 메시지를 보내면 이 스레드의 타임라인이 시작됩니다.</div>
+                    </div>
+                  )}
+                </div>
+              </motion.section>
+            )}
+
+            {route.view === "usage" && (
+              <motion.section
+                key="usage"
+                className="section"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                <div className="usage-grid">
+                  {(usageReport?.entries ?? []).map((entry) => (
+                    <div key={`${entry.provider}:${entry.accountId ?? ""}`} className="card usage-card">
+                      <div className="usage-head">
+                        <div className="row-title-group">
+                          <div className="row-icon"><Gauge size={16} /></div>
+                          <strong>{entry.label}</strong>
                         </div>
-                        <div className="usage-bar"><span style={{ width: `${Math.max(4, Math.min(100, window.usedPercent))}%` }} /></div>
-                        <div className="tiny">리셋 {window.resetsAt ? formatTime(window.resetsAt) : "-"}</div>
+                        <span className={`badge ${entry.connected ? "accent" : ""}`}>{entry.connected ? "연결됨" : "연결 안 됨"}</span>
                       </div>
-                    ))}
-                    {(entry.error || entry.unavailable) && <div className="tiny">{entry.error || entry.unavailable}</div>}
-                  </div>
-                ))}
-                {!usageReport?.entries?.length && <div className="empty-card"><strong>사용량 데이터 없음</strong><div className="muted">providers:usage 결과가 아직 없습니다.</div></div>}
-              </div>
-            </section>
-          )}
+                      <div className="muted">{entry.accountLabel || entry.accountEmail || entry.provider}</div>
+                      <div className="tiny">{formatUsageWindow(entry)}</div>
+                      {entry.windows.map((window) => (
+                        <div key={window.label} className="usage-row">
+                          <div className="split-line">
+                            <span className="tiny">{window.label}</span>
+                            <span className="tiny">{Math.round(window.usedPercent)}%</span>
+                          </div>
+                          <div className="usage-bar"><span style={{ width: `${Math.max(4, Math.min(100, window.usedPercent))}%` }} /></div>
+                          <div className="tiny">리셋 {window.resetsAt ? formatTime(window.resetsAt) : "-"}</div>
+                        </div>
+                      ))}
+                      {(entry.error || entry.unavailable) && <div className="tiny">{entry.error || entry.unavailable}</div>}
+                    </div>
+                  ))}
+                  {!usageReport?.entries?.length && (
+                    <div className="empty-card card">
+                      <Gauge size={22} />
+                      <strong>사용량 데이터 없음</strong>
+                      <div className="muted" style={{ whiteSpace: "normal" }}>providers:usage 결과가 아직 없습니다.</div>
+                    </div>
+                  )}
+                </div>
+              </motion.section>
+            )}
+          </AnimatePresence>
         </main>
 
         {route.view === "thread" && currentThread && (
@@ -670,71 +782,97 @@ function App(): React.JSX.Element {
                 value={composerText}
                 onChange={(event) => setComposerText(event.target.value)}
                 placeholder="메시지를 입력하세요"
+                rows={1}
               />
-              <div className="composer-actions">
-                <button type="button" onClick={() => void interruptTurn()} disabled={!busy}>중단</button>
-                <button type="button" className="primary" onClick={() => void sendTurn()} disabled={!composerText.trim() || busy}>
-                  {busy ? "응답 대기 중" : "보내기"}
-                </button>
-              </div>
+              {busy ? (
+                <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-stop" onClick={() => void interruptTurn()} title="중단">
+                  <Square size={16} />
+                </motion.button>
+              ) : (
+                <motion.button whileTap={{ scale: 0.9 }} type="button" className="composer-send" onClick={() => void sendTurn()} disabled={!composerText.trim()} title="보내기">
+                  <Send size={17} />
+                </motion.button>
+              )}
             </div>
           </div>
         )}
 
         <nav className="nav">
-          <button type="button" className={routeTab === "projects" ? "active" : ""} onClick={() => setRoute({ view: "projects" })}>목록</button>
+          <button type="button" className={`nav-btn ${routeTab === "projects" ? "active" : ""}`} onClick={() => setRoute({ view: "projects" })}>
+            {routeTab === "projects" && <motion.span layoutId="nav-pill" className="nav-pill" transition={{ type: "spring", stiffness: 500, damping: 34 }} />}
+            <FolderKanban size={18} />
+            <span>목록</span>
+          </button>
           <button
             type="button"
-            className={routeTab === "thread" ? "active" : ""}
+            className={`nav-btn ${routeTab === "thread" ? "active" : ""}`}
             onClick={() => currentThread && setRoute({ view: "thread", threadId: currentThread.id, cwd: currentThread.cwd })}
             disabled={!currentThread}
           >
-            대화
+            {routeTab === "thread" && <motion.span layoutId="nav-pill" className="nav-pill" transition={{ type: "spring", stiffness: 500, damping: 34 }} />}
+            <MessageSquare size={18} />
+            <span>대화</span>
           </button>
-          <button type="button" className={routeTab === "usage" ? "active" : ""} onClick={() => setRoute({ view: "usage" })}>사용량</button>
+          <button type="button" className={`nav-btn ${routeTab === "usage" ? "active" : ""}`} onClick={() => setRoute({ view: "usage" })}>
+            {routeTab === "usage" && <motion.span layoutId="nav-pill" className="nav-pill" transition={{ type: "spring", stiffness: 500, damping: 34 }} />}
+            <Gauge size={18} />
+            <span>사용량</span>
+          </button>
         </nav>
 
-        {approvalQueue[0] && (
-          <ApprovalOverlay prompt={approvalQueue[0]} busy={respondingApproval} onDecision={(decision) => void respondApproval(decision)} />
-        )}
+        <AnimatePresence>
+          {approvalQueue[0] && (
+            <ApprovalOverlay key="approval" prompt={approvalQueue[0]} busy={respondingApproval} onDecision={(decision) => void respondApproval(decision)} />
+          )}
+        </AnimatePresence>
 
-        {askRequest && (
-          <AskOverlay request={askRequest} onClose={() => void submitAsk(null)} onSubmit={(answers) => void submitAsk(answers)} />
-        )}
+        <AnimatePresence>
+          {askRequest && (
+            <AskOverlay key="ask" request={askRequest} onClose={() => void submitAsk(null)} onSubmit={(answers) => void submitAsk(answers)} />
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
 }
 
 function MessageBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
-  const label = item.kind === "user" ? "나" : item.kind === "agent" ? "에이전트" : item.title || "시스템";
+  const kind = item.kind === "user" ? "user" : item.kind === "agent" ? "agent" : "system";
+  const label = kind === "user" ? "나" : kind === "agent" ? "에이전트" : item.title || "시스템";
+  const Icon = kind === "user" ? CircleUserRound : kind === "agent" ? Bot : Terminal;
   return (
-    <article className={`message ${item.kind}`}>
-      <div className="message-head">
-        <strong>{label}</strong>
-        <span className="tiny">{item.model || item.runtime || ""}</span>
+    <motion.div className={`msg-row ${kind}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: "easeOut" }}>
+      <div className="msg-avatar"><Icon size={15} /></div>
+      <div className="bubble">
+        <div className="msg-meta">
+          <strong>{label}</strong>
+          {(item.model || item.runtime) && <span>· {item.model || item.runtime}</span>}
+        </div>
+        <div className="msg-body">{messageText(item) || "(비어 있음)"}</div>
       </div>
-      <div className="message-body">{messageText(item) || "(비어 있음)"}</div>
-    </article>
+    </motion.div>
   );
 }
 
 function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
   const totalTokens = item.cumulativeTokenUsage?.totalTokens ?? item.tokenUsage?.totalTokens;
   return (
-    <article className="activity-card">
+    <motion.article className="card activity-card" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: "easeOut" }}>
       <div className="split-line">
-        <strong>작업 흐름</strong>
+        <span className="section-label" style={{ padding: 0 }}>작업 흐름</span>
         <span className="tiny">{item.status ?? "completed"}</span>
       </div>
       {(item.activities ?? []).map((entry) => (
         <div key={entry.id} className={`activity-entry ${entry.status ?? "completed"}`}>
-          <div className="message-head">
-            <strong>{entry.title}</strong>
+          <div className="entry-head">
+            <span className="entry-title">
+              {entry.status === "failed" ? <XCircle size={14} /> : entry.status === "inProgress" ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
+              {entry.title}
+            </span>
             <span className="tiny">{entry.kind}</span>
           </div>
-          {entry.detail && <div className="message-body">{entry.detail}</div>}
-          {entry.output && <div className="message-body">{entry.output}</div>}
+          {entry.detail && <div className="entry-detail">{entry.detail}</div>}
+          {entry.output && <div className="entry-detail">{entry.output}</div>}
           {entry.files?.length ? (
             <div className="file-list">
               {entry.files.map((file) => (
@@ -755,34 +893,62 @@ function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element
           {totalTokens && <span className="badge">토큰 {totalTokens.toLocaleString()}</span>}
         </div>
       )}
-    </article>
+    </motion.article>
   );
 }
+
+const DECISION_META: Record<string, { label: string; hint: string; tone: string }> = {
+  accept: { label: "허용", hint: "이번 한 번만 승인", tone: "accept" },
+  acceptForSession: { label: "세션 동안 허용", hint: "같은 요청은 세션 내내 자동 승인", tone: "accept" },
+  decline: { label: "거부", hint: "이번 요청을 거부", tone: "decline" },
+  cancel: { label: "취소", hint: "현재 턴을 취소", tone: "cancel" },
+};
 
 function ApprovalOverlay(
   { prompt, busy, onDecision }: { prompt: ApprovalPrompt; busy: boolean; onDecision: (decision: ApprovalDecision) => void },
 ): React.JSX.Element {
   const decisions: ApprovalDecision[] = prompt.availableDecisions.length ? prompt.availableDecisions : ["accept", "acceptForSession", "decline", "cancel"];
   return (
-    <div className="overlay" role="presentation">
-      <div className="modal-sheet">
+    <motion.div className="overlay" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
+      <motion.div
+        className="modal-sheet"
+        initial={{ y: 60, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 60, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 380, damping: 34 }}
+      >
+        <div className="modal-grip" />
         <div className="modal-head">
           <strong>{prompt.kind === "command" ? "명령 승인" : "파일 변경 승인"}</strong>
           <span className="tiny">{prompt.threadId || "-"}</span>
         </div>
-        {prompt.command && <div className="message-body">{prompt.command}</div>}
-        {prompt.reason && <div className="message-body">{prompt.reason}</div>}
+        {prompt.command && <div className="entry-detail" style={{ fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>{prompt.command}</div>}
+        {prompt.reason && <div className="muted" style={{ whiteSpace: "normal" }}>{prompt.reason}</div>}
         {prompt.cwd && <div className="tiny">{prompt.cwd}</div>}
         {prompt.grantRoot && <div className="tiny">grant root: {prompt.grantRoot}</div>}
         <div className="decision-grid">
-          {decisions.map((decision) => (
-            <button key={decision} type="button" onClick={() => onDecision(decision)} disabled={busy}>
-              {decision}
-            </button>
-          ))}
+          {decisions.map((decision) => {
+            const meta = DECISION_META[decision] ?? { label: decision, hint: "", tone: "" };
+            return (
+              <motion.button
+                whileTap={{ scale: 0.97 }}
+                key={decision}
+                type="button"
+                className={`decision-btn ${meta.tone}`}
+                onClick={() => onDecision(decision)}
+                disabled={busy}
+              >
+                <span className="decision-label">
+                  <strong>{meta.label}</strong>
+                  {meta.hint && <span className="tiny">{meta.hint}</span>}
+                </span>
+                {meta.tone === "accept" ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+              </motion.button>
+            );
+          })}
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -800,8 +966,23 @@ function AskOverlay(
   const complete = request.questions.every((_, index) => answersFor(index).length > 0);
 
   return (
-    <div className="overlay" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="modal-sheet">
+    <motion.div
+      className="overlay"
+      role="presentation"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <motion.div
+        className="modal-sheet"
+        initial={{ y: 60, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 60, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 380, damping: 34 }}
+      >
+        <div className="modal-grip" />
         <div className="modal-head">
           <strong>질문 응답</strong>
           <span className="tiny">{request.id}</span>
@@ -809,17 +990,18 @@ function AskOverlay(
         {request.questions.map((question, index) => {
           const picks = selected[index] ?? [];
           return (
-            <div key={`${request.id}:${index}`} className="section">
+            <div key={`${request.id}:${index}`} className="question-block">
               {question.header && <span className="tag">{question.header}</span>}
               <strong>{question.question}</strong>
               <div className="decision-grid">
                 {question.options.map((option) => {
                   const active = picks.includes(option.label);
                   return (
-                    <button
+                    <motion.button
+                      whileTap={{ scale: 0.97 }}
                       key={option.label}
                       type="button"
-                      className={active ? "active" : ""}
+                      className={`decision-btn ${active ? "active" : ""}`}
                       onClick={() => {
                         setCustom((current) => ({ ...current, [index]: "" }));
                         setSelected((current) => {
@@ -836,9 +1018,12 @@ function AskOverlay(
                         });
                       }}
                     >
-                      <div>{option.label}</div>
-                      {option.description && <div className="tiny">{option.description}</div>}
-                    </button>
+                      <span className="decision-label">
+                        <strong>{option.label}</strong>
+                        {option.description && <span className="tiny">{option.description}</span>}
+                      </span>
+                      {active && <CheckCircle2 size={18} />}
+                    </motion.button>
                   );
                 })}
               </div>
@@ -856,18 +1041,19 @@ function AskOverlay(
           );
         })}
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>취소</button>
-          <button
+          <button type="button" className="btn" onClick={onClose}>취소</button>
+          <motion.button
+            whileTap={{ scale: 0.97 }}
             type="button"
-            className="primary"
+            className="btn primary"
             disabled={!complete}
             onClick={() => onSubmit(request.questions.map((question, index) => ({ question: question.question, header: question.header, answers: answersFor(index) })))}
           >
             보내기
-          </button>
+          </motion.button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
