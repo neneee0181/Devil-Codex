@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppCommand, DevilCodexApi, RemoteControlStatus, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState } from "./contracts.cjs";
+import type { AppCommand, ApprovalResolvedEvent, DevilCodexApi, RemoteControlStatus, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState } from "./contracts.cjs";
 
 const api: DevilCodexApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -145,6 +145,7 @@ const api: DevilCodexApi = {
   openWorkspace: (input) => ipcRenderer.invoke("workspace:open-external", input),
   respondApproval: (input) => ipcRenderer.invoke("approval:respond", input),
   getThreadQueue: (input) => ipcRenderer.invoke("thread:queue:get", input),
+  getThreadActive: (input) => ipcRenderer.invoke("thread:active", input),
   syncThreadQueue: (input) => ipcRenderer.invoke("thread:queue:sync", input),
   queueTurn: (input) => ipcRenderer.invoke("turn:queue:enqueue", input),
   updateQueuedTurn: (input) => ipcRenderer.invoke("turn:queue:update", input),
@@ -172,6 +173,11 @@ const api: DevilCodexApi = {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
     ipcRenderer.on("thread:meta-changed", handler);
     return () => ipcRenderer.removeListener("thread:meta-changed", handler);
+  },
+  onApprovalResolved: (listener: (event: ApprovalResolvedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("approval:resolved", handler);
+    return () => ipcRenderer.removeListener("approval:resolved", handler);
   },
   onTerminalData: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

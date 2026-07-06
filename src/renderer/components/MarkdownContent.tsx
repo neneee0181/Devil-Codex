@@ -29,7 +29,9 @@ function fileLinkFromCode(value: string): { label: string; path: string } | null
 }
 
 export function cleanFileLinkLabel(value: ReactNode): string {
-  return nodeText(value).replace(/^\.\[([^\]]+)\]\(devil-file:[^)]+\)$/, ".$1").trim();
+  const text = nodeText(value).trim();
+  const embedded = text.match(/^\.?\[([^\]]+)\]\(devil-file:[^)]+\)$/);
+  return (embedded ? embedded[1] : text).replace(/^memoc\//i, ".memoc/").trim();
 }
 
 export function normalizeFileLinkPath(value: string): string {
@@ -52,7 +54,7 @@ function richMarkdown(text: string): string {
     const normalizedLinks = line
       .replace(/`(\[[^\]]+\]\(devil-file:[^)]+\))`/g, "$1")
       .replace(/\[`([^`]+)`\]\(devil-file:([^)]+)\)/g, "[$1](devil-file:$2)")
-      .replace(/\.\[([^\]]+)\]\(devil-file:((?!\.)[^)]+)\)/g, (_match, label: string, path: string) => `[.${label}](devil-file:.${path})`);
+      .replace(/\.\[([^\]]+)\]\(devil-file:([^)]+)\)/g, (_match, label: string, path: string) => `[${label}](devil-file:${path})`);
     if (normalizedLinks.includes("](")) return normalizedLinks;
     if (line.trim() === "첨부 파일:") return "";
     const image = normalizedLinks.replace(/((?:\/[\w.@%+~ -]+)+\.(?:png|jpe?g|gif|webp|svg))/gi, (path) => `![${path.split("/").at(-1)}](devil-image:${encodeURIComponent(path)})`);

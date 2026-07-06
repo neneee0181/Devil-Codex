@@ -281,6 +281,7 @@ const REMOTE_ALLOWED_CHANNELS = new Set<string>([
   "thread:projects",
   "thread:search",
   "thread:queue:get",
+  "thread:active",
   "turn:queue:enqueue",
   "turn:queue:update",
   "turn:queue:remove",
@@ -307,6 +308,7 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
   "ask:request",
   "app-server:status",
   "provider:usage-changed",
+  "approval:resolved",
   "thread:meta-changed",
   "thread:queue-changed",
   "remote:status",
@@ -396,6 +398,7 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapSingle("thread:resume", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:meta:update", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:queue:get", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("thread:active", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:enqueue", (input) => (input as { threadId?: string; entry?: { pending?: { threadId?: string } } } | undefined)?.threadId ?? (input as { entry?: { pending?: { threadId?: string } } } | undefined)?.entry?.pending?.threadId);
   wrapSingle("turn:queue:update", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:remove", (input) => (input as { threadId?: string } | undefined)?.threadId);
@@ -441,6 +444,7 @@ const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
 const appServerThreadIds = new WeakMap<CodexAppServer, string>();
 const activeThreadServerTurns = new Set<string>();
+const activeThreadTurnIds = new Map<string, string>();
 const approvalRequestServers = new Map<string, CodexAppServer>();
 // Threads whose rollout is currently loaded on their (live) per-thread server.
 // A fresh/replaced server doesn't know an existing thread until it's resumed —
@@ -647,6 +651,10 @@ function annotateCodexSummaries<T extends ThreadSummary>(threads: T[], stored: T
       ...(meta?.runtime ? { runtime: meta.runtime } : {}),
       provider: (meta?.provider ?? "codex") as ProviderId,
       ...(meta?.accountId ? { accountId: meta.accountId } : {}),
+      ...(meta?.approvalPolicy ? { approvalPolicy: meta.approvalPolicy } : {}),
+      ...(meta?.sandboxMode ? { sandboxMode: meta.sandboxMode } : {}),
+      ...(meta?.reasoningEffort ? { reasoningEffort: meta.reasoningEffort } : {}),
+      ...(meta?.responseSpeed ? { responseSpeed: meta.responseSpeed } : {}),
     };
   });
 }
@@ -792,6 +800,7 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
 // unaffected.
 function remoteEventThreadId(channel: string, payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
+  if (channel === "approval:resolved") return typeof (payload as { threadId?: unknown }).threadId === "string" ? String((payload as { threadId?: unknown }).threadId) : undefined;
   if (channel === "thread:meta-changed") return typeof (payload as { id?: unknown }).id === "string" ? String((payload as { id?: unknown }).id) : undefined;
   if (channel === "thread:queue-changed") return typeof (payload as { threadId?: unknown }).threadId === "string" ? String((payload as { threadId?: unknown }).threadId) : undefined;
   const params = (payload as { params?: Record<string, unknown> }).params;
@@ -971,6 +980,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   touchThreadServer(threadId);
   if (event.method === "turn/started") {
     activeThreadServerTurns.add(threadId);
+    if (turnId) activeThreadTurnIds.set(threadId, turnId);
     return;
   }
   if (event.method === "item/completed" && String(item.type ?? "") === "commandExecution") {
@@ -982,6 +992,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   }
   if (!terminalTurn) return;
   activeThreadServerTurns.delete(threadId);
+  activeThreadTurnIds.delete(threadId);
   pruneThreadServers();
   const turnStatus = event.method === "turn/completed"
     ? String(turn.status ?? "completed")
@@ -1411,6 +1422,7 @@ function restartAppServer(): void {
   threadServers.clear();
   threadServerLastUsed.clear();
   activeThreadServerTurns.clear();
+  activeThreadTurnIds.clear();
   approvalRequestServers.clear();
   loadedThreads.clear();
 }
@@ -2239,7 +2251,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
-  handle("approval:respond", (input) => {
+  handle("approval:respond", async (input) => {
     const payload = input as { requestId: string | number; decision: ApprovalDecision; threadId?: string };
     // Approval requests are emitted by the per-thread app-server that's running
     // the turn. The decision must go back to THAT child's stdin — routing it to
@@ -2247,12 +2259,19 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // first command/file approval). Fall back to the global server only when no
     // live thread server matches.
     const requestKey = String(payload.requestId);
-    // Claude runtime canUseTool prompts share the same renderer dialog; their
-    // request ids are claude-approval-* and resolve inside the runtime.
-    if (claudeRuntime.respondApproval(requestKey, payload.decision)) return;
-    const target = approvalRequestServers.get(requestKey) ?? (payload.threadId ? threadServers.get(payload.threadId) : undefined) ?? server();
-    approvalRequestServers.delete(requestKey);
-    return target.respondApproval(payload);
+    try {
+      // Claude runtime canUseTool prompts share the same renderer dialog; their
+      // request ids are claude-approval-* and resolve inside the runtime.
+      if (!claudeRuntime.respondApproval(requestKey, payload.decision)) {
+        const target = approvalRequestServers.get(requestKey) ?? (payload.threadId ? threadServers.get(payload.threadId) : undefined) ?? server();
+        approvalRequestServers.delete(requestKey);
+        await target.respondApproval(payload);
+      }
+      sendToRenderer("approval:resolved", { requestId: requestKey, ...(payload.threadId ? { threadId: payload.threadId } : {}) });
+    } catch (error) {
+      approvalRequestServers.delete(requestKey);
+      throw error;
+    }
   });
   handle("thread:create", async (input) => {
     const request = input as any;
@@ -2369,6 +2388,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       ...(request.runtime ? { runtime: request.runtime } : {}),
       ...(request.provider ? { provider: request.provider } : {}),
       ...(request.accountId ? { accountId: request.accountId } : { accountId: undefined }),
+      ...(request.approvalPolicy ? { approvalPolicy: request.approvalPolicy } : {}),
+      ...(request.sandboxMode ? { sandboxMode: request.sandboxMode } : {}),
+      ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+      ...(request.responseSpeed ? { responseSpeed: request.responseSpeed } : {}),
     };
     await providerTranscripts.saveMeta(meta);
     sendToRenderer("thread:meta-changed", meta);
@@ -2546,6 +2569,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("workspace:push", async (_event, input) => pushWorkspace(input));
   ipcMain.handle("workspace:create-pr", async (_event, input) => createPullRequest(input));
   handle("thread:queue:get", async (input) => getThreadQueueSnapshot(String((input as { threadId?: string } | undefined)?.threadId ?? "")));
+  handle("thread:active", async (input) => {
+    const threadId = String((input as { threadId?: string } | undefined)?.threadId ?? "");
+    const turnId = threadId ? activeThreadTurnIds.get(threadId) : undefined;
+    return { threadId, running: Boolean(threadId && activeThreadServerTurns.has(threadId)), ...(turnId ? { turnId } : {}) };
+  });
   handle("thread:queue:sync", async (input) => {
     const request = input as ThreadQueueState;
     const threadId = String(request?.threadId ?? "");
@@ -2611,6 +2639,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         runtime: "codex",
         provider: request.provider ?? "codex",
         ...(request.accountId ? { accountId: request.accountId } : { accountId: undefined }),
+        ...(request.approvalPolicy ? { approvalPolicy: request.approvalPolicy } : {}),
+        ...(request.sandboxMode ? { sandboxMode: request.sandboxMode } : {}),
+        ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+        ...(request.responseSpeed ? { responseSpeed: request.responseSpeed } : {}),
       };
       await providerTranscripts.saveMeta(meta);
       sendToRenderer("thread:meta-changed", meta);
@@ -2867,6 +2899,7 @@ app.on("before-quit", () => {
   threadServers.clear();
   threadServerLastUsed.clear();
   activeThreadServerTurns.clear();
+  activeThreadTurnIds.clear();
   terminalManager?.dispose();
   browserControl.stop(); // free 49874 so the next launch binds cleanly
   desktopControl.stop();

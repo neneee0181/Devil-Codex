@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ApprovalResolvedEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -368,6 +368,8 @@ type ComposerConfigSnapshot = {
   provider?: ProviderId;
   accountId?: string;
   model?: string;
+  approvalPolicy?: import("../shared/contracts").ThreadApprovalPolicy;
+  sandboxMode?: import("../shared/contracts").ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   updatedAt: number;
@@ -2325,6 +2327,13 @@ function App(): React.JSX.Element {
     });
   }
 
+  useEffect(() => {
+    const dispose = window.devilCodex.onApprovalResolved((event: ApprovalResolvedEvent) => {
+      setApprovalQueue((current) => current.filter((prompt) => String(prompt.requestId) !== String(event.requestId)));
+      setApprovalResponding(false);
+    });
+    return dispose;
+  }, []);
   function receiveEvent(event: AppServerEvent): void {
     const approval = approvalPromptFromEvent(event);
     if (approval) {
@@ -3192,16 +3201,17 @@ function App(): React.JSX.Element {
     setBusy(true);
     try {
       const activeThread = !options.forceNewThread && !replacingFromEdit && thread ? thread : await window.devilCodex.createThread({ cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions });
-      const visibleThread: ThreadRef = { ...activeThread, runtime: composerRuntime, provider, model: sendModel, accountId: sendAccountId };
+      const visibleThread: ThreadRef = { ...activeThread, runtime: composerRuntime, provider, model: sendModel, accountId: sendAccountId, ...permissions, ...turnOptions };
       threadRef.current = visibleThread;
       setThread(visibleThread);
       itemsOwnerRef.current = activeThread.id;
       threadHistoryCache.current.set(activeThread.id, optimisticItems);
-      rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
+      rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, ...permissions, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
+      void window.devilCodex.updateThreadMeta({ id: activeThread.id, cwd: workspace, runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, ...permissions, ...turnOptions }).catch((error) => console.warn("[devil-codex] thread permission sync failed", error));
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
       if (options.forceNewThread || replacingFromEdit || !thread) {
-        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
+        const optimistic: ThreadSummary = { id: activeThread.id, cwd: workspace, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, ...permissions, ...turnOptions, title: threadTitleFromPrompt(promptText), preview: displayText, updatedAt: Math.floor(Date.now() / 1000), archived: false };
         pendingThreads.current.set(optimistic.id, optimistic);
         setThreads((current) => [optimistic, ...current.filter((summary) => summary.id !== optimistic.id && summary.id !== replacedThread?.id)]);
       }

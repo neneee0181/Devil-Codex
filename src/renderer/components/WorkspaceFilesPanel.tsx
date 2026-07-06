@@ -41,7 +41,13 @@ export function WorkspaceFilesPanel({ workspace, target }: { workspace: string; 
   useEffect(() => {
     if (!target) return;
     const normalizedTarget = normalizeFileLinkPath(target);
-    void window.devilCodex.findWorkspaceFile({ cwd: workspace, query: normalizedTarget }).then(async (path) => {
+    const fallbackTargets = Array.from(new Set([
+      normalizedTarget,
+      normalizedTarget.replace(/^\.memoc\//i, "memoc/"),
+      normalizedTarget.split("/").at(-1) ?? normalizedTarget,
+    ].filter(Boolean)));
+    Promise.all(fallbackTargets.map((query) => window.devilCodex.findWorkspaceFile({ cwd: workspace, query }).catch(() => null))).then(async (matches) => {
+      const path = matches.find(Boolean);
       if (!path) { setError(`파일을 찾을 수 없습니다: ${normalizedTarget}`); return; }
       const parents: string[] = [""];
       let parent = parentPath(path);

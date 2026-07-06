@@ -18,6 +18,10 @@ export interface ThreadRef {
   accountId?: string;
   accountLabel?: string;
   claudeSessionId?: string;
+  approvalPolicy?: ThreadApprovalPolicy;
+  sandboxMode?: ThreadSandboxMode;
+  reasoningEffort?: ReasoningEffort;
+  responseSpeed?: ResponseSpeed;
 }
 
 export interface ThreadSummary {
@@ -33,6 +37,10 @@ export interface ThreadSummary {
   preview: string;
   updatedAt: number;
   archived: boolean;
+  approvalPolicy?: ThreadApprovalPolicy;
+  sandboxMode?: ThreadSandboxMode;
+  reasoningEffort?: ReasoningEffort;
+  responseSpeed?: ResponseSpeed;
 }
 
 export interface ThreadActivityEntry {
@@ -319,6 +327,17 @@ export interface ThreadQueueState {
   queue: QueuedTurnView[];
 }
 
+export interface ThreadActiveState {
+  threadId: string;
+  running: boolean;
+  turnId?: string;
+}
+
+export interface ApprovalResolvedEvent {
+  requestId: string;
+  threadId?: string;
+}
+
 export interface ThreadMetaUpdate {
   id: string;
   cwd?: string;
@@ -326,6 +345,10 @@ export interface ThreadMetaUpdate {
   runtime?: AgentRuntimeId;
   provider?: ProviderId;
   accountId?: string;
+  approvalPolicy?: ThreadApprovalPolicy;
+  sandboxMode?: ThreadSandboxMode;
+  reasoningEffort?: ReasoningEffort;
+  responseSpeed?: ResponseSpeed;
 }
 
 export type ThreadQueueCommand =
@@ -452,6 +475,7 @@ export interface DevilCodexApi {
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
   respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
   getThreadQueue: (input: { threadId: string }) => Promise<QueuedTurnView[]>;
+  getThreadActive: (input: { threadId: string }) => Promise<ThreadActiveState>;
   syncThreadQueue: (input: ThreadQueueState) => Promise<void>;
   queueTurn: (input: { threadId: string; entry: { id: string; pending: TurnSendInput; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean }) => Promise<void>;
   updateQueuedTurn: (input: { threadId: string; id: string; text: string }) => Promise<void>;
@@ -464,5 +488,6 @@ export interface DevilCodexApi {
   onThreadQueueChanged: (listener: (state: ThreadQueueState) => void) => () => void;
   onThreadQueueCommand: (listener: (command: ThreadQueueCommand) => void) => () => void;
   onThreadMetaChanged: (listener: (meta: ThreadMetaUpdate) => void) => () => void;
+  onApprovalResolved: (listener: (event: ApprovalResolvedEvent) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;
 }

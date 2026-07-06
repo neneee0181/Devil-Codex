@@ -34,6 +34,7 @@ import { applyTimelineEvent } from "../renderer/threadTimeline";
 import type {
   AgentRuntimeId,
   AppServerEvent,
+  ApprovalResolvedEvent,
   ApprovalDecision,
   ApprovalPrompt,
   AskAnswer,
@@ -51,6 +52,7 @@ import type {
   RuntimeStatus,
   ThreadHistoryItem,
   ThreadAttachment,
+  ThreadActiveState,
   ThreadMetaUpdate,
   ThreadRef,
   ThreadSummary,
@@ -295,6 +297,7 @@ function App(): React.JSX.Element {
   const [composerImages, setComposerImages] = useState<ComposerImageAttachment[]>([]);
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurnView[]>([]);
   const [busy, setBusy] = useState(false);
+  const [activeTurnId, setActiveTurnId] = useState<string | undefined>(undefined);
   const [loadingThread, setLoadingThread] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalPrompt[]>([]);
@@ -587,6 +590,12 @@ function App(): React.JSX.Element {
       setThreadSummaries((current) => current.map(apply));
       setCurrentThread((current) => current?.id === meta.id ? apply(current) : current);
     });
+    const unsubApprovalResolved = bridge.subscribe<unknown>("approval:resolved", (payload) => {
+      if (!payload || typeof payload !== "object") return;
+      const event = payload as ApprovalResolvedEvent;
+      setApprovalQueue((current) => current.filter((prompt) => String(prompt.requestId) !== String(event.requestId)));
+      setRespondingApproval(false);
+    });
     const unsubStatus = bridge.subscribe<unknown>("app-server:status", (payload) => {
       if (payload && typeof payload === "object") {
         const record = payload as Partial<RuntimeStatus>;
@@ -611,6 +620,7 @@ function App(): React.JSX.Element {
       unsubUsage();
       unsubQueue();
       unsubMeta();
+      unsubApprovalResolved();
       unsubStatus();
       unsubSettings();
       unsubProviders();
@@ -626,6 +636,25 @@ function App(): React.JSX.Element {
     }
   }
 
+  function effectiveThreadSettings(thread: ThreadSummary | ThreadRef | null = currentThread): Pick<TurnSendInput, "approvalPolicy" | "sandboxMode" | "reasoningEffort" | "responseSpeed"> {
+    return {
+      approvalPolicy: thread?.approvalPolicy ?? codexSettings?.approvalPolicy,
+      sandboxMode: thread?.sandboxMode ?? codexSettings?.sandboxMode,
+      reasoningEffort: thread?.reasoningEffort ?? codexSettings?.reasoningEffort,
+      responseSpeed: thread?.responseSpeed ?? codexSettings?.responseSpeed,
+    };
+  }
+
+  async function refreshCurrentThreadHistory(threadId: string): Promise<void> {
+    if (currentThreadIdRef.current !== threadId) return;
+    const meta = threadMeta(currentThread);
+    const history = await bridge.call<ThreadHistoryItem[]>("thread:read", { id: threadId, runtime: meta?.runtime, accountId: meta?.accountId });
+    if (currentThreadIdRef.current !== threadId) return;
+    const next = mergeThreadHistory(history, historyRef.current);
+    historyRef.current = next;
+    setThreadHistory(next);
+    if (nearBottomRef.current) forceScrollToBottomRef.current = true;
+  }
   function receiveAppServerEvent(event: AppServerEvent): void {
     const approval = approvalPromptFromEvent(event);
     if (approval) {
@@ -634,7 +663,11 @@ function App(): React.JSX.Element {
     }
     const params = (event.params ?? {}) as Record<string, unknown>;
     const eventThreadId = String(params.threadId ?? "");
-    if (event.method === "turn/started" && eventThreadId && currentThread?.id === eventThreadId) setBusy(true);
+    if (event.method === "turn/started" && eventThreadId && currentThread?.id === eventThreadId) {
+      setBusy(true);
+      const turnId = String(params.turnId ?? (params.turn as { id?: unknown } | undefined)?.id ?? "");
+      setActiveTurnId(turnId || undefined);
+    }
     if ((event.method === "turn/started" || event.method === "turn/updated") && eventThreadId) {
       if (selectedProject) void refreshThreads(selectedProject);
       void refreshProjects("");
@@ -670,7 +703,12 @@ function App(): React.JSX.Element {
       return;
     }
     if (event.method === "turn/completed" && eventThreadId) {
-      if (currentThread?.id === eventThreadId) setBusy(false);
+      if (currentThread?.id === eventThreadId) {
+        setBusy(false);
+        setActiveTurnId(undefined);
+        window.setTimeout(() => { void refreshCurrentThreadHistory(eventThreadId); }, 250);
+        window.setTimeout(() => { void refreshCurrentThreadHistory(eventThreadId); }, 1200);
+      }
       if (selectedProject) void refreshThreads(selectedProject);
       void refreshProjects("");
       void refreshUsage(true);
@@ -692,14 +730,17 @@ function App(): React.JSX.Element {
         if (known.cwd) setSelectedProject(known.cwd);
         await bridge.call<ThreadRef>("thread:resume", { id: known.id, model: known.model, runtime: known.runtime, accountId: known.accountId }).catch(() => null);
       }
-      const [history, queue] = await Promise.all([
+      const [history, queue, active] = await Promise.all([
         bridge.call<ThreadHistoryItem[]>("thread:read", { id: threadId, runtime: known?.runtime, accountId: known?.accountId }),
         bridge.call<QueuedTurnView[]>("thread:queue:get", { threadId }).catch(() => []),
+        bridge.call<ThreadActiveState>("thread:active", { threadId }).catch(() => ({ threadId, running: false })),
       ]);
       const nextHistory = currentThreadIdRef.current === threadId ? mergeThreadHistory(history, historyRef.current) : history;
       historyRef.current = nextHistory;
       setThreadHistory(nextHistory);
       setQueuedTurns(queue);
+      setBusy(Boolean(active.running));
+      setActiveTurnId(active.turnId);
     } catch (error) {
       setBootstrapError(String(error));
     } finally {
@@ -802,10 +843,7 @@ function App(): React.JSX.Element {
       accountId: targetModel.accountId ?? meta.accountId,
       attachments: attachments.map((item) => item.content ?? item.url ?? "").filter(Boolean),
       attachmentDetails: attachments,
-      approvalPolicy: codexSettings?.approvalPolicy,
-      sandboxMode: codexSettings?.sandboxMode,
-      reasoningEffort: codexSettings?.reasoningEffort,
-      responseSpeed: codexSettings?.responseSpeed,
+      ...effectiveThreadSettings(),
     };
     setComposerText("");
     setComposerImages([]);
@@ -832,8 +870,9 @@ function App(): React.JSX.Element {
     if (!meta || !currentThread) return;
     try {
       await bridge.call<void>("turn:queue:clear", { threadId: currentThread.id }).catch(() => undefined);
-      await bridge.call<void>("turn:interrupt", { threadId: currentThread.id, runtime: meta.runtime });
+      await bridge.call<void>("turn:interrupt", { threadId: currentThread.id, runtime: meta.runtime, turnId: activeTurnId });
       setBusy(false);
+      setActiveTurnId(undefined);
     } catch (error) {
       setBootstrapError(String(error));
     }
@@ -865,6 +904,14 @@ function App(): React.JSX.Element {
 
   async function updateRemotePermissions(patch: Partial<Pick<CodexSettings, "approvalPolicy" | "sandboxMode" | "reasoningEffort" | "responseSpeed">>): Promise<void> {
     try {
+      if (currentThread) {
+        const meta: ThreadMetaUpdate = { id: currentThread.id, cwd: currentThread.cwd, model: currentThread.model, runtime: currentThread.runtime, provider: currentThread.provider, accountId: currentThread.accountId, ...patch };
+        setCurrentThread((thread) => thread?.id === currentThread.id ? { ...thread, ...patch } : thread);
+        setProjectSummaries((items) => items.map((item) => item.id === currentThread.id ? { ...item, ...patch } : item));
+        setThreadSummaries((items) => items.map((item) => item.id === currentThread.id ? { ...item, ...patch } : item));
+        await bridge.call<void>("thread:meta:update", meta);
+        return;
+      }
       const next = await bridge.call<CodexSettings>("settings:update-permissions", patch);
       setCodexSettings(next);
     } catch (error) {
@@ -1250,7 +1297,7 @@ function App(): React.JSX.Element {
                           <label>
                             <span>승인</span>
                             <select
-                              value={codexSettings?.approvalPolicy ?? "on-request"}
+                              value={currentThread?.approvalPolicy ?? codexSettings?.approvalPolicy ?? "on-request"}
                               onChange={(event) => void updateRemotePermissions({ approvalPolicy: event.target.value })}
                             >
                               <option value="on-request">필요 시 요청</option>
@@ -1260,7 +1307,7 @@ function App(): React.JSX.Element {
                           <label>
                             <span>샌드박스</span>
                             <select
-                              value={codexSettings?.sandboxMode ?? "workspace-write"}
+                              value={currentThread?.sandboxMode ?? codexSettings?.sandboxMode ?? "workspace-write"}
                               onChange={(event) => void updateRemotePermissions({ sandboxMode: event.target.value })}
                             >
                               <option value="read-only">읽기 전용</option>
@@ -1271,7 +1318,7 @@ function App(): React.JSX.Element {
                           <label>
                             <span>추론</span>
                             <select
-                              value={codexSettings?.reasoningEffort ?? "medium"}
+                              value={currentThread?.reasoningEffort ?? codexSettings?.reasoningEffort ?? "medium"}
                               onChange={(event) => void updateRemotePermissions({ reasoningEffort: event.target.value as CodexSettings["reasoningEffort"] })}
                             >
                               <option value="low">낮음</option>
@@ -1283,7 +1330,7 @@ function App(): React.JSX.Element {
                           <label>
                             <span>응답 속도</span>
                             <select
-                              value={codexSettings?.responseSpeed ?? "standard"}
+                              value={currentThread?.responseSpeed ?? codexSettings?.responseSpeed ?? "standard"}
                               onChange={(event) => void updateRemotePermissions({ responseSpeed: event.target.value as CodexSettings["responseSpeed"] })}
                             >
                               <option value="standard">표준</option>
@@ -1538,11 +1585,26 @@ const MessageBlock = memo(function MessageBlock({ item }: { item: ThreadHistoryI
 
 const ActivityBlock = memo(function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
   const totalTokens = item.cumulativeTokenUsage?.totalTokens ?? item.tokenUsage?.totalTokens;
+  const isDefaultOpenEntry = (entry: NonNullable<ThreadHistoryItem["activities"]>[number]): boolean => (
+    entry.title === "작업 메모" || entry.status === "failed" || entry.status === "inProgress"
+  );
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
-    for (const entry of item.activities ?? []) initial[entry.id] = entry.status === "failed" || entry.status === "inProgress";
+    for (const entry of item.activities ?? []) initial[entry.id] = isDefaultOpenEntry(entry);
     return initial;
   });
+  useEffect(() => {
+    setExpandedIds((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const entry of item.activities ?? []) {
+        if (!isDefaultOpenEntry(entry) || next[entry.id] !== undefined) continue;
+        next[entry.id] = true;
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [item.activities]);
   return (
     <article className="card activity-card">
       <div className="split-line">
