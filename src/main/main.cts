@@ -1541,6 +1541,11 @@ async function maybeTailscaleTls(hostname: string): Promise<{ cert: Buffer; key:
 }
 
 async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteControlStatus> {
+  const previous = await settingsStore.load();
+  if (mode === "funnel" && previous.remoteControlMode !== "funnel") {
+    await new TailscaleCli().funnelOn(REMOTE_CONTROL_PORT);
+  }
+
   await stopRemoteControl({ saveSettings: false });
   remoteLastError = undefined;
   remotePublicUrl = undefined;
@@ -1599,7 +1604,6 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
     remotePublicUrl = `${remoteProtocol}://${hostForUrl}:${started.port}`;
   }
 
-  const previous = await settingsStore.load();
   await settingsStore.save({ ...previous, remoteControlEnabled: true, remoteControlMode: mode });
   return remoteStatus();
 }

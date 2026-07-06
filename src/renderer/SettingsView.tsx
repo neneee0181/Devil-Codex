@@ -98,7 +98,7 @@ function SettingsPage({ active, appInfo, config, update, backendState, terminalS
 function RemoteControlSection(): React.JSX.Element {
   const [status, setStatus] = useState<RemoteControlStatus | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [action, setAction] = useState<"enable" | "disable" | "regenerate" | "revoke" | null>(null);
+  const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | null>(null);
   const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("tailnet");
   const [error, setError] = useState<string | null>(null);
 
@@ -141,30 +141,12 @@ function RemoteControlSection(): React.JSX.Element {
   const funnelActivationUrl = remoteErrorMessage?.match(/https:\/\/login\.tailscale\.com\/f\/funnel[^\s)"]*/i)?.[0] ?? TAILSCALE_ADMIN_FUNNEL_URL;
   const needsHttpsCertificateHelp = !isFunnelActivationError && /does not support getting TLS certs|tls cert|certificate|HTTPS Certificates|인증서/i.test(remoteErrorMessage ?? "");
   const disabled = state === "loading" || action !== null;
-  const handleModeChange = async (value: string): Promise<void> => {
+  const hasPendingModeChange = Boolean(status?.enabled && selectedMode !== status.mode);
+  const handleModeChange = (value: string): void => {
     const nextMode = value as RemoteControlMode;
     if (nextMode === selectedMode) return;
-    if (!status?.enabled) {
-      setSelectedMode(nextMode);
-      return;
-    }
-
-    const previousMode = status.mode;
     setSelectedMode(nextMode);
-    setAction("enable");
-    setError(null);
-    try {
-      const next = await window.devilCodex.remoteEnable({ mode: nextMode });
-      setStatus(next);
-      setSelectedMode(next.mode);
-      setState("ready");
-    } catch (cause) {
-      setSelectedMode(previousMode);
-      setError(toErrorMessage(cause, "원격 제어 작업에 실패했습니다."));
-      setState("error");
-    } finally {
-      setAction(null);
-    }
+    if (status?.enabled) setError(null);
   };
 
   return <>
@@ -173,11 +155,14 @@ function RemoteControlSection(): React.JSX.Element {
         <Toggle value={Boolean(status?.enabled)} onChange={(value) => {
           if (value) void runAction("enable", () => window.devilCodex.remoteEnable({ mode: selectedMode }));
           else void runAction("disable", () => window.devilCodex.remoteDisable());
-        }} />
+        }} disabled={disabled} />
       </Row>
       <Row title="접속 모드" detail="tailnet은 같은 Tailscale 네트워크 안에서만 열리고, Funnel은 외부 인터넷 공개 URL을 사용합니다. 실행 중에 바꾸면 서버와 QR을 새 모드로 다시 준비합니다.">
-        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={(value) => void handleModeChange(value)} disabled={disabled} />
+        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={handleModeChange} disabled={disabled} />
       </Row>
+      {hasPendingModeChange && <Row title="모드 변경 대기" detail="현재 실행 모드와 선택한 모드가 다릅니다. 변경 적용을 누르면 서버와 QR을 새 모드로 다시 준비합니다.">
+        <button className="secondary" onClick={() => void runAction("apply", () => window.devilCodex.remoteEnable({ mode: selectedMode }))} disabled={disabled}>변경 적용</button>
+      </Row>}
       <Row title="현재 상태" detail="main 프로세스가 반환한 원격 제어 상태를 그대로 보여줍니다.">
         <div style={{ display: "grid", gap: 6, justifyItems: "end", textAlign: "right", minWidth: 220 }}>
           <strong>{statusLabel(status, state)}</strong>
@@ -199,7 +184,7 @@ function RemoteControlSection(): React.JSX.Element {
     {remoteErrorMessage && <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
       <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>{remoteErrorMessage}</p>
       {isFunnelActivationError && <>
-        <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>Funnel이 tailnet에서 아직 활성화되지 않아 공개 URL/QR을 만들지 못했습니다. 아래 버튼으로 Tailscale Funnel을 활성화한 뒤 다시 funnel 모드를 선택하세요.</p>
+        <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>Funnel이 tailnet에서 아직 활성화되지 않아 공개 URL/QR을 만들지 못했습니다. 아래 버튼으로 Tailscale Funnel을 활성화한 뒤 다시 변경 적용을 누르세요.</p>
         <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>이 전환이 실패하면 서버 재시작이 완료되지 않으므로 현재 URL/QR이 tailnet 주소로 남아 있어도 정상입니다.</p>
         <div style={actionGroupStyle}>
           <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: funnelActivationUrl })}>Funnel 활성화</button>
@@ -246,7 +231,7 @@ function RemoteControlSection(): React.JSX.Element {
 }
 
 function Row({ title, detail, children }: { title: string; detail?: string; children: React.ReactNode }): React.JSX.Element { return <div className="setting-row"><div><strong>{title}</strong>{detail && <p>{detail}</p>}</div><div>{children}</div></div>; }
-function Toggle({ value, onChange }: { value: boolean; onChange: (value: boolean) => void }): React.JSX.Element { return <button className={`switch ${value ? "on" : ""}`} onClick={() => onChange(!value)} aria-pressed={value}><i /></button>; }
+function Toggle({ value, onChange, disabled = false }: { value: boolean; onChange: (value: boolean) => void; disabled?: boolean }): React.JSX.Element { return <button className={`switch ${value ? "on" : ""}`} onClick={() => { if (!disabled) onChange(!value); }} aria-pressed={value} disabled={disabled}><i /></button>; }
 function Select({ value, options, onChange, disabled = false }: { value: string; options: string[]; onChange?: (value: string) => void; disabled?: boolean }): React.JSX.Element { return <select value={value} onChange={(e) => onChange?.(e.target.value)} disabled={disabled}>{options.map((option) => <option key={option}>{option}</option>)}</select>; }
 function ShellSelect({ value, profiles, onChange }: { value: TerminalShellId; profiles: TerminalShellProfile[]; onChange: (value: TerminalShellId) => void }): React.JSX.Element {
   const list = profiles.length ? profiles : [{ id: "auto" as const, label: "자동", available: true, detail: "shell 목록을 불러오는 중" }];
@@ -490,9 +475,16 @@ function statusLabel(status: RemoteControlStatus | null, state: "loading" | "rea
 }
 
 function toErrorMessage(cause: unknown, fallback: string): string {
-  if (cause instanceof Error && cause.message) return cause.message;
-  if (typeof cause === "string" && cause) return cause;
+  if (cause instanceof Error && cause.message) return cleanRemoteErrorMessage(cause.message) || fallback;
+  if (typeof cause === "string" && cause) return cleanRemoteErrorMessage(cause) || fallback;
   return fallback;
+}
+
+function cleanRemoteErrorMessage(value: string): string {
+  return value
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
 }
 
 function formatDateTime(value?: number): string | null {
