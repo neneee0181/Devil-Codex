@@ -23,6 +23,7 @@ export interface ThreadRef {
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   planMode?: boolean;
+  acceptEdits?: boolean;
 }
 
 export interface ThreadSummary {
@@ -43,6 +44,7 @@ export interface ThreadSummary {
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   planMode?: boolean;
+  acceptEdits?: boolean;
 }
 
 export interface ThreadActivityEntry {
@@ -314,6 +316,7 @@ export interface TurnSendInput {
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   planMode?: boolean;
+  acceptEdits?: boolean;
   retriedAfterCompaction?: boolean;
 }
 
@@ -353,6 +356,7 @@ export interface ThreadMetaUpdate {
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
   planMode?: boolean;
+  acceptEdits?: boolean;
 }
 
 export type ThreadQueueCommand =

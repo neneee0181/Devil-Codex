@@ -715,6 +715,8 @@ type PendingTurnState = {
   sandboxMode?: import("../shared/contracts").ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
+  acceptEdits?: boolean;
   retriedAfterCompaction: boolean;
 };
 
@@ -2848,7 +2850,7 @@ function App(): React.JSX.Element {
       return;
     }
     const side = input.side === "new" ? "변경 후" : "변경 전";
-    void submit({ prompt: `인라인 리뷰 의견을 반영해줘.\n\n파일: ${input.path}\n줄: ${input.line} (${side})\n의견: ${input.text}`, approvalMode: "agent", goalMode: false, planMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
+    void submit({ prompt: `인라인 리뷰 의견을 반영해줘.\n\n파일: ${input.path}\n줄: ${input.line} (${side})\n의견: ${input.text}`, approvalMode: "agent", goalMode: false, planMode: false, acceptEdits: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
   }
 
   async function applyReviewHunk(input: { path: string; hunk: string; action: "stage" | "revert" }): Promise<void> {
@@ -3147,7 +3149,7 @@ function App(): React.JSX.Element {
       ? `[연결된 플러그인/MCP 언급]\n이번 요청에서는 사용자가 ${selectedMcpServers.map((name) => `/${name}`).join(", ")} 플러그인을 명시했습니다. 관련 정보 조회나 작업이 필요하면 해당 MCP 서버의 사용 가능한 도구를 우선 사용하세요.\n\n`
       : "";
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
-    const modePrefix = `${input.planMode ? "[플랜 모드]\n" : ""}${input.goalMode ? "[목표 모드]\n" : ""}`;
+    const modePrefix = `${input.planMode ? "[플랜 모드]\n" : ""}${input.acceptEdits ? "[편집 자동승인 모드]\n" : ""}${input.goalMode ? "[목표 모드]\n" : ""}`;
     const visiblePrompt = `${modePrefix}${promptText}`;
     const handoffIndex = itemsRef.current.findIndex((item) => item.kind === "system" && item.title === "런타임 공유 컨텍스트");
     const handoffContext = handoffIndex >= 0 && !itemsRef.current.slice(handoffIndex + 1).some((item) => item.kind === "agent")
@@ -3170,7 +3172,7 @@ function App(): React.JSX.Element {
       : input.approvalMode === "ask"
         ? { approvalPolicy: "on-request" as const, sandboxMode: "read-only" as const }
         : { approvalPolicy: "on-request" as const, sandboxMode: "workspace-write" as const };
-    const turnOptions = { reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed, planMode: input.planMode };
+    const turnOptions = { reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed, planMode: input.planMode, acceptEdits: input.acceptEdits };
     const userItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "user", text: displayText, attachments: attachmentDetails };
     const replaceIndex = options.replaceFromItemId ? itemsRef.current.findIndex((item) => item.id === options.replaceFromItemId) : -1;
     const replacingFromEdit = replaceIndex >= 0;
@@ -3259,7 +3261,7 @@ function App(): React.JSX.Element {
   function startAutomationChat(prompt: string): void {
     const codexProvider = providers.settings?.providers.find((item) => item.id === "codex");
     const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.5";
-    void submit({ prompt, approvalMode: "agent", goalMode: false, planMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
+    void submit({ prompt, approvalMode: "agent", goalMode: false, planMode: false, acceptEdits: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
   }
 
   function renameProject(): void {
@@ -3858,6 +3860,7 @@ function App(): React.JSX.Element {
       approvalMode: "agent",
       goalMode: false,
       planMode: false,
+      acceptEdits: false,
       attachments: item.attachments ?? [],
       skills: [],
       reasoningEffort,
@@ -4079,7 +4082,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} agentRuntime={composerRuntime} threadId={thread?.id} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>

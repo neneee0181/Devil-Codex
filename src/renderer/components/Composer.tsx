@@ -1,6 +1,6 @@
 import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, type Ref, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, PanelRight, Plus, Square, Target, X } from "lucide-react";
+import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Hand, Laptop, PanelRight, Pencil, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
@@ -20,7 +20,7 @@ export type ComposerAttachment = ThreadAttachment;
 const APPROVAL_MODE_KEY = "devil-codex:approval-mode";
 const COMPOSER_DRAFTS_KEY = "devil-codex:composer-drafts";
 const DRAFT_SAVE_DEBOUNCE_MS = 350;
-type ComposerDraftSnapshot = { draft: string; goalMode: boolean; planMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
+type ComposerDraftSnapshot = { draft: string; goalMode: boolean; planMode: boolean; acceptEditsMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
 
 function readComposerDrafts(): Record<string, ComposerDraftSnapshot> {
   try {
@@ -37,6 +37,7 @@ function readComposerDraft(key: string): Omit<ComposerDraftSnapshot, "updatedAt"
     draft: stored?.draft ?? "",
     goalMode: stored?.goalMode === true,
     planMode: stored?.planMode === true,
+    acceptEditsMode: stored?.acceptEditsMode === true,
     attachments: Array.isArray(stored?.attachments) ? stored.attachments : [],
     skills: Array.isArray(stored?.skills) ? stored.skills.filter((item) => typeof item === "string") : [],
   };
@@ -46,7 +47,7 @@ function writeComposerDraft(key: string, snapshot: Omit<ComposerDraftSnapshot, "
   if (!key) return;
   try {
     const drafts = readComposerDrafts();
-    if (!snapshot.draft.trim() && !snapshot.goalMode && !snapshot.planMode && snapshot.attachments.length === 0 && snapshot.skills.length === 0) delete drafts[key];
+    if (!snapshot.draft.trim() && !snapshot.goalMode && !snapshot.planMode && !snapshot.acceptEditsMode && snapshot.attachments.length === 0 && snapshot.skills.length === 0) delete drafts[key];
     else drafts[key] = { ...snapshot, updatedAt: Date.now() };
     const compact = Object.fromEntries(Object.entries(drafts).sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, 80));
     localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(compact));
@@ -88,6 +89,7 @@ export type ComposerInput = {
   approvalMode: ApprovalMode;
   goalMode: boolean;
   planMode: boolean;
+  acceptEdits: boolean;
   attachments: ComposerAttachment[];
   skills: string[];
   reasoningEffort: ReasoningEffort;
@@ -123,6 +125,7 @@ export function Composer({
   onSlashCommand,
   petVisible,
   agentRuntime = "codex",
+  threadId,
   wrapRef,
 }: {
   draftKey: string;
@@ -153,6 +156,7 @@ export function Composer({
   onSlashCommand: (command: SlashCommandId) => void;
   petVisible: boolean;
   agentRuntime?: "codex" | "claude-code";
+  threadId?: string;
   wrapRef?: Ref<HTMLFormElement>;
 }): React.JSX.Element {
   const initialDraft = useMemo(() => readComposerDraft(draftKey), []);
@@ -160,6 +164,7 @@ export function Composer({
   const [approvalMode, setApprovalModeState] = useState<ApprovalMode>(() => storedApprovalMode());
   const [goalMode, setGoalMode] = useState(initialDraft.goalMode);
   const [planMode, setPlanMode] = useState(initialDraft.planMode);
+  const [acceptEditsMode, setAcceptEditsMode] = useState(initialDraft.acceptEditsMode);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(initialDraft.attachments);
   const [skills, setSkills] = useState<string[]>(initialDraft.skills);
   const [trigger, setTrigger] = useState<SuggestionTrigger | null>(null);
@@ -203,6 +208,7 @@ export function Composer({
     setDraft(next.draft);
     setGoalMode(next.goalMode);
     setPlanMode(next.planMode);
+    setAcceptEditsMode(next.acceptEditsMode);
     setAttachments(next.attachments);
     setSkills(next.skills);
     setTrigger(null);
@@ -213,7 +219,7 @@ export function Composer({
   }, [draftKey]);
 
   useEffect(() => {
-    const snapshot = { draft, goalMode, planMode, attachments, skills };
+    const snapshot = { draft, goalMode, planMode, acceptEditsMode, attachments, skills };
     latestDraft.current = snapshot;
     latestDraftsByKey.current[draftKey] = snapshot;
     if (draftSaveTimer.current !== null) window.clearTimeout(draftSaveTimer.current);
@@ -228,7 +234,7 @@ export function Composer({
         draftSaveTimer.current = null;
       }
     };
-  }, [draftKey, draft, goalMode, planMode, attachments, skills]);
+  }, [draftKey, draft, goalMode, planMode, acceptEditsMode, attachments, skills]);
 
   useEffect(() => () => {
     if (draftSaveTimer.current !== null) {
@@ -259,6 +265,19 @@ export function Composer({
     document.addEventListener("pointerdown", dismiss, true);
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [trigger]);
+
+  // Stock CLI parity: approving Claude's ExitPlanMode tool call flips the live
+  // session back to default mode server-side (see claude-runtime.cts). Mirror
+  // that here so the "계획" chip doesn't stay stuck on for every later turn.
+  useEffect(() => {
+    if (agentRuntime !== "claude-code" || !threadId) return;
+    return window.devilCodex.onAppServerEvent((event) => {
+      if (event.method !== "claude/planModeExited") return;
+      const params = event.params as { threadId?: string } | undefined;
+      if (params?.threadId !== threadId) return;
+      setPlanMode(false);
+    });
+  }, [agentRuntime, threadId]);
 
   const isImageFile = (file: File, path: string): boolean => file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif)$/i.test(path);
   const isTextFile = (file: File, path: string): boolean => file.type.startsWith("text/") || /\.(txt|md|markdown|json|csv|tsv|ya?ml|toml|log|xml|html|css|tsx?|jsx?|cjs|mjs|py|rb|go|rs|java|kt|swift|sh|zsh|bash|sql)$/i.test(path);
@@ -362,12 +381,21 @@ export function Composer({
   };
 
   const submitCommandPrompt = (prompt: string): void => {
-    onSubmit({ prompt, approvalMode, goalMode: false, planMode, attachments: [], skills: [], reasoningEffort, responseSpeed });
+    onSubmit({ prompt, approvalMode, goalMode: false, planMode, acceptEdits: acceptEditsMode, attachments: [], skills: [], reasoningEffort, responseSpeed });
+  };
+
+  // Claude Code-only permission cycle, mirroring the stock CLI's Shift+Tab:
+  // 기본(default) -> 편집 자동승인(acceptEdits) -> 계획(plan) -> 기본. Codex
+  // keeps its separate one-shot "계획" chip below, untouched.
+  const cycleClaudeMode = (): void => {
+    if (planMode) { setPlanMode(false); return; }
+    if (acceptEditsMode) { setAcceptEditsMode(false); setPlanMode(true); return; }
+    setAcceptEditsMode(true);
   };
 
   const runCommand = (name: SlashCommandId): void => {
     if (name === "goal") { setGoalMode(true); return; }
-    if (name === "plan") { setPlanMode((active) => !active); return; }
+    if (name === "plan") { setPlanMode((active) => { const next = !active; if (next) setAcceptEditsMode(false); return next; }); return; }
     if (name === "init") {
       submitCommandPrompt("프로젝트 루트의 AGENTS.md를 현재 프로젝트에 맞게 생성하거나 업데이트해줘.");
       return;
@@ -414,12 +442,12 @@ export function Composer({
     // No `busy` guard: while a turn runs, submitting queues the message (the
     // parent enqueues it and auto-sends when the current turn finishes).
     if ((!prompt && attachments.length === 0) || !attachmentsReady || !connected) return;
-    onSubmit({ prompt, approvalMode, goalMode, planMode, attachments, skills, reasoningEffort, responseSpeed });
+    onSubmit({ prompt, approvalMode, goalMode, planMode, acceptEdits: acceptEditsMode, attachments, skills, reasoningEffort, responseSpeed });
     clearDraft();
   };
 
   const clearDraft = (): void => {
-    latestDraft.current = { draft: "", goalMode: false, planMode, attachments: [], skills: [] };
+    latestDraft.current = { draft: "", goalMode: false, planMode, acceptEditsMode, attachments: [], skills: [] };
     latestDraftsByKey.current[draftKey] = latestDraft.current;
     setDraft("");
     setAttachments([]);
@@ -516,10 +544,11 @@ export function Composer({
           onPaste={onDraftPaste}
           suppressContentEditableWarning
         />
-        {(goalMode || planMode) && (
+        {(goalMode || planMode || acceptEditsMode) && (
           <div className="composer-context">
             {goalMode && <button type="button" onClick={() => setGoalMode(false)}><Target size={13} />목표 ×</button>}
             {planMode && <button type="button" onClick={() => setPlanMode(false)}><PanelRight size={13} />계획 ×</button>}
+            {acceptEditsMode && <button type="button" onClick={() => setAcceptEditsMode(false)}><Pencil size={13} />편집 자동승인 ×</button>}
           </div>
         )}
         <div className="composer-footer">
@@ -528,7 +557,19 @@ export function Composer({
           <div className="composer-options">
             <ApprovalPicker value={approvalMode} onChange={setApprovalMode} onOpen={() => setTrigger(null)} />
             <button type="button" className={goalMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setGoalMode((active) => !active); }}><Target size={14} />목표</button>
-            <button type="button" className={planMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setPlanMode((active) => !active); }}><PanelRight size={14} />계획</button>
+            {agentRuntime === "claude-code" ? (
+              <button
+                type="button"
+                className={(planMode || acceptEditsMode) ? "text-chip active" : "text-chip"}
+                title="권한 모드 순환: 기본 → 편집 자동승인 → 계획 (Shift+Tab과 동일)"
+                onClick={() => { setTrigger(null); cycleClaudeMode(); }}
+              >
+                {planMode ? <PanelRight size={14} /> : acceptEditsMode ? <Pencil size={14} /> : <Hand size={14} />}
+                {planMode ? "계획" : acceptEditsMode ? "편집 자동승인" : "기본"}
+              </button>
+            ) : (
+              <button type="button" className={planMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setPlanMode((active) => !active); }}><PanelRight size={14} />계획</button>
+            )}
           </div>
           <div className="composer-spacer" />
           <ModelPicker model={model} providerId={providerId} accountId={accountId} providers={providers} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} runtime={agentRuntime} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />

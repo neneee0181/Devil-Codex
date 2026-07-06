@@ -2396,6 +2396,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
       ...(request.responseSpeed ? { responseSpeed: request.responseSpeed } : {}),
       ...(request.planMode !== undefined ? { planMode: Boolean(request.planMode) } : {}),
+      ...(request.acceptEdits !== undefined ? { acceptEdits: Boolean(request.acceptEdits) } : {}),
     };
     await providerTranscripts.saveMeta(meta);
     sendToRenderer("thread:meta-changed", meta);
@@ -2741,6 +2742,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           approvalPolicy: request.approvalPolicy,
           sandboxMode: request.sandboxMode,
           planMode: Boolean(request.planMode),
+          acceptEdits: Boolean(request.acceptEdits),
           ...(askUserMcpEnabled ? {
             onUserDialog: handleClaudeUserDialog,
             supportedDialogKinds: CLAUDE_NATIVE_ASK_DIALOG_KINDS,

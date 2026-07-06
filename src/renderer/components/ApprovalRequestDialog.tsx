@@ -7,9 +7,9 @@ export function ApprovalRequestDialog({ prompt, responding, onDecision }: { prom
   const allowSession = prompt.availableDecisions.includes("acceptForSession");
   const allowOnce = prompt.availableDecisions.includes("accept");
   const rejectDecision: ApprovalDecision = prompt.availableDecisions.includes("decline") ? "decline" : "cancel";
-  // Clicking the backdrop dismisses by rejecting — the safe, non-destructive
-  // default (same as pressing 거부) so a stray click never auto-approves.
-  return <div className="approval-request-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !responding) onDecision(rejectDecision); }}><motion.section className="approval-request-dialog" initial={{ opacity: 0, y: 10, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} role="alertdialog" aria-modal="true" aria-labelledby="approval-request-title">
+  // No backdrop-click dismiss: this blocks a running tool call, so a stray
+  // click outside must never silently reject it. Use 거부/허용 buttons only.
+  return <div className="approval-request-backdrop" role="presentation"><motion.section className="approval-request-dialog" initial={{ opacity: 0, y: 10, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} role="alertdialog" aria-modal="true" aria-labelledby="approval-request-title">
     <header>{command ? <SquareTerminal size={20} /> : <FilePenLine size={20} />}<div><h2 id="approval-request-title">{command ? "명령 실행 승인" : "파일 변경 승인"}</h2><p>Codex가 작업을 계속하려면 승인이 필요합니다.</p></div><ShieldAlert size={19} /></header>
     {prompt.reason && <p className="approval-reason">{prompt.reason}</p>}
     {command && <pre>{prompt.command || "명령 정보 없음"}</pre>}

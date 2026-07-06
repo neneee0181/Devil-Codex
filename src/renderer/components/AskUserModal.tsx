@@ -47,7 +47,9 @@ export function AskUserModal(): React.JSX.Element | null {
 
   return createPortal(
     <AnimatePresence>
-      <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finish(null); }}>
+      {/* No backdrop-click dismiss: this blocks the agent turn, so a stray
+          click outside must never silently answer/cancel it. Use 취소/X. */}
+      <div className="modal-backdrop" role="presentation">
         <motion.div className="ask-dialog" initial={{ opacity: 0, scale: .97, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: 6 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }} role="dialog" aria-modal="true">
           <header><span><HelpCircle size={18} /><strong>질문</strong></span><button type="button" onClick={() => finish(null)} aria-label="닫기"><X size={18} /></button></header>
           <div className="ask-body">

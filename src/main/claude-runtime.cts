@@ -15,6 +15,7 @@ type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
   supportedCommands?: () => Promise<unknown[]>;
   getContextUsage?: () => Promise<unknown>;
   setModel?: (model?: string) => Promise<void>;
+  setPermissionMode?: (mode: string) => Promise<void>;
 };
 type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
 export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; totalTokens: number };
@@ -159,9 +160,15 @@ function sdkClaudeCodeVersion(bundledExecutable: string): string | undefined {
   }
 }
 
-function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: ThreadSandboxMode, planMode?: boolean): string {
+// The stock CLI's Shift+Tab cycle: default -> acceptEdits -> plan -> back to
+// default (bypassPermissions is a separate, deliberate "full access" escalation
+// surfaced through Devil's own approval picker, not this cycle).
+type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+
+function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: ThreadSandboxMode, planMode?: boolean, acceptEditsMode?: boolean): ClaudePermissionMode {
   if (planMode) return "plan";
   if (sandboxMode === "danger-full-access" || approvalPolicy === "never") return "bypassPermissions";
+  if (acceptEditsMode) return "acceptEdits";
   // Claude Code's own permission engine decides WHEN to ask; Devil only
   // supplies the answer UI via the canUseTool bridge (same modal as Codex
   // approvals). Keep the default mode aligned with the stock CLI instead of
@@ -201,6 +208,10 @@ function toolInput(part: Record<string, unknown>): Record<string, unknown> {
 function toolSummary(name: string, input: Record<string, unknown>): string {
   if (/^(bash|powershell)$/i.test(name)) return String(input.command ?? name);
   if (/^(read|edit|write|notebookedit)$/i.test(name)) return String(input.file_path ?? input.path ?? name);
+  // ExitPlanMode's `plan` field is the markdown plan text itself — show that
+  // instead of a raw JSON blob so the approval card reads like the stock CLI's
+  // plan review screen.
+  if (name === "ExitPlanMode" && typeof input.plan === "string") return input.plan;
   return Object.keys(input).length ? JSON.stringify(input) : name;
 }
 
@@ -427,6 +438,12 @@ type ThreadInstance = {
   currentTurn?: ActiveTurn;
   idleTimer?: NodeJS.Timeout;
   disposed: boolean;
+  // Live permission mode of the running process. default/acceptEdits/plan
+  // switch in place via the SDK's setPermissionMode() (same trick as model
+  // changes); only a bypassPermissions transition needs a fresh process
+  // (allowDangerouslySkipPermissions + the canUseTool wiring are spawn-time
+  // fixed).
+  currentMode: ClaudePermissionMode;
 };
 
 type PermissionResultLike =
@@ -514,7 +531,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; planMode?: boolean; onUserDialog?: OnUserDialogLike; supportedDialogKinds?: string[]; onAskUserQuestionTool?: OnAskUserQuestionToolLike; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; planMode?: boolean; acceptEdits?: boolean; onUserDialog?: OnUserDialogLike; supportedDialogKinds?: string[]; onAskUserQuestionTool?: OnAskUserQuestionToolLike; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -524,7 +541,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     let nativeSessionId = input.nativeSessionId;
     let usageSnapshot: TurnUsageSnapshot | undefined;
     let sdkContextUsage: ContextUsage | undefined;
-    const mode = permissionMode(input.approvalPolicy, input.sandboxMode, input.planMode);
+    const mode = permissionMode(input.approvalPolicy, input.sandboxMode, input.planMode, input.acceptEdits);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
 
     const content = userMessageContent(input.text, input.attachments);
@@ -638,16 +655,22 @@ export class ClaudeCodeRuntime extends EventEmitter {
     for (const [threadId, instance] of [...this.instances]) this.disposeInstance(threadId, instance, { abort: true });
   }
 
-  private instanceFingerprint(input: { cwd: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string): string {
-    return JSON.stringify([input.cwd, input.mcpConfig ?? "", mode, input.supportedDialogKinds ?? [], Boolean(input.onUserDialog), Boolean(input.onAskUserQuestionTool)]);
+  // Bypass mode is the only mode that needs a fresh process: it fixes
+  // allowDangerouslySkipPermissions and drops the canUseTool bridge entirely
+  // at spawn time. default/acceptEdits/plan all spawn identically (bridge
+  // present) and cycle live via setPermissionMode, so they share one bucket.
+  private instanceFingerprint(input: { cwd: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, bypass: boolean): string {
+    return JSON.stringify([input.cwd, input.mcpConfig ?? "", bypass, input.supportedDialogKinds ?? [], Boolean(input.onUserDialog), Boolean(input.onAskUserQuestionTool)]);
   }
 
   // Reuse the thread's live process when its launch config still matches.
-  // Model changes go through the SDK's setModel control request; permission
-  // mode or MCP config changes need a fresh process (those are fixed at
-  // spawn), which resumes the same native session.
-  private async obtainInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string): Promise<ThreadInstance> {
-    const fingerprint = this.instanceFingerprint(input, mode);
+  // Model changes go through the SDK's setModel control request; a
+  // default/acceptEdits/plan mode change goes through setPermissionMode the
+  // same way (stock CLI's Shift+Tab never restarts the process either).
+  // Only an MCP config change or a bypassPermissions transition needs a fresh
+  // process (those are fixed at spawn), which resumes the same native session.
+  private async obtainInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: ClaudePermissionMode): Promise<ThreadInstance> {
+    const fingerprint = this.instanceFingerprint(input, mode === "bypassPermissions");
     const existing = this.instances.get(input.threadId);
     if (existing && !existing.disposed && existing.fingerprint === fingerprint) {
       if (existing.idleTimer) {
@@ -666,6 +689,18 @@ export class ClaudeCodeRuntime extends EventEmitter {
           this.disposeInstance(input.threadId, existing, { abort: true });
         }
       }
+      if (!existing.disposed && existing.currentMode !== mode) {
+        if (typeof existing.request.setPermissionMode === "function") {
+          try {
+            await existing.request.setPermissionMode(mode);
+            existing.currentMode = mode;
+          } catch {
+            this.disposeInstance(input.threadId, existing, { abort: true });
+          }
+        } else {
+          this.disposeInstance(input.threadId, existing, { abort: true });
+        }
+      }
       if (!existing.disposed) return existing;
     } else if (existing) {
       this.disposeInstance(input.threadId, existing, { abort: true });
@@ -673,7 +708,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     return this.createInstance(input, mode, fingerprint, existing?.sessionId);
   }
 
-  private async createInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: string, fingerprint: string, knownSessionId?: string): Promise<ThreadInstance> {
+  private async createInstance(input: { threadId: string; cwd: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; supportedDialogKinds?: string[]; onUserDialog?: OnUserDialogLike; onAskUserQuestionTool?: OnAskUserQuestionToolLike }, mode: ClaudePermissionMode, fingerprint: string, knownSessionId?: string): Promise<ThreadInstance> {
     const { query } = await claudeSdk();
     const pathToClaudeCodeExecutable = claudeCodeExecutable();
     const abortController = new AbortController();
@@ -701,6 +736,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       model: input.model,
       sessionId: knownSessionId ?? input.nativeSessionId,
       disposed: false,
+      currentMode: mode,
     };
     const resumeSessionId = knownSessionId ?? input.nativeSessionId;
     const options: ClaudeSdkOptions = {
@@ -713,7 +749,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
       settings: claudeCodeSettings(),
       permissionMode: mode,
       allowDangerouslySkipPermissions: mode === "bypassPermissions",
-      ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, () => instance.currentTurn?.context.turnId ?? "", input.onAskUserQuestionTool) }),
+      ...(mode === "bypassPermissions" ? {} : { canUseTool: this.canUseToolBridge(input.threadId, () => instance.currentTurn?.context.turnId ?? "", instance, input.onAskUserQuestionTool) }),
       ...(input.onUserDialog && input.supportedDialogKinds?.length ? {
         onUserDialog: input.onUserDialog,
         supportedDialogKinds: input.supportedDialogKinds,
@@ -796,7 +832,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
   // Claude Code decides when a tool needs permission; Devil supplies the
   // answer UI. Emits the same requestApproval events the Codex app-server
   // uses, so the renderer reuses the existing approval dialog unchanged.
-  private canUseToolBridge(threadId: string, turnId: () => string, onAskUserQuestionTool?: OnAskUserQuestionToolLike): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
+  private canUseToolBridge(threadId: string, turnId: () => string, instance: ThreadInstance, onAskUserQuestionTool?: OnAskUserQuestionToolLike): (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; suggestions?: unknown[] }) => Promise<PermissionResultLike> {
     return (toolName, input, options) => new Promise<PermissionResultLike>((resolve) => {
       if (toolName === "AskUserQuestion" && onAskUserQuestionTool) {
         void onAskUserQuestionTool(input, { signal: options.signal })
@@ -811,6 +847,18 @@ export class ClaudeCodeRuntime extends EventEmitter {
         this.pendingApprovals.delete(requestId);
         options.signal.removeEventListener("abort", onAbort);
         if (decision === "accept" || decision === "acceptForSession") {
+          // Stock CLI parity: approving ExitPlanMode is a one-way soft
+          // transition back to default mode for the rest of the session — the
+          // user has to Shift+Tab (here: re-click the mode chip) to re-enter
+          // plan mode. Without this, Devil kept forcing "plan" on every later
+          // turn since the composer's plan toggle stayed stuck on.
+          if (toolName === "ExitPlanMode" && instance.currentMode === "plan") {
+            instance.currentMode = "default";
+            if (typeof instance.request?.setPermissionMode === "function") {
+              void instance.request.setPermissionMode("default").catch(() => undefined);
+            }
+            this.emitEvent({ method: "claude/planModeExited", params: { threadId } });
+          }
           resolve({
             behavior: "allow",
             updatedInput: input,
