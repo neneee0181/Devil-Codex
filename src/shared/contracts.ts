@@ -463,6 +463,7 @@ export interface DevilCodexApi {
   remoteDisable: () => Promise<RemoteControlStatus>;
   remoteRegenerateToken: () => Promise<RemoteControlStatus>;
   remoteRevokeDevice: (input: { deviceId: string }) => Promise<RemoteControlStatus>;
+  remoteTailscaleUp: () => Promise<{ status: RemoteControlStatus; authUrl?: string }>;
   remoteScope: () => Promise<RemoteScope>;
   onRemoteStatus: (listener: (status: RemoteControlStatus) => void) => () => void;
   translate: (input: { text: string; to?: string; from?: string }) => Promise<string>;

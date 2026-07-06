@@ -166,6 +166,26 @@ export class TailscaleCli {
     return { certFile: input.certFile, keyFile: input.keyFile };
   }
 
+  // Brings the local Tailscale backend up (equivalent to `tailscale up`).
+  // Covers both "daemon running but logged out" and "backend stopped" cases.
+  // If the account needs interactive browser auth, `tailscale up` blocks and
+  // prints a `https://login.tailscale.com/a/...` URL instead of returning -
+  // we use a short timeout so the caller doesn't hang, then scrape that URL
+  // out of whatever stdout/stderr was captured before the kill so the UI can
+  // open it for the user instead of just failing silently.
+  async up(): Promise<{ ok: boolean; authUrl?: string }> {
+    const cliPath = await this.requireCli();
+    try {
+      await this.exec(cliPath, ["up", "--timeout=8s"], 10_000);
+      return { ok: true };
+    } catch (error) {
+      const message = extractCommandError(error);
+      const authUrl = message.match(/https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9_-]+/)?.[0];
+      if (authUrl) return { ok: false, authUrl };
+      throw new Error(message);
+    }
+  }
+
   async funnelOn(port: number): Promise<void> {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535.");
     const cliPath = await this.requireCli();

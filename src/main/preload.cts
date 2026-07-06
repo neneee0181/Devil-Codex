@@ -113,6 +113,7 @@ const api: DevilCodexApi = {
   remoteDisable: () => ipcRenderer.invoke("remote:disable"),
   remoteRegenerateToken: () => ipcRenderer.invoke("remote:regenerate-token"),
   remoteRevokeDevice: (input) => ipcRenderer.invoke("remote:revoke-device", input),
+  remoteTailscaleUp: () => ipcRenderer.invoke("remote:tailscale-up"),
   remoteScope: () => ipcRenderer.invoke("remote:scope"),
   onRemoteStatus: (listener: (status: RemoteControlStatus) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

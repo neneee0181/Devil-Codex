@@ -5,7 +5,7 @@ import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
 import { estimateProviderUsageCost } from "./providerPricing";
-import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile, ThreadSummary } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile, ThreadSummary } from "../shared/contracts";
 
 type Config = {
   approval: string;
@@ -98,7 +98,7 @@ function SettingsPage({ active, appInfo, config, update, backendState, terminalS
 function RemoteControlSection(): React.JSX.Element {
   const [status, setStatus] = useState<RemoteControlStatus | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | null>(null);
+  const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | "tailscale-up" | null>(null);
   const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("tailnet");
   const [error, setError] = useState<string | null>(null);
   const scopeCodex = useCodexSettings();
@@ -146,6 +146,34 @@ function RemoteControlSection(): React.JSX.Element {
     }
   };
 
+  // Tailscale can be "installed but stopped/logged out" - this is the common
+  // case right after a reboot or a manual `tailscale down`. Rather than
+  // sending the user to a terminal, run `tailscale up` for them. If the
+  // account needs interactive browser auth (fresh install / expired key),
+  // the CLI hands back a login URL instead of connecting - open that in the
+  // system browser so the user can finish it the same way `tailscale up`
+  // would ask them to from a terminal.
+  const tailscaleOffline = Boolean(status) && (!status!.tailscale.installed || !status!.tailscale.loggedIn);
+  const runTailscaleUp = async (): Promise<void> => {
+    setAction("tailscale-up");
+    setError(null);
+    try {
+      const result = await window.devilCodex.remoteTailscaleUp();
+      setStatus(result.status);
+      setSelectedMode(result.status.mode);
+      if (result.authUrl) {
+        setError(`Tailscale 로그인이 필요합니다. 브라우저에서 인증을 완료한 뒤 다시 시도하세요: ${result.authUrl}`);
+        void window.devilCodex.openExternalUrl({ url: result.authUrl });
+      }
+      setState("ready");
+    } catch (cause) {
+      setError(toErrorMessage(cause, "Tailscale를 켜지 못했습니다."));
+      setState("error");
+    } finally {
+      setAction(null);
+    }
+  };
+
   const tailscaleMessage = status?.tailscale.error
     ?? (!status?.tailscale.installed ? "Tailscale이 설치되어 있지 않습니다." : !status?.tailscale.loggedIn ? "Tailscale 로그인 또는 연결이 필요합니다." : null);
   const remoteErrorMessage = error ?? status?.error ?? tailscaleMessage;
@@ -186,6 +214,7 @@ function RemoteControlSection(): React.JSX.Element {
         <div style={actionGroupStyle}>
           <button className="secondary" onClick={() => void reload()} disabled={disabled}>재확인</button>
           <button className="secondary" onClick={() => void runAction("regenerate", () => window.devilCodex.remoteRegenerateToken())} disabled={disabled || !status?.enabled}>토큰 재발급</button>
+          {tailscaleOffline && status?.tailscale.installed && <button className="secondary" onClick={() => void runTailscaleUp()} disabled={disabled}>{action === "tailscale-up" ? "Tailscale 켜는 중…" : "Tailscale 켜기"}</button>}
           <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: REMOTE_INSTALL_URL })}>Tailscale 설치</button>
           <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: TAILSCALE_ADMIN_DNS_URL })}>HTTPS 설정</button>
         </div>
@@ -249,9 +278,12 @@ function RemoteControlSection(): React.JSX.Element {
   </>;
 }
 
+const ALLOWED_THREADS_RUNTIMES = [["codex", "코덱스"], ["claude-code", "클로드 코드"]] as const;
+
 function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChange: (ids: string[]) => void }): React.JSX.Element {
   const [loading, setLoading] = useState(true);
   const [allThreads, setAllThreads] = useState<ThreadSummary[]>([]);
+  const [runtimeTab, setRuntimeTab] = useState<AgentRuntimeId>("codex");
   const [selectedCwd, setSelectedCwd] = useState("");
 
   const reload = async (): Promise<void> => {
@@ -261,9 +293,13 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
         window.devilCodex.listProjects({ archived: false, runtime: "codex" }).catch(() => [] as ThreadSummary[]),
         window.devilCodex.listProjects({ archived: false, runtime: "claude-code" }).catch(() => [] as ThreadSummary[]),
       ]);
-      const merged = [...codexThreads, ...claudeThreads];
-      setAllThreads(merged);
-      setSelectedCwd((current) => current || merged[0]?.cwd || "");
+      // Kept as two explicitly-tagged runtime lists (not merged/sorted
+      // together) so the runtime tabs below can filter without re-deriving
+      // which runtime each thread belongs to from a mixed array.
+      setAllThreads([
+        ...codexThreads.map((thread) => ({ ...thread, runtime: "codex" as const })),
+        ...claudeThreads.map((thread) => ({ ...thread, runtime: "claude-code" as const })),
+      ]);
     } finally {
       setLoading(false);
     }
@@ -271,19 +307,32 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
 
   useEffect(() => { void reload(); }, []);
 
+  const byId = useMemo(() => new Map(allThreads.map((thread) => [thread.id, thread])), [allThreads]);
   const byCwd = useMemo(() => {
     const map = new Map<string, ThreadSummary[]>();
-    for (const thread of allThreads) map.set(thread.cwd, [...(map.get(thread.cwd) ?? []), thread]);
+    for (const thread of allThreads) {
+      if ((thread.runtime ?? "codex") !== runtimeTab) continue;
+      map.set(thread.cwd, [...(map.get(thread.cwd) ?? []), thread]);
+    }
     return map;
-  }, [allThreads]);
-  const byId = useMemo(() => new Map(allThreads.map((thread) => [thread.id, thread])), [allThreads]);
+  }, [allThreads, runtimeTab]);
   const projectCwds = useMemo(() => [...byCwd.keys()].sort(), [byCwd]);
+  // The select's own project list just changed with the tab - keep the
+  // current pick only if it still exists under this runtime, else fall back
+  // to the first project so the list below never silently shows "no cwd".
+  useEffect(() => {
+    if (selectedCwd && projectCwds.includes(selectedCwd)) return;
+    setSelectedCwd(projectCwds[0] ?? "");
+  }, [projectCwds, selectedCwd]);
   const threadsForSelected = selectedCwd ? byCwd.get(selectedCwd) ?? [] : [];
 
   const toggle = (id: string): void => onChange(allowed.includes(id) ? allowed.filter((item) => item !== id) : [...allowed, id]);
 
   return <div className="allowed-threads">
     <p className="section-help" style={{ margin: 0 }}>비워두면 이 PC의 모든 스레드에 원격 접근이 가능합니다. 하나라도 추가하면 원격 클라이언트는 아래 목록의 스레드만 보고 이어서 대화할 수 있습니다.</p>
+    <div className="allowed-threads-tabs" role="tablist" aria-label="런타임 선택">
+      {ALLOWED_THREADS_RUNTIMES.map(([id, label]) => <button key={id} type="button" className={runtimeTab === id ? "active" : ""} onClick={() => setRuntimeTab(id)}>{label}</button>)}
+    </div>
     <div className="thread-picker-row">
       <select value={selectedCwd} onChange={(event) => setSelectedCwd(event.target.value)}>
         {!projectCwds.length && <option value="">프로젝트 없음</option>}
@@ -310,7 +359,7 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
           return <div key={id} style={listItemStyle}>
             <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
               <strong style={listStrongStyle}>{thread?.title || id}</strong>
-              <small style={listSmallStyle}>{thread?.cwd ?? "알 수 없는 프로젝트"}</small>
+              <small style={listSmallStyle}>{thread ? `${thread.cwd} · ${thread.runtime ?? "codex"}` : "알 수 없는 프로젝트"}</small>
             </span>
             <button type="button" className="secondary" onClick={() => toggle(id)}>제거</button>
           </div>;

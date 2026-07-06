@@ -337,17 +337,34 @@ function App(): React.JSX.Element {
     return () => bridge.disconnect();
   }, [bridge]);
 
+  // The bridge channel defaults to the Codex runtime when `runtime` is
+  // omitted, so a plain call here silently drops every Claude Code thread -
+  // including ones an allowed-threads device is specifically scoped to. Query
+  // both runtimes and merge so remote clients see the same threads the
+  // desktop app does, regardless of which runtime created them.
   async function refreshProjects(query = searchQuery): Promise<void> {
-    const result = query.trim()
-      ? await bridge.call<ThreadSummary[]>("thread:search", { query: query.trim(), archived: false })
-      : await bridge.call<ThreadSummary[]>("thread:projects", { archived: false });
+    const trimmed = query.trim();
+    const [codex, claude] = trimmed
+      ? await Promise.all([
+          bridge.call<ThreadSummary[]>("thread:search", { query: trimmed, archived: false, runtime: "codex" }),
+          bridge.call<ThreadSummary[]>("thread:search", { query: trimmed, archived: false, runtime: "claude-code" }),
+        ])
+      : await Promise.all([
+          bridge.call<ThreadSummary[]>("thread:projects", { archived: false, runtime: "codex" }),
+          bridge.call<ThreadSummary[]>("thread:projects", { archived: false, runtime: "claude-code" }),
+        ]);
+    const result = [...codex, ...claude].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     setProjectSummaries(result);
-    if (!query.trim() && !selectedProject && result[0]?.cwd) setSelectedProject(result[0].cwd);
+    if (!trimmed && !selectedProject && result[0]?.cwd) setSelectedProject(result[0].cwd);
   }
 
   async function refreshThreads(cwd: string): Promise<void> {
     if (!cwd) return;
-    const result = await bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false });
+    const [codex, claude] = await Promise.all([
+      bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false, runtime: "codex" }),
+      bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false, runtime: "claude-code" }),
+    ]);
+    const result = [...codex, ...claude].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     setThreadSummaries(result);
   }
 

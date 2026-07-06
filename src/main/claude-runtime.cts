@@ -542,10 +542,50 @@ export class ClaudeCodeRuntime extends EventEmitter {
     let usageSnapshot: TurnUsageSnapshot | undefined;
     let sdkContextUsage: ContextUsage | undefined;
     const mode = permissionMode(input.approvalPolicy, input.sandboxMode, input.planMode, input.acceptEdits);
+    // Reserve the thread's "occupied" slot *before* the first await below. The
+    // real per-instance abortController does not exist until obtainInstance()
+    // resolves (spawning/reusing a process is async), so without this
+    // placeholder a second sendTurn() for the same thread issued while the
+    // first is still starting up would also pass the `this.active.has()`
+    // guard above and race into obtainInstance concurrently - corrupting
+    // `this.instances` (last writer wins) and orphaning one turn's process
+    // with no one left to read its response (renderer sees it as "hung").
+    // This also makes interruptTurn() correctly report an active turn during
+    // the startup window instead of falsely returning "no active turn".
+    const startAbort = new AbortController();
+    this.active.set(input.threadId, startAbort);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
 
     const content = userMessageContent(input.text, input.attachments);
-    const instance = await this.obtainInstance(input, mode);
+    let instance: ThreadInstance;
+    try {
+      instance = await this.obtainInstance(input, mode);
+    } catch (error) {
+      if (this.active.get(input.threadId) === startAbort) this.active.delete(input.threadId);
+      this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: `claude-error-${turnId}`, type: "error", message: cleanErrorMessage(error instanceof Error ? error.message : error), status: "failed" } } });
+      this.emitEvent({ method: "turn/completed", params: { threadId: input.threadId, turnId, turn: { id: turnId, status: "failed", durationMs: Date.now() - startedAt } } });
+      throw error;
+    }
+    // interruptTurn() always removes (or, for a freshly-created instance,
+    // replaces) this reservation before aborting/disposing - so anything
+    // other than "still ours" means a steer/stop landed during startup.
+    // Checking signal.aborted alone would miss the reused-instance path,
+    // where interruptTurn() disposes the instance directly without ever
+    // calling startAbort.abort().
+    if (startAbort.signal.aborted || this.active.get(input.threadId) !== startAbort) {
+      // Steered/interrupted while the process was still starting up - the
+      // instance we just obtained was never handed a turn, so drop it and
+      // report the turn as interrupted (same outcome as aborting mid-stream).
+      this.disposeInstance(input.threadId, instance, { abort: true });
+      if (this.active.get(input.threadId) === startAbort) this.active.delete(input.threadId);
+      this.emitEvent({ method: "turn/completed", params: { threadId: input.threadId, turnId, turn: { id: turnId, status: "interrupted", durationMs: Date.now() - startedAt } } });
+      return { sessionId: input.nativeSessionId, turnId };
+    }
+    // Startup finished without interruption - swap the reservation for the
+    // instance's real controller so interruptTurn() can abort the live
+    // process/stream from here on (matches the abort semantics used for the
+    // rest of the turn's lifetime).
+    this.active.set(input.threadId, instance.abortController);
     const context: TurnContext = {
       threadId: input.threadId,
       turnId,
@@ -561,7 +601,6 @@ export class ClaudeCodeRuntime extends EventEmitter {
       },
       onUsage: (snapshot) => { usageSnapshot = snapshot; },
     };
-    this.active.set(input.threadId, instance.abortController);
     const run = (async () => {
       await new Promise<void>((resolve, reject) => {
         if (instance.disposed) {

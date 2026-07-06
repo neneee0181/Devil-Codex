@@ -2183,6 +2183,14 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("remote:disable", () => stopRemoteControl());
   ipcMain.handle("remote:regenerate-token", () => regenerateRemoteToken());
   ipcMain.handle("remote:revoke-device", (_event, input: { deviceId?: string }) => revokeRemoteDevice(String(input?.deviceId ?? "")));
+  // Quick-actions "Tailscale 켜기" button: brings the local backend up without
+  // making the user hunt for a terminal. Refreshes the cached status either
+  // way so the Settings view reflects the outcome immediately.
+  ipcMain.handle("remote:tailscale-up", async () => {
+    const result = await new TailscaleCli().up();
+    remoteLastTailscaleStatus = await new TailscaleCli().status();
+    return { status: await remoteStatus(), authUrl: result.authUrl };
+  });
   // Local desktop access is always unrestricted - this only exists so the
   // Settings UI/preload surface matches the shape a remote client gets back
   // from the same channel (which buildRemoteIpcHandlers overrides with the
