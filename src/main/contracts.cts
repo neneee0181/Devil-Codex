@@ -148,7 +148,12 @@ export type TerminalShellId = "auto" | "wsl" | "git-bash" | "pwsh" | "powershell
 export interface TerminalShellProfile { id: TerminalShellId; label: string; available: boolean; path?: string; detail?: string; }
 export interface TerminalSession { id: string; cwd: string; shell: string; fallback: boolean; buffer?: string; key?: string; shellId?: TerminalShellId; shellLabel?: string; }
 export interface TerminalData { id: string; data: string; }
-export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; }
+export type RemoteControlMode = "tailnet" | "funnel";
+export interface RemoteDevice { id: string; name: string; hostname?: string; os?: string; createdAt?: number; lastSeenAt?: number; revoked?: boolean; }
+export interface RemoteClient { id: string; label: string; ip?: string; userAgent?: string; createdAt?: number; lastSeenAt?: number; }
+export interface RemoteTailscaleStatus { installed: boolean; running: boolean; loggedIn: boolean; hostname?: string; tailnet?: string; serviceUrl?: string; error?: string; }
+export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode; url?: string; qrDataUrl?: string; tokenPreview?: string; error?: string; tailscale: RemoteTailscaleStatus; devices: RemoteDevice[]; clients: RemoteClient[]; }
+export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; }
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
   | "openai" | "anthropic" | "google" | "deepseek"
@@ -363,6 +368,11 @@ export interface DevilCodexApi {
   listCodexPluginSkills: () => Promise<CodexSkillInfo[]>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
+  remoteStatus: () => Promise<RemoteControlStatus>;
+  remoteEnable: (input: { mode: RemoteControlMode }) => Promise<RemoteControlStatus>;
+  remoteDisable: () => Promise<RemoteControlStatus>;
+  remoteRegenerateToken: () => Promise<RemoteControlStatus>;
+  remoteRevokeDevice: (input: { deviceId: string }) => Promise<RemoteControlStatus>;
   translate: (input: { text: string; to?: string; from?: string }) => Promise<string>;
   loadProviderSettings: () => Promise<ProviderSettings>;
   selectProvider: (input: { provider: ProviderId; model: string; accountId?: string }) => Promise<ProviderSettings>;

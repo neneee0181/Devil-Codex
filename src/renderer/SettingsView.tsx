@@ -5,7 +5,7 @@ import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
 import { estimateProviderUsageCost } from "./providerPricing";
-import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, TerminalShellId, TerminalShellProfile } from "../shared/contracts";
+import type { AppInfo, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile } from "../shared/contracts";
 
 type Config = {
   approval: string;
@@ -29,6 +29,8 @@ type Config = {
 const defaults: Config = {
   approval: "요청 시", sandbox: "읽기 전용", devilMcpEnabled: false, askUserMcpEnabled: true, subagentMcpEnabled: true, englishOutput: false, sidecarWebSearch: false, sidecarVision: false, sidecarWebSearchLimit: 3, sidecarVisionLimit: 3, notificationsEnabled: true, notifyOnTurnComplete: true, notifyOnApproval: true, notifyOnAsk: true, browserPersistentSession: true, terminalShell: "auto",
 };
+
+const REMOTE_INSTALL_URL = "https://tailscale.com/download";
 
 const groups = [
   { label: "설정", items: [["구성", TerminalSquare], ["연결", Globe2], ["알림", Bell], ["사용량 및 청구", CreditCard]] },
@@ -85,10 +87,120 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
 function SettingsPage({ active, appInfo, config, update, backendState, terminalShells, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const usage = useProviderUsage(active === "사용량 및 청구");
   if (active === "알림") return <><h1>알림</h1><p className="page-lead">Devil Codex 창이 숨겨져 있거나 포커스가 없을 때만 시스템 알림을 표시합니다. 창을 보고 있는 동안에는 기존 화면 표시만 사용합니다.</p><section><h2>데스크톱 알림</h2><div className="setting-card"><Row title="백그라운드 알림" detail="끄면 아래 세부 항목과 무관하게 모든 시스템 알림을 보내지 않습니다."><Toggle value={config.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} /></Row><Row title="작업 완료" detail="AI 작업이 완료되거나 실패했을 때 알려줍니다. 대기열에 다음 메시지가 있으면 마지막 작업이 끝날 때 알려줍니다."><Toggle value={config.notifyOnTurnComplete} onChange={(v) => update("notifyOnTurnComplete", v)} /></Row><Row title="승인 요청" detail="명령 실행 또는 파일 변경 승인이 필요할 때 알려줍니다."><Toggle value={config.notifyOnApproval} onChange={(v) => update("notifyOnApproval", v)} /></Row><Row title="질문 요청" detail="AI가 선택지 질문 모달을 띄워 사용자 입력을 기다릴 때 알려줍니다."><Toggle value={config.notifyOnAsk} onChange={(v) => update("notifyOnAsk", v)} /></Row></div></section></>;
-  if (active === "구성") return <><h1>구성</h1><p className="page-lead">승인 정책 및 샌드박스 설정을 구성합니다. <span className={`settings-save-state ${backendState}`}>{backendState === "loading" ? "저장 중…" : backendState === "saved" ? "config.toml 저장됨" : "저장 실패"}</span></p><section><h2>앱 정보</h2><div className="setting-card app-version-card"><Row title="Devil Codex 현재 버전" detail="현재 실행 중인 데스크톱 앱 버전입니다. 업데이트 확인이나 설치 빌드 검증 때 기준으로 사용합니다."><span className="app-version-badge">{appInfo?.version ? `v${appInfo.version}` : "확인 중..."}</span></Row><Row title="플랫폼" detail="앱이 감지한 현재 실행 환경입니다."><span className="app-version-platform">{appInfo?.platform ?? "unknown"}</span></Row></div></section><section><h2>사용자 지정 config.toml 설정</h2><div className="setting-card"><Row title="승인 정책" detail="Codex가 승인을 요청할 시점을 선택합니다"><Select value={config.approval} options={["요청 시", "항상", "사용 안 함"]} onChange={(v) => update("approval", v)} /></Row><Row title="샌드박스 설정" detail="명령을 실행하는 동안 수행할 수 있는 작업 범위"><Select value={config.sandbox} options={["읽기 전용", "작업 공간 쓰기", "전체 접근"]} onChange={(v) => update("sandbox", v)} /></Row></div></section><section><h2>내장 터미널</h2><div className="setting-card"><Row title="기본 터미널 Shell" detail="새 터미널 탭을 열 때 사용할 shell입니다. 자동은 WSL, Git Bash, PowerShell 7, Windows PowerShell, cmd 순서로 선택합니다."><ShellSelect value={config.terminalShell} profiles={terminalShells} onChange={(v) => update("terminalShell", v)} /></Row></div></section><section><h2>내장 브라우저</h2><div className="setting-card"><Row title="브라우저 프로필 저장" detail="켜면 쿠키, 로그인, localStorage, IndexedDB를 앱 재시작 후에도 유지합니다. 끄면 임시 게스트 세션으로 실행됩니다. 변경 시 열린 브라우저 탭은 새 세션으로 다시 만들어집니다."><Toggle value={config.browserPersistentSession} onChange={(v) => update("browserPersistentSession", v)} /></Row></div></section><section><h2>Devil MCP 도구</h2><p className="section-help">AI 질문 모달은 작업 방향이 갈리는 결정점에서 모델이 사용자에게 객관식으로 물어볼 때 사용합니다. 브라우저와 컴퓨터 제어 도구는 켠 동안에만 Codex MCP 목록에 등록됩니다.</p><div className="setting-card"><Row title="AI 질문 모달 MCP" detail="켜면 모델이 애매한 요구사항, 아키텍처 선택, 비용/보안/UX 트레이드오프처럼 사용자가 결정해야 하는 지점에서 ask_user 도구로 모달 질문을 띄우도록 지시합니다."><Toggle value={config.askUserMcpEnabled} onChange={(v) => update("askUserMcpEnabled", v)} /></Row><Row title="하위 에이전트 MCP" detail="켜면 모델이 delegate_subagent 도구로 Devil Codex에 등록된 DeepSeek/OpenRouter/Claude Code 같은 provider에게 독립 작업을 위임할 수 있습니다."><Toggle value={config.subagentMcpEnabled} onChange={(v) => update("subagentMcpEnabled", v)} /></Row><Row title="브라우저/컴퓨터 제어 MCP" detail="필요할 때만 켜세요. 끄면 공유 config.toml에서 Devil MCP 블록을 제거하고 app-server를 다시 연결합니다."><Toggle value={config.devilMcpEnabled} onChange={(v) => update("devilMcpEnabled", v)} /></Row></div></section><section><h2>영어 응답 + 번역</h2><p className="section-help">켜면 한글로 질문해도 모델은 영어로만 답합니다(토큰 절약). 각 AI 답변 우측의 번역 토글을 켜면 무료 번역기로 한글로 볼 수 있습니다. 끄면 영어 강제 프롬프트만 제거됩니다.</p><div className="setting-card"><Row title="모델 영어 응답" detail="사용자 언어와 무관하게 모델 출력을 영어로 고정합니다. 코드/경로/명령어는 그대로 둡니다."><Toggle value={config.englishOutput} onChange={(v) => update("englishOutput", v)} /></Row></div></section><section><h2>외부 모델 Sidecar</h2><p className="section-help">외부 모델에서만 사용하는 보조 Codex 기능입니다. Codex 모델은 항상 순정 app-server 직통 경로를 유지합니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델이 web_search 도구를 호출하면 Codex sidecar가 실제 웹 검색을 실행하고 결과를 모델에게 다시 전달합니다."><Toggle value={config.sidecarWebSearch} onChange={(v) => update("sidecarWebSearch", v)} /></Row><Row title="웹 검색 최대 요청 수" detail="모델이 한 요청에서 검색을 반복 호출할 때 폭주를 막습니다."><Select value={String(config.sidecarWebSearchLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarWebSearchLimit", Number(v))} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달할 준비 상태로 둡니다. 현재는 진단 표시까지 지원합니다."><Toggle value={config.sidecarVision} onChange={(v) => update("sidecarVision", v)} /></Row><Row title="이미지 설명 최대 요청 수" detail="여러 이미지/반복 설명 호출의 비용과 지연을 제한합니다."><Select value={String(config.sidecarVisionLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarVisionLimit", Number(v))} /></Row></div></section></>;
+  if (active === "구성") return <><h1>구성</h1><p className="page-lead">승인 정책 및 샌드박스 설정을 구성합니다. <span className={`settings-save-state ${backendState}`}>{backendState === "loading" ? "저장 중…" : backendState === "saved" ? "config.toml 저장됨" : "저장 실패"}</span></p><section><h2>앱 정보</h2><div className="setting-card app-version-card"><Row title="Devil Codex 현재 버전" detail="현재 실행 중인 데스크톱 앱 버전입니다. 업데이트 확인이나 설치 빌드 검증 때 기준으로 사용합니다."><span className="app-version-badge">{appInfo?.version ? `v${appInfo.version}` : "확인 중..."}</span></Row><Row title="플랫폼" detail="앱이 감지한 현재 실행 환경입니다."><span className="app-version-platform">{appInfo?.platform ?? "unknown"}</span></Row></div></section><section><h2>사용자 지정 config.toml 설정</h2><div className="setting-card"><Row title="승인 정책" detail="Codex가 승인을 요청할 시점을 선택합니다"><Select value={config.approval} options={["요청 시", "항상", "사용 안 함"]} onChange={(v) => update("approval", v)} /></Row><Row title="샌드박스 설정" detail="명령을 실행하는 동안 수행할 수 있는 작업 범위"><Select value={config.sandbox} options={["읽기 전용", "작업 공간 쓰기", "전체 접근"]} onChange={(v) => update("sandbox", v)} /></Row></div></section><section><h2>원격 제어</h2><p className="section-help">휴대폰이나 다른 브라우저에서 Devil Codex에 접속할 수 있게 하는 최소 설정 화면입니다. 세부 서버 동작은 main 프로세스의 원격 제어 상태를 그대로 표시합니다.</p><RemoteControlSection /></section><section><h2>내장 터미널</h2><div className="setting-card"><Row title="기본 터미널 Shell" detail="새 터미널 탭을 열 때 사용할 shell입니다. 자동은 WSL, Git Bash, PowerShell 7, Windows PowerShell, cmd 순서로 선택합니다."><ShellSelect value={config.terminalShell} profiles={terminalShells} onChange={(v) => update("terminalShell", v)} /></Row></div></section><section><h2>내장 브라우저</h2><div className="setting-card"><Row title="브라우저 프로필 저장" detail="켜면 쿠키, 로그인, localStorage, IndexedDB를 앱 재시작 후에도 유지합니다. 끄면 임시 게스트 세션으로 실행됩니다. 변경 시 열린 브라우저 탭은 새 세션으로 다시 만들어집니다."><Toggle value={config.browserPersistentSession} onChange={(v) => update("browserPersistentSession", v)} /></Row></div></section><section><h2>Devil MCP 도구</h2><p className="section-help">AI 질문 모달은 작업 방향이 갈리는 결정점에서 모델이 사용자에게 객관식으로 물어볼 때 사용합니다. 브라우저와 컴퓨터 제어 도구는 켠 동안에만 Codex MCP 목록에 등록됩니다.</p><div className="setting-card"><Row title="AI 질문 모달 MCP" detail="켜면 모델이 애매한 요구사항, 아키텍처 선택, 비용/보안/UX 트레이드오프처럼 사용자가 결정해야 하는 지점에서 ask_user 도구로 모달 질문을 띄우도록 지시합니다."><Toggle value={config.askUserMcpEnabled} onChange={(v) => update("askUserMcpEnabled", v)} /></Row><Row title="하위 에이전트 MCP" detail="켜면 모델이 delegate_subagent 도구로 Devil Codex에 등록된 DeepSeek/OpenRouter/Claude Code 같은 provider에게 독립 작업을 위임할 수 있습니다."><Toggle value={config.subagentMcpEnabled} onChange={(v) => update("subagentMcpEnabled", v)} /></Row><Row title="브라우저/컴퓨터 제어 MCP" detail="필요할 때만 켜세요. 끄면 공유 config.toml에서 Devil MCP 블록을 제거하고 app-server를 다시 연결합니다."><Toggle value={config.devilMcpEnabled} onChange={(v) => update("devilMcpEnabled", v)} /></Row></div></section><section><h2>영어 응답 + 번역</h2><p className="section-help">켜면 한글로 질문해도 모델은 영어로만 답합니다(토큰 절약). 각 AI 답변 우측의 번역 토글을 켜면 무료 번역기로 한글로 볼 수 있습니다. 끄면 영어 강제 프롬프트만 제거됩니다.</p><div className="setting-card"><Row title="모델 영어 응답" detail="사용자 언어와 무관하게 모델 출력을 영어로 고정합니다. 코드/경로/명령어는 그대로 둡니다."><Toggle value={config.englishOutput} onChange={(v) => update("englishOutput", v)} /></Row></div></section><section><h2>외부 모델 Sidecar</h2><p className="section-help">외부 모델에서만 사용하는 보조 Codex 기능입니다. Codex 모델은 항상 순정 app-server 직통 경로를 유지합니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델이 web_search 도구를 호출하면 Codex sidecar가 실제 웹 검색을 실행하고 결과를 모델에게 다시 전달합니다."><Toggle value={config.sidecarWebSearch} onChange={(v) => update("sidecarWebSearch", v)} /></Row><Row title="웹 검색 최대 요청 수" detail="모델이 한 요청에서 검색을 반복 호출할 때 폭주를 막습니다."><Select value={String(config.sidecarWebSearchLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarWebSearchLimit", Number(v))} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달할 준비 상태로 둡니다. 현재는 진단 표시까지 지원합니다."><Toggle value={config.sidecarVision} onChange={(v) => update("sidecarVision", v)} /></Row><Row title="이미지 설명 최대 요청 수" detail="여러 이미지/반복 설명 호출의 비용과 지연을 제한합니다."><Select value={String(config.sidecarVisionLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarVisionLimit", Number(v))} /></Row></div></section></>;
   if (active === "사용량 및 청구") return <ProviderUsagePage report={usage.report} requestLog={usage.requestLog} providerSettings={providerSettings} state={usage.state} onRefresh={() => void usage.refresh()} />;
   if (active === "연결") return <ProviderSettingsPanel settings={providerSettings} state={providerState} onSelect={onProviderSelect} onSaveKey={onProviderSaveKey} onClearKey={onProviderClearKey} onRefreshModels={onProviderRefreshModels} />;
   return <><h1>{active}</h1><p>준비 중입니다.</p></>;
+}
+
+function RemoteControlSection(): React.JSX.Element {
+  const [status, setStatus] = useState<RemoteControlStatus | null>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [action, setAction] = useState<"enable" | "disable" | "regenerate" | "revoke" | null>(null);
+  const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("tailnet");
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = async (): Promise<void> => {
+    setState("loading");
+    setError(null);
+    try {
+      const next = await window.devilCodex.remoteStatus();
+      setStatus(next);
+      setSelectedMode(next.mode);
+      setState("ready");
+    } catch (cause) {
+      setState("error");
+      setError(toErrorMessage(cause, "원격 제어 상태를 불러오지 못했습니다."));
+    }
+  };
+
+  useEffect(() => { void reload(); }, []);
+
+  const runAction = async (kind: "enable" | "disable" | "regenerate" | "revoke", task: () => Promise<RemoteControlStatus>): Promise<void> => {
+    setAction(kind);
+    setError(null);
+    try {
+      const next = await task();
+      setStatus(next);
+      setSelectedMode(next.mode);
+      setState("ready");
+    } catch (cause) {
+      setError(toErrorMessage(cause, "원격 제어 작업에 실패했습니다."));
+      setState("error");
+    } finally {
+      setAction(null);
+    }
+  };
+
+  const tailscaleMessage = status?.tailscale.error
+    ?? (!status?.tailscale.installed ? "Tailscale이 설치되어 있지 않습니다." : !status?.tailscale.loggedIn ? "Tailscale 로그인 또는 연결이 필요합니다." : null);
+  const disabled = state === "loading" || action !== null;
+
+  return <>
+    <div className="setting-card">
+      <Row title="원격 제어 사용" detail="켜면 현재 PC를 다른 기기에서 열 수 있는 임시 접속 주소와 인증 토큰을 준비합니다.">
+        <Toggle value={Boolean(status?.enabled)} onChange={(value) => {
+          if (value) void runAction("enable", () => window.devilCodex.remoteEnable({ mode: selectedMode }));
+          else void runAction("disable", () => window.devilCodex.remoteDisable());
+        }} />
+      </Row>
+      <Row title="접속 모드" detail="tailnet은 같은 Tailscale 네트워크 안에서만 열리고, Funnel은 외부 인터넷 공개 URL을 사용합니다.">
+        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={(value) => setSelectedMode(value as RemoteControlMode)} />
+      </Row>
+      <Row title="현재 상태" detail="main 프로세스가 반환한 원격 제어 상태를 그대로 보여줍니다.">
+        <div style={{ display: "grid", gap: 6, justifyItems: "end", textAlign: "right", minWidth: 220 }}>
+          <strong>{statusLabel(status, state)}</strong>
+          <span style={{ color: "#9a9a9a", fontSize: 12 }}>{status?.enabled ? `모드: ${status.mode}` : "비활성화됨"}</span>
+          {status?.tokenPreview && <code style={inlineCodeStyle}>{status.tokenPreview}</code>}
+        </div>
+      </Row>
+      <Row title="빠른 작업" detail="상태 재확인, 토큰 재발급, Tailscale 설치 페이지 열기를 여기서 처리합니다.">
+        <div style={actionGroupStyle}>
+          <button className="secondary" onClick={() => void reload()} disabled={disabled}>재확인</button>
+          <button className="secondary" onClick={() => void runAction("regenerate", () => window.devilCodex.remoteRegenerateToken())} disabled={disabled || !status?.enabled}>토큰 재발급</button>
+          <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: REMOTE_INSTALL_URL })}>Tailscale 설치</button>
+        </div>
+      </Row>
+    </div>
+
+    {selectedMode === "funnel" && <p className="section-help" style={{ color: "#d6a86a", marginTop: 12 }}>Funnel은 공개 URL을 만듭니다. QR 또는 URL을 아는 사람은 접속을 시도할 수 있으므로 토큰 재발급과 기기 승인을 함께 사용해야 합니다.</p>}
+    {(error || status?.error || tailscaleMessage) && <p className="section-help" style={{ color: "#ef9a94", marginTop: 12 }}>{error ?? status?.error ?? tailscaleMessage}</p>}
+
+    <div className="setting-card" style={{ marginTop: 16 }}>
+      <Row title="접속 URL" detail="모바일 브라우저나 다른 PC에서 열 주소입니다. QR이 있으면 같은 주소를 담고 있습니다.">
+        <div style={valueBlockStyle}>
+          <code style={inlineCodeStyle}>{status?.url ?? "아직 URL이 준비되지 않았습니다."}</code>
+          {status?.url && <button className="secondary" onClick={() => void window.devilCodex.clipboardWriteText({ text: status.url! })}>복사</button>}
+        </div>
+      </Row>
+      <Row title="QR 코드" detail="휴대폰에서 바로 접속할 때 사용합니다. 서버가 아직 QR을 만들지 못했으면 비어 있을 수 있습니다.">
+        <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+          {status?.qrDataUrl ? <img src={status.qrDataUrl} alt="원격 제어 QR 코드" style={{ width: 144, height: 144, borderRadius: 10, background: "#fff", padding: 8 }} /> : <span style={{ color: "#9a9a9a", fontSize: 12 }}>QR 준비 안 됨</span>}
+        </div>
+      </Row>
+      <Row title="Tailscale 상태" detail="설치 여부, 로그인 상태, 호스트 정보를 확인합니다.">
+        <div style={{ display: "grid", gap: 4, justifyItems: "end", textAlign: "right", minWidth: 240 }}>
+          <strong>{status?.tailscale.installed ? status.tailscale.loggedIn ? "연결됨" : "설치됨" : "미설치"}</strong>
+          {status?.tailscale.hostname && <span style={{ color: "#9a9a9a", fontSize: 12 }}>{status.tailscale.hostname}</span>}
+          {status?.tailscale.tailnet && <span style={{ color: "#9a9a9a", fontSize: 12 }}>{status.tailscale.tailnet}</span>}
+          {status?.tailscale.serviceUrl && <code style={inlineCodeStyle}>{status.tailscale.serviceUrl}</code>}
+        </div>
+      </Row>
+    </div>
+
+    <div className="setting-card" style={{ marginTop: 16 }}>
+      <Row title="승인된 기기" detail="토큰을 통과한 뒤 로컬에서 승인된 기기 목록입니다. 해지하면 다시 승인 절차를 거쳐야 합니다.">
+        <div style={{ ...valueBlockStyle, minWidth: 280, alignItems: "stretch" }}>
+          {status?.devices.length ? status.devices.map((device) => <DeviceRow key={device.id} device={device} disabled={disabled} onRevoke={() => void runAction("revoke", () => window.devilCodex.remoteRevokeDevice({ deviceId: device.id }))} />) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>승인된 기기가 없습니다.</span>}
+        </div>
+      </Row>
+      <Row title="현재 클라이언트" detail="지금 접속 중이거나 최근에 붙어 있던 클라이언트 목록입니다.">
+        <div style={{ ...valueBlockStyle, minWidth: 280, alignItems: "stretch" }}>
+          {status?.clients.length ? status.clients.map((client) => <ClientRow key={client.id} client={client} />) : <span style={{ color: "#9a9a9a", fontSize: 12 }}>현재 접속 중인 클라이언트가 없습니다.</span>}
+        </div>
+      </Row>
+    </div>
+  </>;
 }
 
 function Row({ title, detail, children }: { title: string; detail?: string; children: React.ReactNode }): React.JSX.Element { return <div className="setting-row"><div><strong>{title}</strong>{detail && <p>{detail}</p>}</div><div>{children}</div></div>; }
@@ -100,6 +212,27 @@ function ShellSelect({ value, profiles, onChange }: { value: TerminalShellId; pr
     {list.map((profile) => <option key={profile.id} value={profile.id} disabled={!profile.available}>{profile.label}{profile.available ? "" : ` - ${profile.detail ?? "사용 불가"}`}</option>)}
   </select>;
 }
+
+function DeviceRow({ device, disabled, onRevoke }: { device: RemoteDevice; disabled: boolean; onRevoke: () => void }): React.JSX.Element {
+  return <div style={listItemStyle}>
+    <span style={{ display: "grid", gap: 3, minWidth: 0 }}>
+      <strong style={listStrongStyle}>{device.name || device.id}</strong>
+      <small style={listSmallStyle}>{[device.hostname, device.os, formatDateTime(device.lastSeenAt ?? device.createdAt)].filter(Boolean).join(" · ") || device.id}</small>
+    </span>
+    <button className="secondary" onClick={onRevoke} disabled={disabled}>해지</button>
+  </div>;
+}
+
+function ClientRow({ client }: { client: RemoteClient }): React.JSX.Element {
+  return <div style={listItemStyle}>
+    <span style={{ display: "grid", gap: 3, minWidth: 0 }}>
+      <strong style={listStrongStyle}>{client.label || client.id}</strong>
+      <small style={listSmallStyle}>{[client.ip, formatDateTime(client.lastSeenAt ?? client.createdAt)].filter(Boolean).join(" · ") || client.id}</small>
+      {client.userAgent && <small style={listSmallStyle}>{client.userAgent}</small>}
+    </span>
+  </div>;
+}
+
 type UsageTab = "quota" | "devil";
 type ModelUsageRow = {
   key: string;
@@ -306,3 +439,30 @@ function formatDuration(value: number): string {
   if (value < 1000) return `${Math.round(value)}ms`;
   return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}s`;
 }
+
+function statusLabel(status: RemoteControlStatus | null, state: "loading" | "ready" | "error"): string {
+  if (state === "loading") return "불러오는 중…";
+  if (!status) return "상태 없음";
+  if (status.enabled) return status.url ? "실행 중" : "준비 중";
+  return "꺼짐";
+}
+
+function toErrorMessage(cause: unknown, fallback: string): string {
+  if (cause instanceof Error && cause.message) return cause.message;
+  if (typeof cause === "string" && cause) return cause;
+  return fallback;
+}
+
+function formatDateTime(value?: number): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+const actionGroupStyle: React.CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" };
+const valueBlockStyle: React.CSSProperties = { display: "grid", gap: 8, justifyItems: "end", textAlign: "right" };
+const inlineCodeStyle: React.CSSProperties = { maxWidth: 320, overflowWrap: "anywhere", color: "#d7d7d7", fontSize: 12, whiteSpace: "pre-wrap" };
+const listItemStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center", width: "100%", border: "1px solid #373737", borderRadius: 8, background: "#2b2b2b", padding: "9px 10px" };
+const listStrongStyle: React.CSSProperties = { overflowWrap: "anywhere", color: "#ededed", fontSize: 13, fontWeight: 600 };
+const listSmallStyle: React.CSSProperties = { overflowWrap: "anywhere", color: "#9a9a9a", fontSize: 11, lineHeight: 1.35 };

@@ -1,6 +1,6 @@
 {
   "name": "devil-codex",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "private": true,
   "description": "High-fidelity multi-provider Codex desktop client",
   "main": "dist-electron/main.cjs",
@@ -8,8 +8,9 @@
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "dev:electron": "npm run build:main && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
-    "build": "npm run build:renderer && npm run build:main",
+    "build": "npm run build:renderer && npm run build:mobile && npm run build:main",
     "build:renderer": "vite build",
+    "build:mobile": "vite build -c vite.mobile.config.ts",
     "build:main": "tsc -p tsconfig.electron.json",
     "start": "electron .",
     "icons": "node scripts/build-icons.cjs",
@@ -33,16 +34,20 @@
     "motion": "^12.40.0",
     "node-pty": "^1.1.0",
     "prism-react-renderer": "^2.4.1",
+    "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "sharp": "^0.35.2"
+    "sharp": "^0.35.2",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
@@ -71,6 +76,7 @@
     ],
     "files": [
       "dist/**",
+      "dist-mobile/**",
       "dist-electron/**",
       "build/icon.png",
       "build/icon.ico",

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray, type MessageBoxOptions } from "electron";
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -6,6 +6,7 @@ import { access, mkdir as fsMkdir, readdir, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
+import QRCode from "qrcode";
 import { CodexAppServer, syncStockThreadPermissions } from "./app-server.cjs";
 import { getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
 import { applyWorkspaceHunk, commitWorkspace, createPullRequest, listGitBranches, pushWorkspace, stageWorkspaceFiles, switchGitBranch, unstageWorkspaceFiles } from "./git-workflow.cjs";
@@ -29,6 +30,9 @@ import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
 import { AskControlServer, type AskAnswerPayload, type AskQuestionPayload } from "./ask-control-server.cjs";
 import { SubagentControlServer, type SubagentDelegatePayload, type SubagentDelegateResult } from "./subagent-control-server.cjs";
+import { RemoteAuthStore } from "./remote-auth.cjs";
+import { RemoteServer } from "./remote-server.cjs";
+import { TAILSCALE_DOWNLOAD_URL, TailscaleCli, detectLocalTailscaleIp } from "./tailscale.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
@@ -36,7 +40,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -260,7 +264,39 @@ let windowRef: BrowserWindow | undefined;
 let trayRef: Tray | undefined;
 let isQuitting = false;
 let ipcHandlersReady = false;
+type IpcHandler = (input: unknown) => Promise<unknown> | unknown;
+const ipcHandlers = new Map<string, IpcHandler>();
+function handle(channel: string, fn: IpcHandler): void {
+  ipcHandlers.set(channel, fn);
+  ipcMain.handle(channel, (_event, input) => fn(input));
+}
 let showMainWindowWhenReady = false;
+const REMOTE_CONTROL_PORT = 49882;
+const REMOTE_ALLOWED_CHANNELS = new Set<string>([
+  "thread:list",
+  "thread:read",
+  "thread:create",
+  "thread:resume",
+  "thread:projects",
+  "thread:search",
+  "turn:send",
+  "turn:interrupt",
+  "approval:respond",
+  "ask:respond",
+  "runtime:status",
+  "runtime:connect",
+  "providers:usage",
+  "providers:load",
+  "settings:load",
+  "codex:models",
+  "claude:slash-commands",
+]);
+const REMOTE_ALLOWED_EVENTS = new Set<string>([
+  "app-server:event",
+  "ask:request",
+  "app-server:status",
+  "provider:usage-changed",
+]);
 const FALLBACK_TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA1ElEQVQ4jcWTsQ2DMBBFXWUF/gCJFGELS5FSQsU4GYANQooMgESfCRAjQOnMQOLQM8BFtgJFoLBJkeJL9ln37mzfZ2EYbgBcAGgA5KgngNzkMrPwSPxWzsbKp92WrnzvC3ixcXOTgu7HAw3DMJPWmuq6piRJZhDmAhjVdR0JIdwBSilqmob6vp9iWZa5A9I0tWdRFE2Qoij8AQCobVsbK8vyDwAp5borKKVs5dWPOCx8I+fcH6C1pqqqKI7jxUEyxlg1ykEQPH4105l97GwgthNfO78BmdECbWW4kcMAAAAASUVORK5CYII=";
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
@@ -274,6 +310,12 @@ const askControl = new AskControlServer((channel, payload) => sendToRenderer(cha
 const subagentControl = new SubagentControlServer(delegateSubagentFromMcp, subagentControlSecret);
 const CLAUDE_NATIVE_ASK_DIALOG_KINDS = ["askUserQuestion", "permission_ask_user_question"];
 let appServer: CodexAppServer | undefined;
+let remoteServer: RemoteServer | undefined;
+let remoteAuthStore: RemoteAuthStore | undefined;
+let remotePublicUrl: string | undefined;
+let remoteLastError: string | undefined;
+let remoteLastTailscaleStatus: Awaited<ReturnType<TailscaleCli["status"]>> | undefined;
+let remoteProtocol: "http" | "https" = "http";
 const MAX_THREAD_APP_SERVERS = 8;
 const threadServers = new Map<string, CodexAppServer>();
 const threadServerLastUsed = new Map<string, number>();
@@ -611,8 +653,8 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
 }
 
 function sendToRenderer(channel: string, payload: unknown): void {
-  if (!windowRef || windowRef.isDestroyed()) return;
-  windowRef.webContents.send(channel, payload);
+  if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, payload);
+  remoteServer?.broadcast(channel, payload);
 }
 
 function sendCommand(command: string): void {
@@ -1420,6 +1462,185 @@ function terminals(): TerminalManager {
   return terminalManager;
 }
 
+function remoteAuth(): RemoteAuthStore {
+  if (!remoteAuthStore) remoteAuthStore = new RemoteAuthStore();
+  return remoteAuthStore;
+}
+
+function remoteStaticDir(): string {
+  return join(app.getAppPath(), "dist-mobile");
+}
+
+function cleanTailscaleName(value: string | null | undefined): string | null {
+  const text = String(value ?? "").trim().replace(/\.$/, "");
+  return text || null;
+}
+
+function remoteTokenPreview(token: string): string {
+  return token.length > 12 ? `${token.slice(0, 6)}...${token.slice(-6)}` : token;
+}
+
+function remoteUrlWithToken(baseUrl: string, token: string): string {
+  return `${baseUrl.replace(/#.*$/, "")}/#t=${encodeURIComponent(token)}`;
+}
+
+function remoteDeviceRow(device: { deviceId: string; deviceName: string; approvedAt: number; lastSeenAt?: number }): RemoteDevice {
+  return {
+    id: device.deviceId,
+    name: device.deviceName,
+    createdAt: device.approvedAt,
+    lastSeenAt: device.lastSeenAt,
+  };
+}
+
+function remoteClientRows(): RemoteControlStatus["clients"] {
+  return (remoteServer?.listClients() ?? []).map((client) => ({
+    id: client.deviceId,
+    label: client.deviceName,
+    createdAt: client.connectedAt,
+    lastSeenAt: client.connectedAt,
+  }));
+}
+
+async function remoteStatus(): Promise<RemoteControlStatus> {
+  const [settings, authSnapshot] = await Promise.all([settingsStore.load(), remoteAuth().getSnapshot()]);
+  const tailscale = remoteLastTailscaleStatus ?? await new TailscaleCli().status();
+  return {
+    enabled: settings.remoteControlEnabled && Boolean(remoteServer),
+    mode: settings.remoteControlMode,
+    ...(remotePublicUrl ? { url: remoteUrlWithToken(remotePublicUrl, authSnapshot.token) } : {}),
+    ...(remotePublicUrl ? { qrDataUrl: await QRCode.toDataURL(remoteUrlWithToken(remotePublicUrl, authSnapshot.token), { margin: 1, width: 320 }) } : {}),
+    tokenPreview: remoteTokenPreview(authSnapshot.token),
+    ...(remoteLastError ? { error: remoteLastError } : {}),
+    tailscale: {
+      installed: tailscale.installed,
+      running: tailscale.installed,
+      loggedIn: tailscale.online,
+      ...(cleanTailscaleName(tailscale.dnsName) ? { hostname: cleanTailscaleName(tailscale.dnsName)! } : {}),
+      ...(tailscale.tailscaleIp ? { tailnet: tailscale.tailscaleIp } : {}),
+      ...(remotePublicUrl ? { serviceUrl: remotePublicUrl } : {}),
+      ...(tailscale.error ? { error: tailscale.error } : {}),
+    },
+    devices: authSnapshot.devices.map(remoteDeviceRow),
+    clients: remoteClientRows(),
+  };
+}
+
+async function maybeTailscaleTls(hostname: string): Promise<{ cert: Buffer; key: Buffer } | undefined> {
+  const tlsDir = join(app.getPath("userData"), "remote-control");
+  const certFile = join(tlsDir, "tailscale.crt");
+  const keyFile = join(tlsDir, "tailscale.key");
+  try {
+    await new TailscaleCli().cert({ hostname, certFile, keyFile });
+    const [cert, key] = await Promise.all([readFile(certFile), readFile(keyFile)]);
+    return { cert, key };
+  } catch (error) {
+    remoteLastError = `Tailscale 인증서를 만들지 못해 HTTP로 폴백했습니다: ${error instanceof Error ? error.message : String(error)}`;
+    return undefined;
+  }
+}
+
+async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteControlStatus> {
+  await stopRemoteControl({ saveSettings: false });
+  remoteLastError = undefined;
+  remotePublicUrl = undefined;
+  remoteProtocol = "http";
+
+  const tailscale = await new TailscaleCli().status();
+  remoteLastTailscaleStatus = tailscale;
+  if (!tailscale.installed) throw new Error(`Tailscale이 필요합니다. ${TAILSCALE_DOWNLOAD_URL}`);
+  if (!tailscale.online) throw new Error(tailscale.error || "Tailscale 로그인 또는 연결이 필요합니다.");
+
+  const dnsName = cleanTailscaleName(tailscale.dnsName);
+  if (mode === "funnel" && !dnsName) throw new Error("Tailscale Funnel URL을 만들 DNS 이름을 찾지 못했습니다.");
+  const tailnetIp = tailscale.tailscaleIp ?? detectLocalTailscaleIp();
+  const bindHost = mode === "funnel" ? "127.0.0.1" : tailnetIp;
+  if (!bindHost) throw new Error("Tailscale 100.64/10 인터페이스 IP를 찾지 못했습니다.");
+
+  const auth = remoteAuth();
+  const tls = dnsName && mode === "tailnet" ? await maybeTailscaleTls(dnsName) : undefined;
+  remoteProtocol = tls ? "https" : "http";
+  const server = new RemoteServer({
+    handlers: ipcHandlers,
+    allowedChannels: REMOTE_ALLOWED_CHANNELS,
+    allowedEvents: REMOTE_ALLOWED_EVENTS,
+    auth,
+    staticDir: remoteStaticDir(),
+    version: app.getVersion(),
+    onDeviceApprovalNeeded: async (device) => {
+      const options: MessageBoxOptions = {
+        type: "question",
+        buttons: ["허용", "거부"],
+        defaultId: 0,
+        cancelId: 1,
+        title: "원격 접속 승인",
+        message: `${device.deviceName} 기기의 원격 접속을 허용할까요?`,
+        detail: "허용하면 이 기기에서 스레드 조회, 메시지 전송, 승인 응답을 할 수 있습니다.",
+      };
+      const result = windowRef && !windowRef.isDestroyed()
+        ? await dialog.showMessageBox(windowRef, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
+  });
+  const started = await server.start({ host: bindHost, port: REMOTE_CONTROL_PORT, ...(tls ? { tls } : {}) });
+  remoteServer = server;
+
+  if (mode === "funnel") {
+    try {
+      await new TailscaleCli().funnelOn(started.port);
+    } catch (error) {
+      await stopRemoteControl({ saveSettings: false });
+      throw error;
+    }
+    remotePublicUrl = `https://${dnsName}`;
+  } else {
+    const hostForUrl = dnsName ?? bindHost;
+    remotePublicUrl = `${remoteProtocol}://${hostForUrl}:${started.port}`;
+  }
+
+  const previous = await settingsStore.load();
+  await settingsStore.save({ ...previous, remoteControlEnabled: true, remoteControlMode: mode });
+  return remoteStatus();
+}
+
+async function stopRemoteControl(options: { saveSettings: boolean } = { saveSettings: true }): Promise<RemoteControlStatus> {
+  const previousMode = (await settingsStore.load().catch(() => null))?.remoteControlMode;
+  const server = remoteServer;
+  remoteServer = undefined;
+  remotePublicUrl = undefined;
+  if (server) await server.stop();
+  if (previousMode === "funnel") await new TailscaleCli().funnelOff().catch(() => undefined);
+  if (options.saveSettings) {
+    const previous = await settingsStore.load();
+    await settingsStore.save({ ...previous, remoteControlEnabled: false });
+  }
+  return remoteStatus();
+}
+
+async function regenerateRemoteToken(): Promise<RemoteControlStatus> {
+  await remoteAuth().regenerateToken();
+  for (const client of remoteServer?.listClients() ?? []) remoteServer?.disconnect(client.deviceId);
+  return remoteStatus();
+}
+
+async function revokeRemoteDevice(deviceId: string): Promise<RemoteControlStatus> {
+  await remoteAuth().revokeDevice(deviceId);
+  remoteServer?.disconnect(deviceId);
+  return remoteStatus();
+}
+
+async function startRemoteFromSettings(): Promise<void> {
+  const settings = await settingsStore.load();
+  if (!settings.remoteControlEnabled) return;
+  try {
+    await startRemoteControl(settings.remoteControlMode);
+  } catch (error) {
+    remoteLastError = error instanceof Error ? error.message : String(error);
+    console.warn("[devil-codex remote]", remoteLastError);
+  }
+}
+
 // Start the local Codex Responses proxy and register it as a non-default Codex
 // model provider so external-model turns can run through the app-server.
 function mcpScripts(): { script: string; computerScript: string; askScript: string; subagentScript: string } {
@@ -1599,6 +1820,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // it off the critical startup path so a slow helper never blocks the window
   // or the primary Codex app-server connection.
   void startCodexProxy().catch((error) => console.error("[devil-codex startup]", error instanceof Error ? error.message : error));
+  void startRemoteFromSettings().catch((error) => console.error("[devil-codex remote startup]", error instanceof Error ? error.message : error));
   void (async () => {
     const pending = await providerReconciler.reconcilePending();
     if (pending.attempted && pending.failed) console.warn("[devil-codex reconcile] pending recovery incomplete", pending);
@@ -1662,9 +1884,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("browser:ai-key", (_event, input: { key: string }) => browserView.aiKey(input.key));
   ipcMain.handle("browser:ai-scroll", (_event, input: { dy: number }) => browserView.aiScroll(input.dy));
   ipcMain.handle("browser:ai-read", () => browserView.aiReadText());
-  ipcMain.handle("ask:respond", (_event, input: { id: string; answers: import("./ask-control-server.cjs").AskAnswerPayload[] | null }) => { askControl.resolve(input.id, input.answers); });
-  ipcMain.handle("runtime:status", () => server().getStatus());
-  ipcMain.handle("runtime:connect", () => {
+  handle("ask:respond", (input) => {
+    const payload = input as { id: string; answers: AskAnswerPayload[] | null };
+    askControl.resolve(payload.id, payload.answers);
+  });
+  handle("runtime:status", () => server().getStatus());
+  handle("runtime:connect", () => {
     // Treat an explicit (re)connect as "reload everything": drop stale children
     // so fresh auth/config (e.g. after a Codex re-login) takes effect.
     restartAppServer();
@@ -1674,7 +1899,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("update:install", () => installUpdate(() => windowRef));
   ipcMain.handle("subagent:info", (_event, input) => providerReconciler.getSubagentInfo(input.id));
   ipcMain.handle("claude:skills", () => listClaudeSkills());
-  ipcMain.handle("claude:slash-commands", (_event, input) => listClaudeSlashCommands(input ?? {}));
+  handle("claude:slash-commands", (input) => listClaudeSlashCommands((input ?? {}) as { cwd?: string; model?: string }));
   ipcMain.handle("claude:mcp-list", (_event, input) => listClaudeMcpServers(input ?? {}));
   ipcMain.handle("codex:plugin-skills", () => listCodexPluginSkills());
   ipcMain.handle("workspace:choose", async () => {
@@ -1711,16 +1936,25 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("terminal:resize", (_event, input) => terminals().resize(input.id, input.cols, input.rows));
   ipcMain.handle("terminal:close", (_event, input) => terminals().close(input.id));
   ipcMain.handle("translate:text", (_event, input: { text: string; to?: string; from?: string }) => translateText(input));
-  ipcMain.handle("settings:load", () => settingsStore.load());
+  handle("settings:load", () => settingsStore.load());
   ipcMain.handle("settings:save", async (_event, input) => {
     const previous = await settingsStore.load();
     const next = await settingsStore.save(input);
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
     if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
     if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+    if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
+      if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
+      else await stopRemoteControl();
+    }
     return next;
   });
-  ipcMain.handle("providers:load", () => providerSettingsStore.load());
+  ipcMain.handle("remote:status", () => remoteStatus());
+  ipcMain.handle("remote:enable", async (_event, input: { mode?: RemoteControlMode }) => startRemoteControl(input?.mode === "funnel" ? "funnel" : "tailnet"));
+  ipcMain.handle("remote:disable", () => stopRemoteControl());
+  ipcMain.handle("remote:regenerate-token", () => regenerateRemoteToken());
+  ipcMain.handle("remote:revoke-device", (_event, input: { deviceId?: string }) => revokeRemoteDevice(String(input?.deviceId ?? "")));
+  handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", (_event, input) => providerSettingsStore.select(input));
   ipcMain.handle("providers:save-key", async (_event, input) => {
     const saved = await providerSettingsStore.saveKey(input);
@@ -1765,36 +1999,41 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return status;
   });
   ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
-  ipcMain.handle("providers:usage", async (_event, input) => providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load(), { force: Boolean(input?.force) }));
+  handle("providers:usage", async (input) => {
+    const request = (input ?? {}) as { force?: boolean };
+    return providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load(), { force: Boolean(request.force) });
+  });
   ipcMain.handle("providers:request-log", () => codexProxy.requestLog());
   ipcMain.handle("workspace:open-external", (_event, input) => openWorkspaceExternal(input));
-  ipcMain.handle("approval:respond", (_event, input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => {
+  handle("approval:respond", (input) => {
+    const payload = input as { requestId: string | number; decision: ApprovalDecision; threadId?: string };
     // Approval requests are emitted by the per-thread app-server that's running
     // the turn. The decision must go back to THAT child's stdin — routing it to
     // the global server() leaves the command waiting forever (5-min hang on the
     // first command/file approval). Fall back to the global server only when no
     // live thread server matches.
-    const requestKey = String(input.requestId);
+    const requestKey = String(payload.requestId);
     // Claude runtime canUseTool prompts share the same renderer dialog; their
     // request ids are claude-approval-* and resolve inside the runtime.
-    if (claudeRuntime.respondApproval(requestKey, input.decision)) return;
-    const target = approvalRequestServers.get(requestKey) ?? (input.threadId ? threadServers.get(input.threadId) : undefined) ?? server();
+    if (claudeRuntime.respondApproval(requestKey, payload.decision)) return;
+    const target = approvalRequestServers.get(requestKey) ?? (payload.threadId ? threadServers.get(payload.threadId) : undefined) ?? server();
     approvalRequestServers.delete(requestKey);
-    return target.respondApproval(input);
+    return target.respondApproval(payload);
   });
-  ipcMain.handle("thread:create", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") {
-      const model = input.model || "sonnet";
-      const provider = input.provider && input.provider !== "codex" ? input.provider : "claude-code";
+  handle("thread:create", async (input) => {
+    const request = input as any;
+    if (requestedRuntime(request.runtime) === "claude-code") {
+      const model = request.model || "sonnet";
+      const provider = request.provider && request.provider !== "codex" ? request.provider : "claude-code";
       const thread = provider === "claude-code"
-        ? claudeRuntime.createThread({ cwd: input.cwd, model })
-        : { id: crypto.randomUUID(), cwd: input.cwd, model, runtime: "claude-code", provider };
-      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, input.accountId) : undefined;
+        ? claudeRuntime.createThread({ cwd: request.cwd, model })
+        : { id: crypto.randomUUID(), cwd: request.cwd, model, runtime: "claude-code", provider };
+      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, request.accountId) : undefined;
       await providerTranscripts.saveMeta({
         ...thread,
         runtime: "claude-code",
         provider,
-        accountId: input.accountId,
+        accountId: request.accountId,
         accountLabel,
         claudeSessionId: provider === "claude-code" ? thread.id : undefined,
         title: provider === "claude-code" ? "새 Claude Code 채팅" : "새 외부 모델 채팅",
@@ -1807,38 +2046,39 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const instance = createAppServer(false);
     let bound = false;
     try {
-      if (usesCodexProxy(input.provider)) {
-        const routedModel = routedProviderModel(input.provider, input.model, input.accountId);
-        const thread = await instance.createThread({ ...input, model: routedModel, modelProvider: "devil" });
+      if (usesCodexProxy(request.provider)) {
+        const routedModel = routedProviderModel(request.provider, request.model, request.accountId);
+        const thread = await instance.createThread({ ...request, model: routedModel, modelProvider: "devil" });
         bindThreadServer(thread.id, instance);
         bound = true;
         loadedThreads.add(thread.id);
-        await providerTranscripts.saveMeta({ ...thread, provider: input.provider, accountId: input.accountId, accountLabel: await providerAccountLabel(input.provider, input.accountId), title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
-        return { ...thread, runtime: "codex", provider: input.provider };
+        await providerTranscripts.saveMeta({ ...thread, provider: request.provider, accountId: request.accountId, accountLabel: await providerAccountLabel(request.provider, request.accountId), title: "새 채팅", preview: "", updatedAt: Date.now(), archived: false });
+        return { ...thread, runtime: "codex", provider: request.provider };
       }
       // API-key providers still use the established local transcript path until
       // their Responses adapters are registered with the local proxy as well.
-      const thread = await instance.createThread({ ...input, model: input.provider && input.provider !== "codex" ? "gpt-5.4" : input.model });
+      const thread = await instance.createThread({ ...request, model: request.provider && request.provider !== "codex" ? "gpt-5.4" : request.model });
       bindThreadServer(thread.id, instance);
       bound = true;
       loadedThreads.add(thread.id);
-      return { ...thread, provider: input.provider ?? "codex" };
+      return { ...thread, provider: request.provider ?? "codex" };
     } catch (error) {
       if (!bound) instance.dispose();
       throw error;
     }
   });
-  ipcMain.handle("thread:list", async (_event, input) => {
-    const runtime = requestedRuntime(input.runtime);
+  handle("thread:list", async (input) => {
+    const request = input as any;
+    const runtime = requestedRuntime(request.runtime);
     if (runtime === "claude-code") {
-      const requestedCwd = cwdKey(input.cwd);
-      return filterRuntime((await providerTranscripts.summaries()).filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false)), "claude-code");
+      const requestedCwd = cwdKey(request.cwd);
+      return filterRuntime((await providerTranscripts.summaries()).filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (request.archived ?? false)), "claude-code");
     }
     // Codex can still be booting while the renderer asks for a sidebar refresh.
     // Devil's own durable index must remain visible in that short window.
-    const [codex, external] = await Promise.all([server().listThreads(input).catch(() => []), providerTranscripts.summaries()]);
-    const requestedCwd = cwdKey(input.cwd);
-    const extra = filterRuntime(external, "codex").filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (input.archived ?? false));
+    const [codex, external] = await Promise.all([server().listThreads(request).catch(() => []), providerTranscripts.summaries()]);
+    const requestedCwd = cwdKey(request.cwd);
+    const extra = filterRuntime(external, "codex").filter((summary) => cwdKey(summary.cwd) === requestedCwd && summary.archived === (request.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
     sortThreadsByRecency(merged);
@@ -1846,39 +2086,41 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   });
   // Model discovery is optional at startup. The provider settings UI retains
   // its saved models while Codex's app-server finishes connecting.
-  ipcMain.handle("codex:models", () => server().listModels().catch(() => []));
+  handle("codex:models", () => server().listModels().catch(() => []));
   ipcMain.handle("chat:new-chat-cwd", async () => {
     const date = new Date().toISOString().slice(0, 10);
     const dir = join(app.getPath("home"), "Documents", "Codex", date, "new-chat");
     await fsMkdir(dir, { recursive: true }).catch(() => undefined);
     return dir;
   });
-  ipcMain.handle("thread:search", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") {
-      const query = String(input.query ?? "").trim().toLowerCase();
+  handle("thread:search", async (input) => {
+    const request = input as any;
+    if (requestedRuntime(request.runtime) === "claude-code") {
+      const query = String(request.query ?? "").trim().toLowerCase();
       if (!query) return [];
       return filterRuntime(await providerTranscripts.summaries(), "claude-code")
-        .filter((summary) => summary.archived === (input.archived ?? false))
+        .filter((summary) => summary.archived === (request.archived ?? false))
         .filter((summary) => `${summary.title}\n${summary.preview}\n${summary.cwd}`.toLowerCase().includes(query));
     }
-    return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(input)));
+    return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(request)));
   });
-  ipcMain.handle("thread:resume", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") {
-      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === input.id);
-      return { ...claudeRuntime.resumeThread({ id: input.id, cwd: meta?.cwd, model: meta?.model || input.model || "sonnet" }), claudeSessionId: meta?.claudeSessionId };
+  handle("thread:resume", async (input) => {
+    const request = input as any;
+    if (requestedRuntime(request.runtime) === "claude-code") {
+      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === request.id);
+      return { ...claudeRuntime.resumeThread({ id: request.id, cwd: meta?.cwd, model: meta?.model || request.model || "sonnet" }), claudeSessionId: meta?.claudeSessionId };
     }
-    if (await providerTranscripts.isExternal(input.id)) {
-      const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === input.id);
+    if (await providerTranscripts.isExternal(request.id)) {
+      const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === request.id);
       // Provider thread still has a native Codex shell from `thread/start`.
       // Resume it opportunistically so Codex app-server can load its mirror,
       // but never block Devil's local transcript if Codex rejects that shell.
-      await threadServer(input.id).resumeThread(input).then(() => loadedThreads.add(input.id)).catch(() => undefined);
-      return { id: input.id, cwd: meta?.cwd ?? "", model: meta?.model || input.model };
+      await threadServer(request.id).resumeThread(request).then(() => loadedThreads.add(request.id)).catch(() => undefined);
+      return { id: request.id, cwd: meta?.cwd ?? "", model: meta?.model || request.model };
     }
-    const instance = await threadServerFor(input.id);
-    const ref = await instance.resumeThread(input);
-    loadedThreads.add(input.id);
+    const instance = await threadServerFor(request.id);
+    const ref = await instance.resumeThread(request);
+    loadedThreads.add(request.id);
     return { ...ref, provider: "codex" };
   });
   ipcMain.handle("thread:rename", async (_event, input) => {
@@ -1925,9 +2167,10 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model });
     await (await threadServerFor(input.id)).compactThread({ threadId: input.id });
   });
-  ipcMain.handle("thread:read", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(await providerTranscripts.read(input.id)));
-    await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
+  handle("thread:read", async (input) => {
+    const request = input as any;
+    if (requestedRuntime(request.runtime) === "claude-code") return normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(await providerTranscripts.read(request.id)));
+    await repairMirroredRolloutJsonl(request.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native
     // thread that took even one stray external turn is flagged external forever
     // (providerTurns.length > 0) — and then this branch would hide its full
@@ -1935,21 +2178,21 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // stock Codex still has the whole conversation. Prefer the native rollout
     // whenever it has more items (the merge preserves local attachments); fall
     // back to local if the app-server hasn't loaded the mirror yet.
-    if (await providerTranscripts.isExternal(input.id)) {
-      const local = await providerTranscripts.read(input.id);
+    if (await providerTranscripts.isExternal(request.id)) {
+      const local = await providerTranscripts.read(request.id);
       let native: ThreadHistoryItem[] = [];
-      try { native = await server().readThread(input); }
+      try { native = await server().readThread(request); }
       catch (error) { if (isRolloutVersionSkew(error) && local.length === 0) return [rolloutSkewNotice()]; }
       if (native.length > local.length) {
-        return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)))));
+        return attachCodexTokenUsage(request.id, stripInternalDirectivesFromHistory(await enrichThreadImages(request.id, await providerTranscripts.mergeHistoryPreservingAttachments(request.id, stripInternalDirectivesFromHistory(native)))));
       }
-      return attachCodexTokenUsage(input.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
+      return attachCodexTokenUsage(request.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
     }
     try {
-      const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
-      const cached = await historyCache.load(input.id);
+      const rollout = await enrichThreadImages(request.id, await (await threadServerFor(request.id)).readThread(request));
+      const cached = await historyCache.load(request.id);
       const merged = rollout.length ? mergeCachedActivities(rollout, cached) : cached ?? rollout;
-      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(merged));
+      return attachCodexTokenUsage(request.id, stripInternalDirectivesFromHistory(merged));
     } catch (error) {
       if (isRolloutVersionSkew(error)) return [rolloutSkewNotice()];
       throw error;
@@ -1976,11 +2219,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     return attachCodexTokenUsage(input.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
   });
-  ipcMain.handle("thread:projects", async (_event, input) => {
-    const archived = (input ?? {}).archived ?? false;
-    const runtime = requestedRuntime((input ?? {}).runtime);
+  handle("thread:projects", async (input) => {
+    const request = (input ?? {}) as any;
+    const archived = request.archived ?? false;
+    const runtime = requestedRuntime(request.runtime);
     if (runtime === "claude-code") return filterRuntime(await providerTranscripts.summaries(), "claude-code").filter((summary) => summary.archived === archived);
-    const [codex, external] = await Promise.all([server().listProjects(input ?? {}).catch(() => []), providerTranscripts.summaries()]);
+    const [codex, external] = await Promise.all([server().listProjects(request).catch(() => []), providerTranscripts.summaries()]);
     const extra = filterRuntime(external, "codex").filter((summary) => summary.archived === archived);
     const ids = new Set(extra.map((summary) => summary.id));
     const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)))];
@@ -2050,8 +2294,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("workspace:commit", async (_event, input) => commitWorkspace(input));
   ipcMain.handle("workspace:push", async (_event, input) => pushWorkspace(input));
   ipcMain.handle("workspace:create-pr", async (_event, input) => createPullRequest(input));
-  ipcMain.handle("turn:send", async (_event, input) => {
-    const attachmentEnrichment = await enrichDocumentAttachments(input.attachmentDetails);
+  handle("turn:send", async (input) => {
+    const request = input as any;
+    const attachmentEnrichment = await enrichDocumentAttachments(request.attachmentDetails);
     // When the "English output" setting is on, force English responses for every
     // provider by appending a directive to the model-bound text only. Transcripts
     // store the raw input.text, so the visible user message stays untouched.
@@ -2063,42 +2308,42 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // made ask_user appear/disappear depending on which provider was active.
     const askDirective = askUserMcpEnabled ? `\n\n---\n${ASK_USER_MCP_DIRECTIVE}` : "";
     const turnInput = {
-      ...input,
-      text: `${input.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
+      ...request,
+      text: `${request.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
-    if (requestedRuntime(input.runtime) === "claude-code") {
-      const existingHistory = await providerTranscripts.read(input.threadId);
-      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === input.threadId);
+    if (requestedRuntime(request.runtime) === "claude-code") {
+      const existingHistory = await providerTranscripts.read(request.threadId);
+      const meta = filterRuntime(await providerTranscripts.summaries(), "claude-code").find((summary) => summary.id === request.threadId);
       const firstTurn = existingHistory.length === 0;
       const nativeSessionId = meta?.claudeSessionId;
-      const nativeSessionExists = await claudeRuntime.sessionExists({ sessionId: nativeSessionId, cwd: input.cwd });
+      const nativeSessionExists = await claudeRuntime.sessionExists({ sessionId: nativeSessionId, cwd: request.cwd });
       const resumeClaudeCode = nativeSessionExists || hasClaudeCodeConversation(existingHistory);
-      const provider = input.provider && input.provider !== "codex" ? input.provider : "claude-code";
-      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, input.accountId) : undefined;
-      await providerTranscripts.append(input.threadId, {
+      const provider = request.provider && request.provider !== "codex" ? request.provider : "claude-code";
+      const accountLabel = provider !== "claude-code" ? await providerAccountLabel(provider, request.accountId) : undefined;
+      await providerTranscripts.append(request.threadId, {
         id: crypto.randomUUID(),
         kind: "user",
-        text: input.text,
+        text: request.text,
         ...(attachmentEnrichment.attachments.length ? { attachments: attachmentEnrichment.attachments } : {}),
       });
       await providerTranscripts.saveMeta({
-        id: input.threadId,
-        cwd: input.cwd ?? "",
-        model: input.model || "sonnet",
+        id: request.threadId,
+        cwd: request.cwd ?? "",
+        model: request.model || "sonnet",
         runtime: "claude-code",
         provider,
-        accountId: input.accountId,
+        accountId: request.accountId,
         accountLabel,
-        preview: previewFromText(input.text),
+        preview: previewFromText(request.text),
         updatedAt: Date.now(),
         archived: false,
-        ...(firstTurn ? { title: titleFromText(input.text) } : {}),
+        ...(firstTurn ? { title: titleFromText(request.text) } : {}),
       });
-      await rememberTurnFileSnapshot(input.threadId, input.cwd);
+      await rememberTurnFileSnapshot(request.threadId, request.cwd);
       if (provider !== "claude-code") {
         const text = await providerRuntime.send({ ...turnInput, provider });
-        await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: input.model, accountId: input.accountId });
+        await providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "claude-code", provider, model: request.model, accountId: request.accountId });
         return;
       }
       const requestLogId = crypto.randomUUID();
@@ -2106,30 +2351,30 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await codexProxy.recordRuntimeRequest({
         id: requestLogId,
         provider,
-        model: input.model || "sonnet",
-        accountId: input.accountId,
+        model: request.model || "sonnet",
+        accountId: request.accountId,
         accountLabel,
-        threadId: input.threadId,
+        threadId: request.threadId,
         route: "claude-agent-sdk",
         status: "started",
         startedAt: requestStartedAt,
-        ...(input.attachments?.length ? { images: input.attachments.length } : {}),
+        ...(request.attachments?.length ? { images: request.attachments.length } : {}),
       });
       try {
         const result = await claudeRuntime.sendTurn({
-          threadId: input.threadId,
-          cwd: input.cwd,
+          threadId: request.threadId,
+          cwd: request.cwd,
           text: turnInput.text,
-          model: input.model || "sonnet",
+          model: request.model || "sonnet",
           resume: resumeClaudeCode,
           nativeSessionId,
-          attachments: input.attachments,
+          attachments: request.attachments,
           mcpConfig: await claudeMcpConfig({
-            browser: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
-            computer: (input.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
+            browser: (request.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
+            computer: (request.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
           }),
-          approvalPolicy: input.approvalPolicy,
-          sandboxMode: input.sandboxMode,
+          approvalPolicy: request.approvalPolicy,
+          sandboxMode: request.sandboxMode,
           ...(askUserMcpEnabled ? {
             onUserDialog: handleClaudeUserDialog,
             supportedDialogKinds: CLAUDE_NATIVE_ASK_DIALOG_KINDS,
@@ -2137,15 +2382,15 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           } : {}),
           // Save the native session id as soon as it is known so a turn that
           // fails midway can still resume the same Claude session on retry.
-          onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: sessionId }); },
+          onSessionId: (sessionId) => { void providerTranscripts.saveMeta({ id: request.threadId, claudeSessionId: sessionId }); },
           onCompleted: (text, completed) => text.trim()
-            ? providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: input.model || "sonnet", accountId: input.accountId })
+            ? providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, turnId: completed.turnId, runtime: "claude-code", provider, model: request.model || "sonnet", accountId: request.accountId })
             : undefined,
         });
-        if (result.contextUsage) await providerTranscripts.setTurnContextUsage(input.threadId, result.turnId, result.contextUsage);
+        if (result.contextUsage) await providerTranscripts.setTurnContextUsage(request.threadId, result.turnId, result.contextUsage);
         await codexProxy.finishRuntimeRequest(requestLogId, { status: "completed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, ...(result.usage ? { usage: result.usage } : {}) });
-        await emitSyntheticFileChanges({ threadId: input.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
-        if (result.sessionId) await providerTranscripts.saveMeta({ id: input.threadId, claudeSessionId: result.sessionId });
+        await emitSyntheticFileChanges({ threadId: request.threadId, turnId: result.turnId, status: "completed", mirrorRollout: false });
+        if (result.sessionId) await providerTranscripts.saveMeta({ id: request.threadId, claudeSessionId: result.sessionId });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         await codexProxy.finishRuntimeRequest(requestLogId, { status: "failed", completedAt: Date.now(), durationMs: Date.now() - requestStartedAt, error: detail });
@@ -2153,147 +2398,148 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       }
       return;
     }
-    if (usesCodexProxy(input.provider)) {
-      const routedModel = routedProviderModel(input.provider, input.model, input.accountId);
-      const accountLabel = await providerAccountLabel(input.provider, input.accountId);
+    if (usesCodexProxy(request.provider)) {
+      const routedModel = routedProviderModel(request.provider, request.model, request.accountId);
+      const accountLabel = await providerAccountLabel(request.provider, request.accountId);
       // External providers use app-server tools and native rollout storage so stock Codex can see the turn after reconcile.
-      await providerReconciler.markPending({ threadId: input.threadId, actualProvider: input.provider, actualModel: input.model });
+      await providerReconciler.markPending({ threadId: request.threadId, actualProvider: request.provider, actualModel: request.model });
       let externalInstance: CodexAppServer | undefined;
       try {
         // Existing thread: provider was flipped to "devil" → restart + resume so
         // the app-server routes this turn through the proxy. New thread: nothing
         // to patch (already created with modelProvider:"devil") → just proceed.
-        const switched = await providerReconciler.prepareExternalTurn(input.threadId);
+        const switched = await providerReconciler.prepareExternalTurn(request.threadId);
         if (switched) {
-          externalInstance = await restartThreadServer(input.threadId);
-          await externalInstance.resumeThread({ id: input.threadId, model: routedModel, modelProvider: "devil", cwd: input.cwd }).then(() => loadedThreads.add(input.threadId)).catch(() => undefined);
+          externalInstance = await restartThreadServer(request.threadId);
+          await externalInstance.resumeThread({ id: request.threadId, model: routedModel, modelProvider: "devil", cwd: request.cwd }).then(() => loadedThreads.add(request.threadId)).catch(() => undefined);
         } else {
           // Thread server may be fresh (after a restart/prune) — resume so the
           // rollout is loaded before the turn, else "thread not found".
-          await ensureThreadLoaded({ threadId: input.threadId, model: routedModel, cwd: input.cwd, modelProvider: "devil" });
-          externalInstance = await threadServerFor(input.threadId);
+          await ensureThreadLoaded({ threadId: request.threadId, model: routedModel, cwd: request.cwd, modelProvider: "devil" });
+          externalInstance = await threadServerFor(request.threadId);
         }
-        if (await maybeStartContextCompaction(externalInstance, { ...input, appServerBacked: true })) return;
+        if (await maybeStartContextCompaction(externalInstance, { ...request, appServerBacked: true })) return;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        await providerReconciler.discardPending(input.threadId);
-        await providerTranscripts.markLatestProviderTurnSync(input.threadId, "failed", detail);
+        await providerReconciler.discardPending(request.threadId);
+        await providerTranscripts.markLatestProviderTurnSync(request.threadId, "failed", detail);
         throw error;
       }
-      await providerTranscripts.recordProviderTurn({ threadId: input.threadId, provider: input.provider, model: input.model, accountId: input.accountId, accountLabel });
+      await providerTranscripts.recordProviderTurn({ threadId: request.threadId, provider: request.provider, model: request.model, accountId: request.accountId, accountLabel });
       try {
         // Subagent side-chat turns continue a child thread; do not register them
         // as a top-level Devil sidebar conversation (matches stock Codex, where
         // subagents are hidden children, not new chats).
-        if (!input.subagent) {
-          const title = await externalThreadTitle(input.threadId, input.text);
-          await providerTranscripts.append(input.threadId, {
+        if (!request.subagent) {
+          const title = await externalThreadTitle(request.threadId, request.text);
+          await providerTranscripts.append(request.threadId, {
             id: crypto.randomUUID(),
             kind: "user",
-            text: input.text,
+            text: request.text,
             ...(attachmentEnrichment.attachments.length ? { attachments: attachmentEnrichment.attachments } : {}),
           });
           await providerTranscripts.saveMeta({
-            id: input.threadId,
-            cwd: input.cwd ?? "",
-            model: input.model,
-            provider: input.provider,
-            accountId: input.accountId,
+            id: request.threadId,
+            cwd: request.cwd ?? "",
+            model: request.model,
+            provider: request.provider,
+            accountId: request.accountId,
             accountLabel,
-            preview: previewFromText(input.text),
+            preview: previewFromText(request.text),
             updatedAt: Date.now(),
             ...(title ? { title } : {}),
           });
         }
-        pendingProviderDiagnostics.set(input.threadId, { provider: input.provider, model: input.model, accountId: input.accountId, accountLabel, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy, cwd: input.cwd });
-        codexProxy.setSidecarSettings(input.threadId, input.sidecars);
-        await rememberTurnFileSnapshot(input.threadId, input.cwd);
-        await (externalInstance ?? threadServer(input.threadId)).sendTurn({ ...turnInput, model: routedModel });
+        pendingProviderDiagnostics.set(request.threadId, { provider: request.provider, model: request.model, accountId: request.accountId, accountLabel, sidecars: request.sidecars, sandboxMode: request.sandboxMode, approvalPolicy: request.approvalPolicy, cwd: request.cwd });
+        codexProxy.setSidecarSettings(request.threadId, request.sidecars);
+        await rememberTurnFileSnapshot(request.threadId, request.cwd);
+        await (externalInstance ?? threadServer(request.threadId)).sendTurn({ ...turnInput, model: routedModel });
       } catch (error) {
-        await providerReconciler.discardPending(input.threadId);
+        await providerReconciler.discardPending(request.threadId);
         const detail = error instanceof Error ? error.message : String(error);
-        await providerTranscripts.markLatestProviderTurnSync(input.threadId, "failed", detail);
-        const pendingDiagnostics = pendingProviderDiagnostics.get(input.threadId);
-        pendingProviderDiagnostics.delete(input.threadId);
-        const sidecarActual = codexProxy.consumeSidecarStats(input.threadId);
-        emitSidecarActivities({ threadId: input.threadId, sidecarActual });
+        await providerTranscripts.markLatestProviderTurnSync(request.threadId, "failed", detail);
+        const pendingDiagnostics = pendingProviderDiagnostics.get(request.threadId);
+        pendingProviderDiagnostics.delete(request.threadId);
+        const sidecarActual = codexProxy.consumeSidecarStats(request.threadId);
+        emitSidecarActivities({ threadId: request.threadId, sidecarActual });
         emitProviderDiagnostics({
-          threadId: input.threadId,
-          provider: pendingDiagnostics?.provider ?? input.provider,
-          model: pendingDiagnostics?.model ?? input.model,
+          threadId: request.threadId,
+          provider: pendingDiagnostics?.provider ?? request.provider,
+          model: pendingDiagnostics?.model ?? request.model,
           accountLabel: pendingDiagnostics?.accountLabel,
           status: "failed",
           error: detail,
-          sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,
+          sidecars: pendingDiagnostics?.sidecars ?? request.sidecars,
           sidecarActual,
-          sandboxMode: pendingDiagnostics?.sandboxMode ?? input.sandboxMode,
-          approvalPolicy: pendingDiagnostics?.approvalPolicy ?? input.approvalPolicy,
+          sandboxMode: pendingDiagnostics?.sandboxMode ?? request.sandboxMode,
+          approvalPolicy: pendingDiagnostics?.approvalPolicy ?? request.approvalPolicy,
         });
         throw error;
       }
       return;
     }
-    if (input.provider && input.provider !== "codex") {
-      const firstTurn = !(await providerTranscripts.isExternal(input.threadId));
-      const accountLabel = await providerAccountLabel(input.provider, input.accountId);
-      await providerTranscripts.append(input.threadId, {
+    if (request.provider && request.provider !== "codex") {
+      const firstTurn = !(await providerTranscripts.isExternal(request.threadId));
+      const accountLabel = await providerAccountLabel(request.provider, request.accountId);
+      await providerTranscripts.append(request.threadId, {
         id: crypto.randomUUID(),
         kind: "user",
-        text: input.text,
+        text: request.text,
         ...(attachmentEnrichment.attachments.length ? { attachments: attachmentEnrichment.attachments } : {}),
       });
       await providerTranscripts.saveMeta({
-        id: input.threadId,
-        cwd: input.cwd ?? "",
-        model: input.model,
-        provider: input.provider,
-        accountId: input.accountId,
+        id: request.threadId,
+        cwd: request.cwd ?? "",
+        model: request.model,
+        provider: request.provider,
+        accountId: request.accountId,
         accountLabel,
-        preview: previewFromText(input.text),
+        preview: previewFromText(request.text),
         updatedAt: Date.now(),
-        ...(firstTurn ? { title: titleFromText(input.text) } : {}),
+        ...(firstTurn ? { title: titleFromText(request.text) } : {}),
       });
       const text = await providerRuntime.send(turnInput);
-      await providerTranscripts.append(input.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "codex", provider: input.provider, model: input.model, accountId: input.accountId });
+      await providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "codex", provider: request.provider, model: request.model, accountId: request.accountId });
       return;
     }
     try {
-      await rememberTurnFileSnapshot(input.threadId, input.cwd);
-      await ensureThreadLoaded({ threadId: input.threadId, model: input.model, cwd: input.cwd });
-      const instance = await threadServerFor(input.threadId);
-      if (await maybeStartContextCompaction(instance, input)) return;
-      pendingProviderDiagnostics.set(input.threadId, { provider: input.provider ?? "codex", model: input.model, sidecars: input.sidecars, sandboxMode: input.sandboxMode, approvalPolicy: input.approvalPolicy, cwd: input.cwd });
-      codexProxy.setSidecarSettings(input.threadId, input.sidecars);
+      await rememberTurnFileSnapshot(request.threadId, request.cwd);
+      await ensureThreadLoaded({ threadId: request.threadId, model: request.model, cwd: request.cwd });
+      const instance = await threadServerFor(request.threadId);
+      if (await maybeStartContextCompaction(instance, request)) return;
+      pendingProviderDiagnostics.set(request.threadId, { provider: request.provider ?? "codex", model: request.model, sidecars: request.sidecars, sandboxMode: request.sandboxMode, approvalPolicy: request.approvalPolicy, cwd: request.cwd });
+      codexProxy.setSidecarSettings(request.threadId, request.sidecars);
       await instance.sendTurn(turnInput);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      const pendingDiagnostics = pendingProviderDiagnostics.get(input.threadId);
-      pendingProviderDiagnostics.delete(input.threadId);
-      const sidecarActual = codexProxy.consumeSidecarStats(input.threadId);
-      emitSidecarActivities({ threadId: input.threadId, sidecarActual });
+      const pendingDiagnostics = pendingProviderDiagnostics.get(request.threadId);
+      pendingProviderDiagnostics.delete(request.threadId);
+      const sidecarActual = codexProxy.consumeSidecarStats(request.threadId);
+      emitSidecarActivities({ threadId: request.threadId, sidecarActual });
       emitProviderDiagnostics({
-        threadId: input.threadId,
-        provider: pendingDiagnostics?.provider ?? input.provider ?? "codex",
-        model: pendingDiagnostics?.model ?? input.model,
+        threadId: request.threadId,
+        provider: pendingDiagnostics?.provider ?? request.provider ?? "codex",
+        model: pendingDiagnostics?.model ?? request.model,
         accountLabel: pendingDiagnostics?.accountLabel,
         status: "failed",
         error: detail,
-        sidecars: pendingDiagnostics?.sidecars ?? input.sidecars,
+        sidecars: pendingDiagnostics?.sidecars ?? request.sidecars,
         sidecarActual,
-        sandboxMode: pendingDiagnostics?.sandboxMode ?? input.sandboxMode,
-        approvalPolicy: pendingDiagnostics?.approvalPolicy ?? input.approvalPolicy,
+        sandboxMode: pendingDiagnostics?.sandboxMode ?? request.sandboxMode,
+        approvalPolicy: pendingDiagnostics?.approvalPolicy ?? request.approvalPolicy,
       });
       throw error;
     }
   });
-  ipcMain.handle("turn:interrupt", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") {
-      if (claudeRuntime.interruptTurn(input)) return;
-      if (providerRuntime.interrupt(input.threadId)) return;
+  handle("turn:interrupt", async (input) => {
+    const request = input as any;
+    if (requestedRuntime(request.runtime) === "claude-code") {
+      if (claudeRuntime.interruptTurn(request)) return;
+      if (providerRuntime.interrupt(request.threadId)) return;
       throw new Error("no active turn to interrupt");
     }
-    if (providerRuntime.interrupt(input.threadId)) return;
-    await threadServer(input.threadId).interruptTurn(input);
+    if (providerRuntime.interrupt(request.threadId)) return;
+    await threadServer(request.threadId).interruptTurn(request);
   });
 
   ipcHandlersReady = true;
@@ -2323,6 +2569,7 @@ app.on("before-quit", () => {
   desktopControl.stop();
   askControl.stop();
   subagentControl.stop();
+  void stopRemoteControl({ saveSettings: false });
   void unregisterDevilBrowserMcp();
   void unregisterDevilAskMcp();
   void unregisterDevilSubagentMcp();

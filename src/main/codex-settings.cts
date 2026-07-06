@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { CodexSettings } from "./contracts.cjs";
+import type { CodexSettings, RemoteControlMode } from "./contracts.cjs";
 import { codexHome } from "./codex-home.cjs";
 import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
 
@@ -15,8 +15,10 @@ const defaults: CodexSettings = {
   askUserMcpEnabled: true,
   subagentMcpEnabled: true,
   englishOutput: false,
+  remoteControlEnabled: false,
+  remoteControlMode: "tailnet",
 };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output" } as const;
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode" } as const;
 // NOTE: `model_reasoning_effort` and `service_tier` are shared with stock
 // Codex, which writes them from its own model picker. Devil now reads them in
 // load() and writes them in save() so the two apps stay in sync — the renderer
@@ -28,10 +30,16 @@ const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "
 // non-priority tier set by stock (e.g. "flex") is preserved on save while the
 // speed stays "standard", so Devil never clobbers a tier it doesn't model.
 const reasoningEffortValues = new Set<CodexSettings["reasoningEffort"]>(["low", "medium", "high", "xhigh"]);
+const remoteControlModeValues = new Set<RemoteControlMode>(["tailnet", "funnel"]);
 
 function readReasoningEffort(source: string): CodexSettings["reasoningEffort"] | undefined {
   const value = readValue(source, keys.reasoningEffort) as CodexSettings["reasoningEffort"] | undefined;
   return value && reasoningEffortValues.has(value) ? value : undefined;
+}
+
+function readRemoteControlMode(source: string): RemoteControlMode | undefined {
+  const value = readValue(source, keys.remoteControlMode) as RemoteControlMode | undefined;
+  return value && remoteControlModeValues.has(value) ? value : undefined;
 }
 
 function serviceTierValue(responseSpeed: CodexSettings["responseSpeed"], previousTier: string | undefined): string {
@@ -87,6 +95,8 @@ export class CodexSettingsStore {
         askUserMcpEnabled: readBoolean(source, keys.askUserMcpEnabled) ?? defaults.askUserMcpEnabled,
         subagentMcpEnabled: readBoolean(source, keys.subagentMcpEnabled) ?? defaults.subagentMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
+        remoteControlEnabled: readBoolean(source, keys.remoteControlEnabled) ?? defaults.remoteControlEnabled,
+        remoteControlMode: readRemoteControlMode(source) ?? defaults.remoteControlMode,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults;
