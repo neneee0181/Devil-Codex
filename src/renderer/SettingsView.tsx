@@ -32,6 +32,7 @@ const defaults: Config = {
 
 const REMOTE_INSTALL_URL = "https://tailscale.com/download";
 const TAILSCALE_ADMIN_DNS_URL = "https://login.tailscale.com/admin/dns";
+const TAILSCALE_ADMIN_FUNNEL_URL = "https://login.tailscale.com/admin/machines";
 
 const groups = [
   { label: "설정", items: [["구성", TerminalSquare], ["연결", Globe2], ["알림", Bell], ["사용량 및 청구", CreditCard]] },
@@ -136,7 +137,9 @@ function RemoteControlSection(): React.JSX.Element {
   const tailscaleMessage = status?.tailscale.error
     ?? (!status?.tailscale.installed ? "Tailscale이 설치되어 있지 않습니다." : !status?.tailscale.loggedIn ? "Tailscale 로그인 또는 연결이 필요합니다." : null);
   const remoteErrorMessage = error ?? status?.error ?? tailscaleMessage;
-  const needsHttpsCertificateHelp = /does not support getting TLS certs|https|tls cert|certificate/i.test(remoteErrorMessage ?? "");
+  const isFunnelActivationError = /Funnel is not enabled|login\.tailscale\.com\/f\/funnel/i.test(remoteErrorMessage ?? "");
+  const funnelActivationUrl = remoteErrorMessage?.match(/https:\/\/login\.tailscale\.com\/f\/funnel[^\s)"]*/i)?.[0] ?? TAILSCALE_ADMIN_FUNNEL_URL;
+  const needsHttpsCertificateHelp = !isFunnelActivationError && /does not support getting TLS certs|tls cert|certificate|HTTPS Certificates|인증서/i.test(remoteErrorMessage ?? "");
   const disabled = state === "loading" || action !== null;
   const handleModeChange = async (value: string): Promise<void> => {
     const nextMode = value as RemoteControlMode;
@@ -195,6 +198,13 @@ function RemoteControlSection(): React.JSX.Element {
     {selectedMode === "funnel" && <p className="section-help" style={{ color: "#d6a86a", marginTop: 12 }}>Funnel은 공개 URL을 만듭니다. QR 또는 URL을 아는 사람은 접속을 시도할 수 있으므로 토큰 재발급과 기기 승인을 함께 사용해야 합니다.</p>}
     {remoteErrorMessage && <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
       <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>{remoteErrorMessage}</p>
+      {isFunnelActivationError && <>
+        <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>Funnel이 tailnet에서 아직 활성화되지 않아 공개 URL/QR을 만들지 못했습니다. 아래 버튼으로 Tailscale Funnel을 활성화한 뒤 다시 funnel 모드를 선택하세요.</p>
+        <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>이 전환이 실패하면 서버 재시작이 완료되지 않으므로 현재 URL/QR이 tailnet 주소로 남아 있어도 정상입니다.</p>
+        <div style={actionGroupStyle}>
+          <button className="secondary" onClick={() => void window.devilCodex.openExternalUrl({ url: funnelActivationUrl })}>Funnel 활성화</button>
+        </div>
+      </>}
       {needsHttpsCertificateHelp && <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>이 오류는 Tailscale 설치 문제라기보다 Tailscale Admin Console에서 HTTPS Certificates 또는 MagicDNS가 꺼져 있을 때 자주 나타납니다. Admin Console의 DNS/HTTPS 설정에서 해당 기능이 활성화되어 있는지 확인하세요.</p>}
     </div>}
 
