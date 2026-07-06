@@ -465,11 +465,6 @@ function usesCodexProxy(provider?: string): boolean {
   return Boolean(provider && provider !== "codex");
 }
 
-function supportsAskUserBridge(input: { runtime?: AgentRuntimeId; provider?: ProviderId }): boolean {
-  if (requestedRuntime(input.runtime) !== "claude-code") return true;
-  return !input.provider || input.provider === "codex" || input.provider === "claude-code";
-}
-
 function routedProviderModel(provider: ProviderId, model: string, accountId?: string): string {
   return `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
 }
@@ -1931,7 +1926,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     await (await threadServerFor(input.id)).compactThread({ threadId: input.id });
   });
   ipcMain.handle("thread:read", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(await providerTranscripts.read(input.id));
+    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(await providerTranscripts.read(input.id)));
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     // External threads render from Devil's local transcript. BUT a mostly-native
     // thread that took even one stray external turn is flagged external forever
@@ -1966,7 +1961,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else await historyCache.save(input.id, items);
   });
   ipcMain.handle("thread:sync-history", async (_event, input) => {
-    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(await providerTranscripts.read(input.id));
+    if (requestedRuntime(input.runtime) === "claude-code") return normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(await providerTranscripts.read(input.id)));
     await repairMirroredRolloutJsonl(input.id).catch(() => undefined);
     if (!(await providerTranscripts.isExternal(input.id))) {
       const rollout = await enrichThreadImages(input.id, await (await threadServerFor(input.id)).readThread(input));
@@ -2062,7 +2057,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // store the raw input.text, so the visible user message stays untouched.
     const { englishOutput, askUserMcpEnabled } = await settingsStore.load();
     const englishDirective = englishOutput ? `\n\n---\n${ENGLISH_OUTPUT_DIRECTIVE}` : "";
-    const askDirective = askUserMcpEnabled && supportsAskUserBridge(input) ? `\n\n---\n${ASK_USER_MCP_DIRECTIVE}` : "";
+    // devil_ask MCP server is registered for every provider under claude-code
+    // runtime (see claudeMcpConfig), so the directive must follow — otherwise
+    // the tool is loaded but the model is never told when to use it, which
+    // made ask_user appear/disappear depending on which provider was active.
+    const askDirective = askUserMcpEnabled ? `\n\n---\n${ASK_USER_MCP_DIRECTIVE}` : "";
     const turnInput = {
       ...input,
       text: `${input.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
