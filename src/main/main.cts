@@ -397,6 +397,7 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapSingle("thread:read", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:resume", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:meta:update", (input) => (input as { id?: string } | undefined)?.id);
+  wrapSingle("thread:review", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("thread:queue:get", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("thread:active", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:enqueue", (input) => (input as { threadId?: string; entry?: { pending?: { threadId?: string } } } | undefined)?.threadId ?? (input as { entry?: { pending?: { threadId?: string } } } | undefined)?.entry?.pending?.threadId);
@@ -404,6 +405,7 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapSingle("turn:queue:remove", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:steer", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:queue:clear", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:steer", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:send", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:interrupt", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("approval:respond", (input) => (input as { threadId?: string } | undefined)?.threadId);
@@ -655,6 +657,7 @@ function annotateCodexSummaries<T extends ThreadSummary>(threads: T[], stored: T
       ...(meta?.sandboxMode ? { sandboxMode: meta.sandboxMode } : {}),
       ...(meta?.reasoningEffort ? { reasoningEffort: meta.reasoningEffort } : {}),
       ...(meta?.responseSpeed ? { responseSpeed: meta.responseSpeed } : {}),
+      ...(meta?.planMode !== undefined ? { planMode: meta.planMode } : {}),
     };
   });
 }
@@ -2392,6 +2395,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       ...(request.sandboxMode ? { sandboxMode: request.sandboxMode } : {}),
       ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
       ...(request.responseSpeed ? { responseSpeed: request.responseSpeed } : {}),
+      ...(request.planMode !== undefined ? { planMode: Boolean(request.planMode) } : {}),
     };
     await providerTranscripts.saveMeta(meta);
     sendToRenderer("thread:meta-changed", meta);
@@ -2439,6 +2443,22 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     await ensureThreadLoaded({ threadId: input.id, cwd: input.cwd, model: input.model });
     await (await threadServerFor(input.id)).compactThread({ threadId: input.id });
+  });
+  handle("thread:review", async (input) => {
+    const request = input as { threadId?: string; target?: Record<string, unknown>; delivery?: "inline" | "detached"; runtime?: AgentRuntimeId; cwd?: string; model?: string };
+    const threadId = String(request.threadId ?? "");
+    if (!threadId) throw new Error("리뷰할 채팅이 없습니다.");
+    if (requestedRuntime(request.runtime) === "claude-code") throw new Error("Claude Code runtime은 Codex 네이티브 리뷰를 지원하지 않습니다.");
+    const meta = (await providerTranscripts.summaries()).find((summary) => summary.id === threadId);
+    if (threadRuntime(meta ?? { id: threadId, cwd: "", model: "", title: "", preview: "", updatedAt: 0, archived: false }) === "claude-code") {
+      throw new Error("Claude Code runtime은 Codex 네이티브 리뷰를 지원하지 않습니다.");
+    }
+    await ensureThreadLoaded({ threadId, cwd: request.cwd ?? meta?.cwd, model: request.model ?? meta?.model ?? "gpt-5.5" });
+    return await (await threadServerFor(threadId)).startReview({
+      threadId,
+      delivery: request.delivery ?? "inline",
+      target: request.target ?? { type: "uncommittedChanges" },
+    });
   });
   handle("thread:read", async (input) => {
     const request = input as any;
@@ -2613,6 +2633,15 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (!threadId) return;
     sendThreadQueueCommand({ type: "clear", threadId });
   });
+  handle("turn:steer", async (input) => {
+    const request = input as { threadId?: string; text?: string; expectedTurnId?: string; runtime?: AgentRuntimeId };
+    const threadId = String(request.threadId ?? "");
+    const text = String(request.text ?? "").trim();
+    const expectedTurnId = String(request.expectedTurnId ?? "");
+    if (!threadId || !text || !expectedTurnId) throw new Error("스티어링할 실행 중 턴이 없습니다.");
+    if (requestedRuntime(request.runtime) === "claude-code") throw new Error("Claude Code runtime은 현재 턴 네이티브 스티어링을 지원하지 않습니다.");
+    return await threadServer(threadId).steerTurn({ threadId, text, expectedTurnId });
+  });
   handle("turn:send", async (input) => {
     const request = input as any;
     const attachmentEnrichment = await enrichDocumentAttachments(request.attachmentDetails);
@@ -2643,6 +2672,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         ...(request.sandboxMode ? { sandboxMode: request.sandboxMode } : {}),
         ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
         ...(request.responseSpeed ? { responseSpeed: request.responseSpeed } : {}),
+        ...(request.planMode !== undefined ? { planMode: Boolean(request.planMode) } : {}),
       };
       await providerTranscripts.saveMeta(meta);
       sendToRenderer("thread:meta-changed", meta);
@@ -2710,6 +2740,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           }),
           approvalPolicy: request.approvalPolicy,
           sandboxMode: request.sandboxMode,
+          planMode: Boolean(request.planMode),
           ...(askUserMcpEnabled ? {
             onUserDialog: handleClaudeUserDialog,
             supportedDialogKinds: CLAUDE_NATIVE_ASK_DIALOG_KINDS,

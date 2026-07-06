@@ -22,6 +22,7 @@ export interface ThreadRef {
   sandboxMode?: ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
 }
 
 export interface ThreadSummary {
@@ -41,6 +42,7 @@ export interface ThreadSummary {
   sandboxMode?: ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
 }
 
 export interface ThreadActivityEntry {
@@ -311,6 +313,7 @@ export interface TurnSendInput {
   sandboxMode?: ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
   retriedAfterCompaction?: boolean;
 }
 
@@ -349,6 +352,7 @@ export interface ThreadMetaUpdate {
   sandboxMode?: ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
 }
 
 export type ThreadQueueCommand =
@@ -399,6 +403,7 @@ export interface DevilCodexApi {
   updateThreadMeta: (input: ThreadMetaUpdate) => Promise<void>;
   forkThread: (input: { id: string; cwd: string; model: string }) => Promise<ThreadRef>;
   compactThread: (input: { id: string; cwd?: string; model: string; accountId?: string }) => Promise<void>;
+  startReview: (input: { threadId: string; cwd?: string; model?: string; target?: { type: "uncommittedChanges" } | { type: "baseBranch"; branch: string } | { type: "commit"; sha: string; title?: string } | { type: "custom"; prompt: string }; delivery?: "inline" | "detached"; runtime?: AgentRuntimeId }) => Promise<{ turn?: { id?: string; status?: string }; reviewThreadId?: string }>;
   readThread: (input: { id: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadHistoryItem[]>;
   cacheThreadHistory: (input: { id: string; items: ThreadHistoryItem[]; runtime?: AgentRuntimeId; accountId?: string }) => Promise<void>;
   syncThreadHistory: (input: { id: string; runtime?: AgentRuntimeId; accountId?: string }) => Promise<ThreadHistoryItem[]>;
@@ -482,6 +487,7 @@ export interface DevilCodexApi {
   removeQueuedTurn: (input: { threadId: string; id: string }) => Promise<void>;
   steerQueuedTurn: (input: { threadId: string; id: string }) => Promise<void>;
   clearQueuedTurns: (input: { threadId: string }) => Promise<void>;
+  steerTurn: (input: { threadId: string; text: string; expectedTurnId: string; runtime?: AgentRuntimeId }) => Promise<{ turnId?: string }>;
   sendTurn: (input: TurnSendInput) => Promise<void>;
   interruptTurn: (input: { threadId: string; runtime?: AgentRuntimeId; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;

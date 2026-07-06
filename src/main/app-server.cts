@@ -109,6 +109,11 @@ function shouldFallbackWithoutPermissions(approvalPolicy: ThreadApprovalPolicy, 
   return approvalPolicy === "on-request" && sandboxMode === "workspace-write";
 }
 
+function isCollaborationModeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /collaborationMode|collaboration_mode|developer_instructions|unknown field|unknown parameter|invalid params|invalid request/i.test(message);
+}
+
 export class CodexAppServer extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private lineBuffer = "";
@@ -414,7 +419,7 @@ export class CodexAppServer extends EventEmitter {
     await this.request("feedback/upload", { classification: "other", reason, threadId: input.threadId ?? null, includeLogs: false });
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; skills?: Array<{ name: string; path: string }>; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed }): Promise<void> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; skills?: Array<{ name: string; path: string }>; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; planMode?: boolean }): Promise<void> {
     await this.ensureConnected();
     const items = [
       ...(input.skills ?? []).map((skill) => ({ type: "skill", name: skill.name, path: skill.path })),
@@ -428,13 +433,22 @@ export class CodexAppServer extends EventEmitter {
     // persist "for this turn and subsequent turns", so "standard" must send an
     // explicit "default" — omitting it would leave a thread stuck on priority
     // after a single fast turn.
-    const baseParams = {
+    const stableBaseParams = {
       threadId: input.threadId,
       cwd: input.cwd,
       model: input.model,
       input: items,
       effort: input.reasoningEffort ?? "medium",
       serviceTier: serviceTierFor(input.responseSpeed),
+    };
+    const baseParams = {
+      ...stableBaseParams,
+      ...(input.planMode ? {
+        collaborationMode: {
+          mode: "plan",
+          settings: { developer_instructions: null },
+        },
+      } : {}),
     };
     const requestedApprovalPolicy = input.approvalPolicy ?? "on-request";
     const requestedSandbox = input.sandboxMode ?? "workspace-write";
@@ -448,11 +462,19 @@ export class CodexAppServer extends EventEmitter {
       await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (input.planMode && isCollaborationModeError(error)) {
+        await this.request("turn/start", {
+          ...stableBaseParams,
+          ...turnPermissionFields(requestedApprovalPolicy, requestedSandbox, input.cwd),
+        });
+        await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
+        return;
+      }
       if (!isPermissionParameterError(error)) throw error;
       if (!shouldFallbackWithoutPermissions(requestedApprovalPolicy, requestedSandbox)) {
         throw new Error(`Codex app-server rejected requested permissions (${requestedApprovalPolicy}, ${requestedSandbox}): ${message}`);
       }
-      await this.request("turn/start", baseParams);
+      await this.request("turn/start", input.planMode ? stableBaseParams : baseParams);
       await syncStockThreadPermissions(input.threadId, input.cwd, requestedApprovalPolicy, requestedSandbox, this.options.codexHome).catch(() => undefined);
     }
   }
@@ -460,6 +482,24 @@ export class CodexAppServer extends EventEmitter {
   async compactThread(input: { threadId: string }): Promise<void> {
     await this.ensureConnected();
     await this.request("thread/compact/start", { threadId: input.threadId });
+  }
+
+  async startReview(input: { threadId: string; target?: Record<string, unknown>; delivery?: "inline" | "detached" }): Promise<{ turn?: { id?: string; status?: string }; reviewThreadId?: string }> {
+    await this.ensureConnected();
+    return await this.request("review/start", {
+      threadId: input.threadId,
+      delivery: input.delivery ?? "inline",
+      target: input.target ?? { type: "uncommittedChanges" },
+    }) as { turn?: { id?: string; status?: string }; reviewThreadId?: string };
+  }
+
+  async steerTurn(input: { threadId: string; text: string; expectedTurnId: string }): Promise<{ turnId?: string }> {
+    await this.ensureConnected();
+    return await this.request("turn/steer", {
+      threadId: input.threadId,
+      input: [{ type: "text", text: input.text }],
+      expectedTurnId: input.expectedTurnId,
+    }) as { turnId?: string };
   }
 
   async interruptTurn(input: { threadId: string; turnId?: string }): Promise<void> {

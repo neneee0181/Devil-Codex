@@ -789,7 +789,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .send-button:disabled { background: #454545; color: #838383; }
 .stop-button { color: #303030; }
 
-.environment-card { position: absolute; z-index: 6; top: 14px; right: 16px; width: min(300px, calc(100% - 24px)); max-height: min(680px, calc(100vh - 112px)); overflow-y: auto; overscroll-behavior: contain; border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
+.environment-card { position: absolute; z-index: 6; top: 14px; right: 16px; width: min(300px, calc(100% - 24px)); max-height: min(680px, calc(100vh - 112px)); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
 .environment-card header { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 8px; color: #a7a7a7; font-size: 12px; }
 .environment-card header button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #a7a7a7; font-size: 18px; }
 .environment-card header button:hover { background: #3a3a3a; }
@@ -852,7 +852,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .environment-usage-empty { margin: 0; color: #9d9d9d; font-size: 12px; line-height: 1.4; }
 .environment-popover-wrap { position: relative; }
 .environment-popover-wrap .open { transform: rotate(90deg); }
-.environment-side-menu { position: absolute; z-index: 14; top: -4px; right: calc(100% + 8px); display: grid; width: 248px; max-height: min(380px, calc(100vh - 80px)); overflow: auto; border: 1px solid #464646; border-radius: 13px; background: #2d2d2df8; box-shadow: 0 18px 60px #0009; padding: 7px; backdrop-filter: blur(16px); }
+.environment-side-menu { position: absolute; z-index: 14; top: -4px; right: calc(100% + 8px); display: grid; width: 248px; max-height: min(380px, calc(100vh - 80px)); overflow: auto; scrollbar-gutter: stable; border: 1px solid #464646; border-radius: 13px; background: #2d2d2df8; box-shadow: 0 18px 60px #0009; padding: 7px; backdrop-filter: blur(16px); }
 .environment-side-menu p { margin: 3px 10px 6px; color: #8f8f8f; font-size: 12px; }
 .environment-side-menu button { display: flex; min-width: 0; gap: 9px; align-items: center; border: 0; border-radius: 8px; background: transparent; color: #ececec; padding: 7px 9px; font-size: 13px; text-align: left; }
 .environment-side-menu button:hover:not(:disabled), .environment-side-menu button.selected { background: #3d3d3d; }
@@ -862,7 +862,12 @@ button:active:not(:disabled) { transform: scale(.96); }
 .environment-branch-create { display: flex; gap: 6px; padding: 0 2px 7px; }
 .environment-branch-create input { min-width: 0; height: 30px; flex: 1; outline: 0; border: 1px solid #4a4a4a; border-radius: 8px; background: #202020; color: #eee; padding: 0 9px; font: 12px inherit; }
 .environment-branch-create button { flex: 0 0 auto; border: 1px solid #e7e7e7; background: #ececec; color: #202020; padding: 0 9px; font-size: 12px; }
-.environment-branch-list { display: grid; gap: 2px; overflow: auto; }
+.environment-branch-list { display: grid; gap: 2px; overflow: auto; scrollbar-gutter: stable; }
+.environment-card, .environment-side-menu, .environment-branch-list { scrollbar-width: thin; scrollbar-color: #5f5f5f transparent; }
+.environment-card::-webkit-scrollbar, .environment-side-menu::-webkit-scrollbar, .environment-branch-list::-webkit-scrollbar { width: 10px; height: 10px; }
+.environment-card::-webkit-scrollbar-track, .environment-side-menu::-webkit-scrollbar-track, .environment-branch-list::-webkit-scrollbar-track { background: transparent; }
+.environment-card::-webkit-scrollbar-thumb, .environment-side-menu::-webkit-scrollbar-thumb, .environment-branch-list::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: #555; background-clip: content-box; }
+.environment-card:hover::-webkit-scrollbar-thumb, .environment-side-menu:hover::-webkit-scrollbar-thumb, .environment-branch-list:hover::-webkit-scrollbar-thumb { background: #737373; background-clip: content-box; }
 .environment-sources { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 8px 2px; }
 .environment-sources button { display: inline-flex; min-width: 0; max-width: 100%; gap: 5px; align-items: center; border: 1px solid #3f3f3f; border-radius: 999px; background: #262626; color: #cfcfcf; padding: 5px 8px; font-size: 11px; }
 .environment-sources button:hover { background: #363636; color: #fff; }

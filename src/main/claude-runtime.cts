@@ -159,7 +159,8 @@ function sdkClaudeCodeVersion(bundledExecutable: string): string | undefined {
   }
 }
 
-function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: ThreadSandboxMode): string {
+function permissionMode(approvalPolicy?: ThreadApprovalPolicy, sandboxMode?: ThreadSandboxMode, planMode?: boolean): string {
+  if (planMode) return "plan";
   if (sandboxMode === "danger-full-access" || approvalPolicy === "never") return "bypassPermissions";
   // Claude Code's own permission engine decides WHEN to ask; Devil only
   // supplies the answer UI via the canUseTool bridge (same modal as Codex
@@ -513,7 +514,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     }
   }
 
-  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; onUserDialog?: OnUserDialogLike; supportedDialogKinds?: string[]; onAskUserQuestionTool?: OnAskUserQuestionToolLike; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
+  async sendTurn(input: { threadId: string; cwd: string; text: string; model: string; resume?: boolean; nativeSessionId?: string; mcpConfig?: string; attachments?: string[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; planMode?: boolean; onUserDialog?: OnUserDialogLike; supportedDialogKinds?: string[]; onAskUserQuestionTool?: OnAskUserQuestionToolLike; onSessionId?: (sessionId: string) => void; onCompleted?: (text: string, meta: { turnId: string }) => Promise<void> | void }): Promise<{ sessionId?: string; turnId: string; usage?: ClaudeTurnUsage; contextUsage?: ContextUsage }> {
     if (this.active.has(input.threadId)) throw new Error("이 Claude Code thread는 이미 응답 생성 중입니다.");
     const turnId = `claude-${crypto.randomUUID()}`;
     const itemId = `claude-message-${crypto.randomUUID()}`;
@@ -523,7 +524,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
     let nativeSessionId = input.nativeSessionId;
     let usageSnapshot: TurnUsageSnapshot | undefined;
     let sdkContextUsage: ContextUsage | undefined;
-    const mode = permissionMode(input.approvalPolicy, input.sandboxMode);
+    const mode = permissionMode(input.approvalPolicy, input.sandboxMode, input.planMode);
     this.emitEvent({ method: "turn/started", params: { threadId: input.threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
 
     const content = userMessageContent(input.text, input.attachments);

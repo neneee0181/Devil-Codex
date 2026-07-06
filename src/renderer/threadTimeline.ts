@@ -252,6 +252,20 @@ function entryFromItem(item: RawItem): ThreadActivityEntry | null {
     detail: String(item.detail ?? ""),
     status: String(item.status ?? "completed") as ThreadActivityEntry["status"],
   };
+  if (type === "enteredReviewMode") return {
+    id,
+    kind: "diagnostic",
+    title: "코드 리뷰 시작",
+    detail: String(item.review ?? "현재 변경사항"),
+    status: "inProgress",
+  };
+  if (type === "exitedReviewMode") return {
+    id,
+    kind: "message",
+    title: "코드 리뷰",
+    detail: String(item.review ?? ""),
+    status: "completed",
+  };
   if (type === "providerDiagnostics") return { id, kind: "diagnostic", title: String(item.title ?? "Provider 진단"), detail: String(item.detail ?? ""), status: String(item.status ?? "completed") as ThreadActivityEntry["status"] };
   if (type === "error") return { id, kind: "message", title: "Provider 응답 실패", detail: String(item.message ?? item.text ?? item.error ?? "Provider가 이유를 알 수 없는 실패를 반환했습니다."), status: "failed" };
   if (type === "plan") return { id, kind: "message", title: "계획", detail: String(item.text ?? ""), status: "completed" };

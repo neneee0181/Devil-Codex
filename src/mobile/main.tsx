@@ -850,6 +850,17 @@ function App(): React.JSX.Element {
     if (nearBottomRef.current) forceScrollToBottomRef.current = true;
     try {
       if (busy) {
+        const canNativeSteer = meta.runtime !== "claude-code"
+          && (targetModel.provider ?? meta.provider ?? "codex") === "codex"
+          && Boolean(activeTurnId)
+          && attachments.length === 0;
+        if (canNativeSteer && activeTurnId) {
+          const next = [...historyRef.current, optimistic];
+          historyRef.current = next;
+          setThreadHistory(next);
+          await bridge.call("turn:steer", { threadId: currentThread.id, text, expectedTurnId: activeTurnId, runtime: "codex" });
+          return;
+        }
         await bridge.call<void>("turn:queue:enqueue", { threadId: currentThread.id, entry: { id: optimistic.id, pending, userItem: optimistic } });
         return;
       }

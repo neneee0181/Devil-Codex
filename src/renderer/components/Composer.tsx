@@ -1,6 +1,6 @@
 import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, type Ref, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, Plus, Square, Target, X } from "lucide-react";
+import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Laptop, PanelRight, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
@@ -20,7 +20,7 @@ export type ComposerAttachment = ThreadAttachment;
 const APPROVAL_MODE_KEY = "devil-codex:approval-mode";
 const COMPOSER_DRAFTS_KEY = "devil-codex:composer-drafts";
 const DRAFT_SAVE_DEBOUNCE_MS = 350;
-type ComposerDraftSnapshot = { draft: string; goalMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
+type ComposerDraftSnapshot = { draft: string; goalMode: boolean; planMode: boolean; attachments: ComposerAttachment[]; skills: string[]; updatedAt: number };
 
 function readComposerDrafts(): Record<string, ComposerDraftSnapshot> {
   try {
@@ -33,9 +33,10 @@ function readComposerDrafts(): Record<string, ComposerDraftSnapshot> {
 
 function readComposerDraft(key: string): Omit<ComposerDraftSnapshot, "updatedAt"> {
   const stored = readComposerDrafts()[key];
-  return {
+    return {
     draft: stored?.draft ?? "",
     goalMode: stored?.goalMode === true,
+    planMode: stored?.planMode === true,
     attachments: Array.isArray(stored?.attachments) ? stored.attachments : [],
     skills: Array.isArray(stored?.skills) ? stored.skills.filter((item) => typeof item === "string") : [],
   };
@@ -45,7 +46,7 @@ function writeComposerDraft(key: string, snapshot: Omit<ComposerDraftSnapshot, "
   if (!key) return;
   try {
     const drafts = readComposerDrafts();
-    if (!snapshot.draft.trim() && !snapshot.goalMode && snapshot.attachments.length === 0 && snapshot.skills.length === 0) delete drafts[key];
+    if (!snapshot.draft.trim() && !snapshot.goalMode && !snapshot.planMode && snapshot.attachments.length === 0 && snapshot.skills.length === 0) delete drafts[key];
     else drafts[key] = { ...snapshot, updatedAt: Date.now() };
     const compact = Object.fromEntries(Object.entries(drafts).sort(([, a], [, b]) => b.updatedAt - a.updatedAt).slice(0, 80));
     localStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(compact));
@@ -86,6 +87,7 @@ export type ComposerInput = {
   prompt: string;
   approvalMode: ApprovalMode;
   goalMode: boolean;
+  planMode: boolean;
   attachments: ComposerAttachment[];
   skills: string[];
   reasoningEffort: ReasoningEffort;
@@ -157,6 +159,7 @@ export function Composer({
   const [draft, setDraft] = useState(initialDraft.draft);
   const [approvalMode, setApprovalModeState] = useState<ApprovalMode>(() => storedApprovalMode());
   const [goalMode, setGoalMode] = useState(initialDraft.goalMode);
+  const [planMode, setPlanMode] = useState(initialDraft.planMode);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(initialDraft.attachments);
   const [skills, setSkills] = useState<string[]>(initialDraft.skills);
   const [trigger, setTrigger] = useState<SuggestionTrigger | null>(null);
@@ -199,6 +202,7 @@ export function Composer({
     latestDraftsByKey.current[draftKey] = next;
     setDraft(next.draft);
     setGoalMode(next.goalMode);
+    setPlanMode(next.planMode);
     setAttachments(next.attachments);
     setSkills(next.skills);
     setTrigger(null);
@@ -209,7 +213,7 @@ export function Composer({
   }, [draftKey]);
 
   useEffect(() => {
-    const snapshot = { draft, goalMode, attachments, skills };
+    const snapshot = { draft, goalMode, planMode, attachments, skills };
     latestDraft.current = snapshot;
     latestDraftsByKey.current[draftKey] = snapshot;
     if (draftSaveTimer.current !== null) window.clearTimeout(draftSaveTimer.current);
@@ -224,7 +228,7 @@ export function Composer({
         draftSaveTimer.current = null;
       }
     };
-  }, [draftKey, draft, goalMode, attachments, skills]);
+  }, [draftKey, draft, goalMode, planMode, attachments, skills]);
 
   useEffect(() => () => {
     if (draftSaveTimer.current !== null) {
@@ -358,11 +362,12 @@ export function Composer({
   };
 
   const submitCommandPrompt = (prompt: string): void => {
-    onSubmit({ prompt, approvalMode, goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
+    onSubmit({ prompt, approvalMode, goalMode: false, planMode, attachments: [], skills: [], reasoningEffort, responseSpeed });
   };
 
   const runCommand = (name: SlashCommandId): void => {
-    if (name === "goal" || name === "plan") { setGoalMode(true); return; }
+    if (name === "goal") { setGoalMode(true); return; }
+    if (name === "plan") { setPlanMode((active) => !active); return; }
     if (name === "init") {
       submitCommandPrompt("프로젝트 루트의 AGENTS.md를 현재 프로젝트에 맞게 생성하거나 업데이트해줘.");
       return;
@@ -409,12 +414,12 @@ export function Composer({
     // No `busy` guard: while a turn runs, submitting queues the message (the
     // parent enqueues it and auto-sends when the current turn finishes).
     if ((!prompt && attachments.length === 0) || !attachmentsReady || !connected) return;
-    onSubmit({ prompt, approvalMode, goalMode, attachments, skills, reasoningEffort, responseSpeed });
+    onSubmit({ prompt, approvalMode, goalMode, planMode, attachments, skills, reasoningEffort, responseSpeed });
     clearDraft();
   };
 
   const clearDraft = (): void => {
-    latestDraft.current = { draft: "", goalMode: false, attachments: [], skills: [] };
+    latestDraft.current = { draft: "", goalMode: false, planMode, attachments: [], skills: [] };
     latestDraftsByKey.current[draftKey] = latestDraft.current;
     setDraft("");
     setAttachments([]);
@@ -511,9 +516,10 @@ export function Composer({
           onPaste={onDraftPaste}
           suppressContentEditableWarning
         />
-        {goalMode && (
+        {(goalMode || planMode) && (
           <div className="composer-context">
             {goalMode && <button type="button" onClick={() => setGoalMode(false)}><Target size={13} />목표 ×</button>}
+            {planMode && <button type="button" onClick={() => setPlanMode(false)}><PanelRight size={13} />계획 ×</button>}
           </div>
         )}
         <div className="composer-footer">
@@ -522,6 +528,7 @@ export function Composer({
           <div className="composer-options">
             <ApprovalPicker value={approvalMode} onChange={setApprovalMode} onOpen={() => setTrigger(null)} />
             <button type="button" className={goalMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setGoalMode((active) => !active); }}><Target size={14} />목표</button>
+            <button type="button" className={planMode ? "text-chip active" : "text-chip"} onClick={() => { setTrigger(null); setPlanMode((active) => !active); }}><PanelRight size={14} />계획</button>
           </div>
           <div className="composer-spacer" />
           <ModelPicker model={model} providerId={providerId} accountId={accountId} providers={providers} contextUsage={contextUsage} reasoningEffort={reasoningEffort} responseSpeed={responseSpeed} runtime={agentRuntime} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} onResponseSpeedChange={onResponseSpeedChange} />

@@ -372,13 +372,14 @@ type ComposerConfigSnapshot = {
   sandboxMode?: import("../shared/contracts").ThreadSandboxMode;
   reasoningEffort?: ReasoningEffort;
   responseSpeed?: ResponseSpeed;
+  planMode?: boolean;
   updatedAt: number;
 };
 
 function readComposerConfigs(): Record<string, ComposerConfigSnapshot> {
   try {
     const raw = JSON.parse(localStorage.getItem(COMPOSER_CONFIGS_KEY) ?? "{}") as Record<string, ComposerConfigSnapshot>;
-    return Object.fromEntries(Object.entries(raw).filter(([key, value]) => key && typeof value?.model === "string"));
+    return Object.fromEntries(Object.entries(raw).filter(([key, value]) => key && (typeof value?.model === "string" || value?.planMode === true)));
   } catch {
     return {};
   }
@@ -2847,7 +2848,7 @@ function App(): React.JSX.Element {
       return;
     }
     const side = input.side === "new" ? "변경 후" : "변경 전";
-    void submit({ prompt: `인라인 리뷰 의견을 반영해줘.\n\n파일: ${input.path}\n줄: ${input.line} (${side})\n의견: ${input.text}`, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
+    void submit({ prompt: `인라인 리뷰 의견을 반영해줘.\n\n파일: ${input.path}\n줄: ${input.line} (${side})\n의견: ${input.text}`, approvalMode: "agent", goalMode: false, planMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed });
   }
 
   async function applyReviewHunk(input: { path: string; hunk: string; action: "stage" | "revert" }): Promise<void> {
@@ -3146,7 +3147,8 @@ function App(): React.JSX.Element {
       ? `[연결된 플러그인/MCP 언급]\n이번 요청에서는 사용자가 ${selectedMcpServers.map((name) => `/${name}`).join(", ")} 플러그인을 명시했습니다. 관련 정보 조회나 작업이 필요하면 해당 MCP 서버의 사용 가능한 도구를 우선 사용하세요.\n\n`
       : "";
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
-    const visiblePrompt = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
+    const modePrefix = `${input.planMode ? "[플랜 모드]\n" : ""}${input.goalMode ? "[목표 모드]\n" : ""}`;
+    const visiblePrompt = `${modePrefix}${promptText}`;
     const handoffIndex = itemsRef.current.findIndex((item) => item.kind === "system" && item.title === "런타임 공유 컨텍스트");
     const handoffContext = handoffIndex >= 0 && !itemsRef.current.slice(handoffIndex + 1).some((item) => item.kind === "agent")
       ? itemsRef.current[handoffIndex]?.text.trim()
@@ -3156,7 +3158,7 @@ function App(): React.JSX.Element {
       : "";
     const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills.filter((name) => !name.startsWith("mcp:")), composerSkillOptions) : "";
     const text = `${runtimeSkillPrefix}${codexPluginSkillPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
-    const visibleText = `${input.goalMode ? "[목표 모드]\n" : ""}${promptText}`;
+    const visibleText = `${modePrefix}${promptText}`;
     const displayText = `${input.skills.map((skill) => skill.startsWith("mcp:") ? `/${skill.slice("mcp:".length)}` : `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;
     const selectedAccountId = composerRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === composerProviderId ? composerAccountId : undefined);
@@ -3168,7 +3170,7 @@ function App(): React.JSX.Element {
       : input.approvalMode === "ask"
         ? { approvalPolicy: "on-request" as const, sandboxMode: "read-only" as const }
         : { approvalPolicy: "on-request" as const, sandboxMode: "workspace-write" as const };
-    const turnOptions = { reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed };
+    const turnOptions = { reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed, planMode: input.planMode };
     const userItem: ThreadHistoryItem = { id: crypto.randomUUID(), kind: "user", text: displayText, attachments: attachmentDetails };
     const replaceIndex = options.replaceFromItemId ? itemsRef.current.findIndex((item) => item.id === options.replaceFromItemId) : -1;
     const replacingFromEdit = replaceIndex >= 0;
@@ -3184,6 +3186,17 @@ function App(): React.JSX.Element {
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
       const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
+      const activeTurnId = runningTurnsRef.current[queueThread.id]?.turnId ?? activeTurnsByThread.current.get(queueThread.id);
+      const canNativeSteer = composerRuntime === "codex" && provider === "codex" && activeTurnId && selectedSkills.length === 0 && imageAttachments.length === 0 && attachmentDetails.length === 0;
+      if (canNativeSteer) {
+        appendItemToThread(queueThread.id, userItem);
+        try {
+          await window.devilCodex.steerTurn({ threadId: queueThread.id, text, expectedTurnId: activeTurnId, runtime: "codex" });
+          return;
+        } catch (error) {
+          appendItemToThread(queueThread.id, { id: crypto.randomUUID(), kind: "system", title: "스티어링 실패", text: `${String(error)}\n대기열로 전환합니다.` });
+        }
+      }
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -3206,7 +3219,7 @@ function App(): React.JSX.Element {
       setThread(visibleThread);
       itemsOwnerRef.current = activeThread.id;
       threadHistoryCache.current.set(activeThread.id, optimisticItems);
-      rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, ...permissions, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed });
+      rememberComposerConfig(`${composerRuntime}:thread:${activeThread.id}`, { runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, ...permissions, reasoningEffort: input.reasoningEffort, responseSpeed: input.responseSpeed, planMode: input.planMode });
       void window.devilCodex.updateThreadMeta({ id: activeThread.id, cwd: workspace, runtime: composerRuntime, provider, accountId: sendAccountId, model: sendModel, ...permissions, ...turnOptions }).catch((error) => console.warn("[devil-codex] thread permission sync failed", error));
       if (!existingThreadId) rememberThreadModel(activeThread.id, provider, sendModel, sendAccountId);
       if (replacingFromEdit && editedVisibleItems) threadHistoryCache.current.set(activeThread.id, editedVisibleItems);
@@ -3246,7 +3259,7 @@ function App(): React.JSX.Element {
   function startAutomationChat(prompt: string): void {
     const codexProvider = providers.settings?.providers.find((item) => item.id === "codex");
     const codexModel = providers.settings?.provider === "codex" ? model : codexProvider?.models[0]?.id ?? "gpt-5.5";
-    void submit({ prompt, approvalMode: "agent", goalMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
+    void submit({ prompt, approvalMode: "agent", goalMode: false, planMode: false, attachments: [], skills: [], reasoningEffort, responseSpeed }, { forceNewThread: true, provider: "codex", model: codexModel });
   }
 
   function renameProject(): void {
@@ -3555,6 +3568,34 @@ function App(): React.JSX.Element {
     }
   }
 
+  async function startNativeReview(): Promise<void> {
+    if (!thread?.id) {
+      openUtility("review");
+      return;
+    }
+    if ((thread.runtime ?? agentRuntime) !== "codex" || (thread.provider && thread.provider !== "codex")) {
+      openUtility("review");
+      return;
+    }
+    try {
+      const result = await window.devilCodex.startReview({
+        threadId: thread.id,
+        runtime: "codex",
+        delivery: "inline",
+        target: { type: "uncommittedChanges" },
+        cwd: workspace,
+        model: thread.model || model,
+      });
+      const turnId = result.turn?.id;
+      markThreadRunning(thread.id, turnId);
+      if (turnId) activeTurnsByThread.current.set(thread.id, turnId);
+      appendItemToThread(thread.id, { id: crypto.randomUUID(), kind: "system", title: "코드 리뷰 시작", text: "Codex 네이티브 리뷰가 현재 변경사항을 검토합니다." });
+    } catch (error) {
+      setExternalError(`네이티브 리뷰 시작 실패: ${String(error)}`);
+      openUtility("review");
+    }
+  }
+
   async function forkActiveThread(): Promise<void> {
     if (!thread?.id) {
       setExternalError("포크할 채팅이 없습니다.");
@@ -3586,7 +3627,7 @@ function App(): React.JSX.Element {
   }
 
   function runSlashCommand(command: SlashCommandId): void {
-    if (command === "review") { openUtility("review"); return; }
+    if (command === "review") { void startNativeReview(); return; }
     if (command === "status") { void showWorkspaceStatus(); return; }
     if (command === "mcp") { openView("plugins"); return; }
     if (command === "feedback") { void sendFeedback(); return; }
@@ -3816,6 +3857,7 @@ function App(): React.JSX.Element {
       prompt: text,
       approvalMode: "agent",
       goalMode: false,
+      planMode: false,
       attachments: item.attachments ?? [],
       skills: [],
       reasoningEffort,

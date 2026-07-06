@@ -280,6 +280,8 @@ export function activityFromItem(item: RawItem, fallbackId: string = crypto.rand
     };
   }
   if (type === "contextCompaction") return { id, kind: "compaction", title: "컨텍스트가 자동으로 압축됨", status: "completed" };
+  if (type === "enteredReviewMode") return { id, kind: "diagnostic", title: "코드 리뷰 시작", detail: String(item.review ?? "현재 변경사항"), status: "inProgress" };
+  if (type === "exitedReviewMode") return { id, kind: "message", title: "코드 리뷰", detail: String(item.review ?? ""), status: "completed" };
   if (type === "plan") return { id, kind: "message", title: "계획", detail: String(item.text ?? ""), status: "completed" };
   return null;
 }
