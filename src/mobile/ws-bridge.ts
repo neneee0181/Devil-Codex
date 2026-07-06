@@ -7,6 +7,12 @@ export type RemoteCallChannel =
   | "thread:resume"
   | "thread:projects"
   | "thread:search"
+  | "thread:queue:get"
+  | "turn:queue:enqueue"
+  | "turn:queue:update"
+  | "turn:queue:remove"
+  | "turn:queue:steer"
+  | "turn:queue:clear"
   | "turn:send"
   | "turn:interrupt"
   | "approval:respond"
@@ -63,6 +69,12 @@ const allowedChannels = new Set<RemoteCallChannel>([
   "thread:resume",
   "thread:projects",
   "thread:search",
+  "thread:queue:get",
+  "turn:queue:enqueue",
+  "turn:queue:update",
+  "turn:queue:remove",
+  "turn:queue:steer",
+  "turn:queue:clear",
   "turn:send",
   "turn:interrupt",
   "approval:respond",

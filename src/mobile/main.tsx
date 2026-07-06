@@ -46,12 +46,14 @@ import type {
   ProviderSettings,
   ProviderUsageEntry,
   ProviderUsageReport,
+  QueuedTurnView,
   RemoteScope,
   RuntimeStatus,
   ThreadHistoryItem,
   ThreadAttachment,
   ThreadRef,
   ThreadSummary,
+  TurnSendInput,
 } from "../shared/contracts";
 import { RemoteBridge, consumeHashToken, isAppServerEvent, isAskRequest, storedToken } from "./ws-bridge";
 import { GlowRing } from "./GlowRing";
@@ -278,6 +280,7 @@ function App(): React.JSX.Element {
   const [currentThread, setCurrentThread] = useState<ThreadSummary | ThreadRef | null>(null);
   const [composerText, setComposerText] = useState("");
   const [composerImages, setComposerImages] = useState<ComposerImageAttachment[]>([]);
+  const [queuedTurns, setQueuedTurns] = useState<QueuedTurnView[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
@@ -551,6 +554,12 @@ function App(): React.JSX.Element {
       if (isAskRequest(payload)) setAskRequest(payload);
     });
     const unsubUsage = bridge.subscribe<unknown>("provider:usage-changed", () => { void refreshUsage(true); });
+    const unsubQueue = bridge.subscribe<unknown>("thread:queue-changed", (payload) => {
+      if (!payload || typeof payload !== "object") return;
+      const state = payload as { threadId?: string; queue?: QueuedTurnView[] };
+      if (!currentThread?.id || state.threadId !== currentThread.id) return;
+      setQueuedTurns(Array.isArray(state.queue) ? state.queue : []);
+    });
     const unsubStatus = bridge.subscribe<unknown>("app-server:status", (payload) => {
       if (payload && typeof payload === "object") {
         const record = payload as Partial<RuntimeStatus>;
@@ -573,6 +582,7 @@ function App(): React.JSX.Element {
       unsubApp();
       unsubAsk();
       unsubUsage();
+      unsubQueue();
       unsubStatus();
       unsubSettings();
       unsubProviders();
@@ -601,6 +611,36 @@ function App(): React.JSX.Element {
       if (selectedProject) void refreshThreads(selectedProject);
       void refreshProjects("");
     }
+    if (event.method === "thread/compaction_started" && eventThreadId && currentThread?.id === eventThreadId) {
+      setBusy(true);
+      const compactionId = `${eventThreadId}-compaction-live`;
+      const detail = params.contextUsage && typeof params.contextUsage === "object"
+        ? (() => {
+            const usage = params.contextUsage as ContextUsage;
+            return usage.usedTokens && usage.maxTokens ? `${usage.usedTokens.toLocaleString()} / ${usage.maxTokens.toLocaleString()} tok` : undefined;
+          })()
+        : undefined;
+      const next = [...historyRef.current.filter((item) => item.id !== compactionId), {
+        id: compactionId,
+        kind: "activity" as const,
+        text: "",
+        status: "inProgress" as const,
+        activities: [{ id: compactionId, kind: "compaction" as const, title: "컨텍스트 압축 중", ...(detail ? { detail } : {}), status: "inProgress" as const }],
+      }];
+      historyRef.current = next;
+      setThreadHistory(next);
+      return;
+    }
+    if (event.method === "thread/compacted" && eventThreadId && currentThread?.id === eventThreadId) {
+      const compactionId = `${eventThreadId}-compaction-live`;
+      const existing = historyRef.current.find((item) => item.id === compactionId);
+      const next = existing
+        ? historyRef.current.map((item) => item.id === compactionId ? { ...item, status: "completed" as const, activities: [{ id: compactionId, kind: "compaction" as const, title: "컨텍스트 압축 완료", status: "completed" as const }] } : item)
+        : [...historyRef.current, { id: compactionId, kind: "activity" as const, text: "", status: "completed" as const, activities: [{ id: compactionId, kind: "compaction" as const, title: "컨텍스트 압축 완료", status: "completed" as const }] }];
+      historyRef.current = next;
+      setThreadHistory(next);
+      return;
+    }
     if (event.method === "turn/completed" && eventThreadId) {
       if (currentThread?.id === eventThreadId) setBusy(false);
       if (selectedProject) void refreshThreads(selectedProject);
@@ -624,9 +664,13 @@ function App(): React.JSX.Element {
         if (known.cwd) setSelectedProject(known.cwd);
         await bridge.call<ThreadRef>("thread:resume", { id: known.id, model: known.model, runtime: known.runtime, accountId: known.accountId }).catch(() => null);
       }
-      const history = await bridge.call<ThreadHistoryItem[]>("thread:read", { id: threadId, runtime: known?.runtime, accountId: known?.accountId });
+      const [history, queue] = await Promise.all([
+        bridge.call<ThreadHistoryItem[]>("thread:read", { id: threadId, runtime: known?.runtime, accountId: known?.accountId }),
+        bridge.call<QueuedTurnView[]>("thread:queue:get", { threadId }).catch(() => []),
+      ]);
       historyRef.current = history;
       setThreadHistory(history);
+      setQueuedTurns(queue);
     } catch (error) {
       setBootstrapError(String(error));
     } finally {
@@ -707,41 +751,46 @@ function App(): React.JSX.Element {
       url: image.content,
     }));
     const targetModel = selectedThreadModel ?? { provider: meta?.provider, model: meta?.model ?? "", accountId: meta?.accountId };
-    if (!meta || (!text && !attachments.length) || !targetModel.model) return;
+    if (!meta || (!text && !attachments.length) || !targetModel.model || !currentThread) return;
     const optimistic: ThreadHistoryItem = {
       id: crypto.randomUUID(),
       kind: "user",
       text,
       attachments,
-      turnId: `local-${Date.now()}`,
+      turnId: `${busy ? "queued" : "local"}-${Date.now()}`,
       runtime: meta.runtime,
       provider: targetModel.provider ?? meta.provider,
       model: targetModel.model,
       accountId: targetModel.accountId ?? meta.accountId,
     };
-    const next = [...historyRef.current, optimistic];
-    historyRef.current = next;
-    setThreadHistory(next);
+    const pending: TurnSendInput = {
+      threadId: currentThread.id,
+      cwd: meta.cwd,
+      text,
+      model: targetModel.model,
+      runtime: meta.runtime,
+      provider: targetModel.provider ?? meta.provider,
+      accountId: targetModel.accountId ?? meta.accountId,
+      attachments: attachments.map((item) => item.content ?? item.url ?? "").filter(Boolean),
+      attachmentDetails: attachments,
+      approvalPolicy: codexSettings?.approvalPolicy,
+      sandboxMode: codexSettings?.sandboxMode,
+      reasoningEffort: codexSettings?.reasoningEffort,
+      responseSpeed: codexSettings?.responseSpeed,
+    };
     setComposerText("");
     setComposerImages([]);
-    setBusy(true);
     if (nearBottomRef.current) forceScrollToBottomRef.current = true;
     try {
-      await bridge.call<void>("turn:send", {
-        threadId: currentThread?.id,
-        cwd: meta.cwd,
-        text,
-        model: targetModel.model,
-        runtime: meta.runtime,
-        provider: targetModel.provider ?? meta.provider,
-        accountId: targetModel.accountId ?? meta.accountId,
-        attachments: attachments.map((item) => item.content ?? item.url ?? "").filter(Boolean),
-        attachmentDetails: attachments,
-        approvalPolicy: codexSettings?.approvalPolicy,
-        sandboxMode: codexSettings?.sandboxMode,
-        reasoningEffort: codexSettings?.reasoningEffort,
-        responseSpeed: codexSettings?.responseSpeed,
-      });
+      if (busy) {
+        await bridge.call<void>("turn:queue:enqueue", { threadId: currentThread.id, entry: { id: optimistic.id, pending, userItem: optimistic } });
+        return;
+      }
+      const next = [...historyRef.current, optimistic];
+      historyRef.current = next;
+      setThreadHistory(next);
+      setBusy(true);
+      await bridge.call<void>("turn:send", pending);
     } catch (error) {
       setBusy(false);
       setBootstrapError(String(error));
@@ -752,6 +801,7 @@ function App(): React.JSX.Element {
     const meta = threadMeta(currentThread);
     if (!meta || !currentThread) return;
     try {
+      await bridge.call<void>("turn:queue:clear", { threadId: currentThread.id }).catch(() => undefined);
       await bridge.call<void>("turn:interrupt", { threadId: currentThread.id, runtime: meta.runtime });
       setBusy(false);
     } catch (error) {
@@ -1319,6 +1369,14 @@ function App(): React.JSX.Element {
                 multiple
                 onChange={(event) => void handleAttachImages(event)}
               />
+              {queuedTurns.length > 0 && (
+                <QueuedTurnsPanel
+                  items={queuedTurns}
+                  onEdit={(id, text) => bridge.call<void>("turn:queue:update", { threadId: currentThread.id, id, text }).catch((error) => setBootstrapError(String(error)))}
+                  onRemove={(id) => bridge.call<void>("turn:queue:remove", { threadId: currentThread.id, id }).catch((error) => setBootstrapError(String(error)))}
+                  onSteer={(id) => bridge.call<void>("turn:queue:steer", { threadId: currentThread.id, id }).catch((error) => setBootstrapError(String(error)))}
+                />
+              )}
               {composerImages.length > 0 && (
                 <div className="composer-attachments">
                   {composerImages.map((image) => (
@@ -1499,6 +1557,66 @@ const ActivityBlock = memo(function ActivityBlock({ item }: { item: ThreadHistor
     </article>
   );
 });
+
+function QueuedTurnsPanel({ items, onEdit, onRemove, onSteer }: {
+  items: QueuedTurnView[];
+  onEdit: (id: string, text: string) => void;
+  onRemove: (id: string) => void;
+  onSteer: (id: string) => void;
+}): React.JSX.Element {
+  return (
+    <div className="composer-queue">
+      {items.map((item) => <QueuedTurnRow key={item.id} item={item} onEdit={onEdit} onRemove={onRemove} onSteer={onSteer} />)}
+    </div>
+  );
+}
+
+function QueuedTurnRow({ item, onEdit, onRemove, onSteer }: {
+  item: QueuedTurnView;
+  onEdit: (id: string, text: string) => void;
+  onRemove: (id: string) => void;
+  onSteer: (id: string) => void;
+}): React.JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(item.text);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => setText(item.text), [item.text]);
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+  const commit = (): void => {
+    const next = text.trim();
+    setEditing(false);
+    if (next && next !== item.text.trim()) onEdit(item.id, next);
+    else setText(item.text);
+  };
+  return (
+    <div className="queue-row">
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="queue-input"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { event.preventDefault(); commit(); }
+            if (event.key === "Escape") { event.preventDefault(); setText(item.text); setEditing(false); }
+          }}
+        />
+      ) : (
+        <button type="button" className="queue-text" onClick={() => setEditing(true)} title={item.text}>
+          <span>{item.text || "(빈 메시지)"}</span>
+          {item.steering && <small>우선</small>}
+        </button>
+      )}
+      <button type="button" className="queue-act" onClick={() => onSteer(item.id)} title="지금 보내기">
+        <Send size={14} />
+      </button>
+      <button type="button" className="queue-act" onClick={() => onRemove(item.id)} title="대기 취소">
+        <XCircle size={14} />
+      </button>
+    </div>
+  );
+}
 
 const DECISION_META: Record<string, { label: string; hint: string; tone: string }> = {
   accept: { label: "허용", hint: "이번 한 번만 승인", tone: "accept" },

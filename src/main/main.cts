@@ -40,7 +40,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -329,6 +329,7 @@ let remoteProtocol: "http" | "https" = "http";
 // null = unrestricted (default, matches pre-allowlist behavior). Refreshed
 // once at startup and whenever settings:save touches the allowlist.
 let remoteAllowlistCache: Set<string> | null = null;
+const threadQueueSnapshots = new Map<string, QueuedTurnView[]>();
 function applyRemoteAllowlistCache(settings: Pick<CodexSettings, "remoteAllowedThreadIds">): void {
   remoteAllowlistCache = settings.remoteAllowedThreadIds?.length ? new Set(settings.remoteAllowedThreadIds) : null;
 }
@@ -384,6 +385,12 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapList("thread:projects");
   wrapSingle("thread:read", (input) => (input as { id?: string } | undefined)?.id);
   wrapSingle("thread:resume", (input) => (input as { id?: string } | undefined)?.id);
+  wrapSingle("thread:queue:get", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:queue:enqueue", (input) => (input as { threadId?: string; entry?: { pending?: { threadId?: string } } } | undefined)?.threadId ?? (input as { entry?: { pending?: { threadId?: string } } } | undefined)?.entry?.pending?.threadId);
+  wrapSingle("turn:queue:update", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:queue:remove", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:queue:steer", (input) => (input as { threadId?: string } | undefined)?.threadId);
+  wrapSingle("turn:queue:clear", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:send", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:interrupt", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("approval:respond", (input) => (input as { threadId?: string } | undefined)?.threadId);
@@ -583,12 +590,12 @@ let terminalManager: TerminalManager | undefined;
 const execFileAsync = promisify(execFile);
 const settingsStore = new CodexSettingsStore();
 const providerSettingsStore = new ProviderSettingsStore();
-const providerRuntime = new ProviderRuntime(providerSettingsStore, (event) => sendToRenderer("app-server:event", event));
+const providerRuntime = new ProviderRuntime(providerSettingsStore, (event) => { sendToRenderer("app-server:event", event); handleAppServerEvent(event); });
 const providerModels = new ProviderModelCatalog(providerSettingsStore);
 const providerTranscripts = new ProviderTranscriptStore();
 const providerReconciler = new CodexProviderReconciler();
 const claudeRuntime = new ClaudeCodeRuntime(baseServerCwd());
-claudeRuntime.on("event", (event) => sendToRenderer("app-server:event", event));
+claudeRuntime.on("event", (event) => { sendToRenderer("app-server:event", event); handleAppServerEvent(event); });
 const codexProxy = new CodexProxyServer((message) => {
   sendToRenderer("app-server:event", {
     method: "item/completed",
@@ -763,20 +770,38 @@ function hasClaudeCodeConversation(items: ThreadHistoryItem[]): boolean {
 // MCP prompts even when the remote view is scoped to a subset of threads.
 // app-server:status / provider:usage-changed aren't thread-scoped and stay
 // unaffected.
-function remoteEventThreadId(payload: unknown): string | undefined {
+function remoteEventThreadId(channel: string, payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
+  if (channel === "thread:queue-changed") return typeof (payload as { threadId?: unknown }).threadId === "string" ? String((payload as { threadId?: unknown }).threadId) : undefined;
   const params = (payload as { params?: Record<string, unknown> }).params;
   return typeof params?.threadId === "string" ? params.threadId : undefined;
+}
+
+function emitThreadQueueChanged(threadId: string, queue: QueuedTurnView[]): void {
+  sendToRenderer("thread:queue-changed", { threadId, queue } satisfies ThreadQueueState);
+}
+
+function setThreadQueueSnapshot(threadId: string, queue: QueuedTurnView[]): void {
+  const clean = queue.filter((entry) => entry && entry.id && entry.threadId === threadId).map((entry) => ({ id: entry.id, threadId, text: entry.text ?? "", ...(entry.attachments?.length ? { attachments: entry.attachments } : {}), ...(entry.steering ? { steering: true } : {}) }));
+  if (clean.length) threadQueueSnapshots.set(threadId, clean);
+  else threadQueueSnapshots.delete(threadId);
+  emitThreadQueueChanged(threadId, clean);
+}
+
+function getThreadQueueSnapshot(threadId: string): QueuedTurnView[] {
+  return threadQueueSnapshots.get(threadId)?.map((entry: QueuedTurnView) => ({ ...entry, ...(entry.attachments ? { attachments: [...entry.attachments] } : {}) })) ?? [];
+}
+
+function sendThreadQueueCommand(command: ThreadQueueCommand): void {
+  if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send("thread:queue-command", command);
 }
 
 function sendToRenderer(channel: string, payload: unknown): void {
   if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, payload);
   if (!remoteServer) return;
   if (remoteAllowlistCache) {
-    if (channel === "app-server:event") {
-      const threadId = remoteEventThreadId(payload);
-      if (threadId && !remoteAllowlistCache.has(threadId)) return;
-    }
+    const threadId = remoteEventThreadId(channel, payload);
+    if (threadId && !remoteAllowlistCache.has(threadId)) return;
   }
   remoteServer.broadcast(channel, channel === "remote:status" ? sanitizeRemoteStatus(payload as RemoteControlStatus) : payload);
 }
@@ -2482,6 +2507,46 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("workspace:commit", async (_event, input) => commitWorkspace(input));
   ipcMain.handle("workspace:push", async (_event, input) => pushWorkspace(input));
   ipcMain.handle("workspace:create-pr", async (_event, input) => createPullRequest(input));
+  handle("thread:queue:get", async (input) => getThreadQueueSnapshot(String((input as { threadId?: string } | undefined)?.threadId ?? "")));
+  handle("thread:queue:sync", async (input) => {
+    const request = input as ThreadQueueState;
+    const threadId = String(request?.threadId ?? "");
+    if (!threadId) return;
+    setThreadQueueSnapshot(threadId, Array.isArray(request?.queue) ? request.queue : []);
+  });
+  handle("turn:queue:enqueue", async (input) => {
+    const request = input as { threadId?: string; entry?: { id: string; pending: any; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean };
+    const threadId = String(request?.threadId ?? request?.entry?.pending?.threadId ?? "");
+    if (!threadId || !request?.entry) return;
+    sendThreadQueueCommand({ type: "enqueue", threadId, entry: request.entry as any, ...(request.front ? { front: true } : {}) });
+  });
+  handle("turn:queue:update", async (input) => {
+    const request = input as { threadId?: string; id?: string; text?: string };
+    const threadId = String(request?.threadId ?? "");
+    const id = String(request?.id ?? "");
+    if (!threadId || !id) return;
+    sendThreadQueueCommand({ type: "update", threadId, id, text: String(request?.text ?? "") });
+  });
+  handle("turn:queue:remove", async (input) => {
+    const request = input as { threadId?: string; id?: string };
+    const threadId = String(request?.threadId ?? "");
+    const id = String(request?.id ?? "");
+    if (!threadId || !id) return;
+    sendThreadQueueCommand({ type: "remove", threadId, id });
+  });
+  handle("turn:queue:steer", async (input) => {
+    const request = input as { threadId?: string; id?: string };
+    const threadId = String(request?.threadId ?? "");
+    const id = String(request?.id ?? "");
+    if (!threadId || !id) return;
+    sendThreadQueueCommand({ type: "steer", threadId, id });
+  });
+  handle("turn:queue:clear", async (input) => {
+    const request = input as { threadId?: string };
+    const threadId = String(request?.threadId ?? "");
+    if (!threadId) return;
+    sendThreadQueueCommand({ type: "clear", threadId });
+  });
   handle("turn:send", async (input) => {
     const request = input as any;
     const attachmentEnrichment = await enrichDocumentAttachments(request.attachmentDetails);

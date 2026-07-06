@@ -285,6 +285,47 @@ export interface AskQuestion { question: string; header?: string; options: AskQu
 export interface AskRequest { id: string; questions: AskQuestion[] }
 export interface AskAnswer { question: string; header?: string; answers: string[] }
 
+export interface TurnSendInput {
+  threadId: string;
+  cwd: string;
+  text: string;
+  model: string;
+  runtime?: AgentRuntimeId;
+  provider?: ProviderId;
+  accountId?: string;
+  subagent?: boolean;
+  skills?: Array<{ name: string; path: string }>;
+  attachments?: string[];
+  attachmentDetails?: ThreadAttachment[];
+  sidecars?: SidecarSettings;
+  contextUsage?: ContextUsage;
+  approvalPolicy?: ThreadApprovalPolicy;
+  sandboxMode?: ThreadSandboxMode;
+  reasoningEffort?: ReasoningEffort;
+  responseSpeed?: ResponseSpeed;
+  retriedAfterCompaction?: boolean;
+}
+
+export interface QueuedTurnView {
+  id: string;
+  threadId: string;
+  text: string;
+  attachments?: ThreadAttachment[];
+  steering?: boolean;
+}
+
+export interface ThreadQueueState {
+  threadId: string;
+  queue: QueuedTurnView[];
+}
+
+export type ThreadQueueCommand =
+  | { type: "enqueue"; threadId: string; entry: { id: string; pending: TurnSendInput; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean }
+  | { type: "update"; threadId: string; id: string; text: string }
+  | { type: "remove"; threadId: string; id: string }
+  | { type: "steer"; threadId: string; id: string }
+  | { type: "clear"; threadId: string };
+
 export interface DevilCodexApi {
   appInfo: () => Promise<AppInfo>;
   windowControl: (input: { action: WindowControlAction }) => Promise<void>;
@@ -400,8 +441,17 @@ export interface DevilCodexApi {
   onProviderUsageChanged: (listener: (event: ProviderUsageChangedEvent) => void) => () => void;
   openWorkspace: (input: { cwd: string; target: ExternalTarget }) => Promise<{ ok: boolean; detail?: string }>;
   respondApproval: (input: { requestId: string | number; decision: ApprovalDecision; threadId?: string }) => Promise<void>;
-  sendTurn: (input: { threadId: string; cwd: string; text: string; model: string; runtime?: AgentRuntimeId; provider?: ProviderId; accountId?: string; subagent?: boolean; skills?: Array<{ name: string; path: string }>; attachments?: string[]; attachmentDetails?: ThreadAttachment[]; sidecars?: SidecarSettings; contextUsage?: ContextUsage; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode; reasoningEffort?: ReasoningEffort; responseSpeed?: ResponseSpeed; retriedAfterCompaction?: boolean }) => Promise<void>;
+  getThreadQueue: (input: { threadId: string }) => Promise<QueuedTurnView[]>;
+  syncThreadQueue: (input: ThreadQueueState) => Promise<void>;
+  queueTurn: (input: { threadId: string; entry: { id: string; pending: TurnSendInput; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean }) => Promise<void>;
+  updateQueuedTurn: (input: { threadId: string; id: string; text: string }) => Promise<void>;
+  removeQueuedTurn: (input: { threadId: string; id: string }) => Promise<void>;
+  steerQueuedTurn: (input: { threadId: string; id: string }) => Promise<void>;
+  clearQueuedTurns: (input: { threadId: string }) => Promise<void>;
+  sendTurn: (input: TurnSendInput) => Promise<void>;
   interruptTurn: (input: { threadId: string; runtime?: AgentRuntimeId; turnId?: string }) => Promise<void>;
   onAppServerEvent: (listener: (event: AppServerEvent) => void) => () => void;
+  onThreadQueueChanged: (listener: (state: ThreadQueueState) => void) => () => void;
+  onThreadQueueCommand: (listener: (command: ThreadQueueCommand) => void) => () => void;
   onCommand: (listener: (command: AppCommand) => void) => () => void;
 }

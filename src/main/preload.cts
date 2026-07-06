@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { AppCommand, DevilCodexApi, RemoteControlStatus } from "./contracts.cjs";
+import type { AppCommand, DevilCodexApi, RemoteControlStatus, ThreadQueueCommand, ThreadQueueState } from "./contracts.cjs";
 
 const api: DevilCodexApi = {
   appInfo: () => ipcRenderer.invoke("app:info"),
@@ -143,12 +143,29 @@ const api: DevilCodexApi = {
   },
   openWorkspace: (input) => ipcRenderer.invoke("workspace:open-external", input),
   respondApproval: (input) => ipcRenderer.invoke("approval:respond", input),
+  getThreadQueue: (input) => ipcRenderer.invoke("thread:queue:get", input),
+  syncThreadQueue: (input) => ipcRenderer.invoke("thread:queue:sync", input),
+  queueTurn: (input) => ipcRenderer.invoke("turn:queue:enqueue", input),
+  updateQueuedTurn: (input) => ipcRenderer.invoke("turn:queue:update", input),
+  removeQueuedTurn: (input) => ipcRenderer.invoke("turn:queue:remove", input),
+  steerQueuedTurn: (input) => ipcRenderer.invoke("turn:queue:steer", input),
+  clearQueuedTurns: (input) => ipcRenderer.invoke("turn:queue:clear", input),
   sendTurn: (input) => ipcRenderer.invoke("turn:send", input),
   interruptTurn: (input) => ipcRenderer.invoke("turn:interrupt", input),
   onAppServerEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
     ipcRenderer.on("app-server:event", handler);
     return () => ipcRenderer.removeListener("app-server:event", handler);
+  },
+  onThreadQueueChanged: (listener: (state: ThreadQueueState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("thread:queue-changed", handler);
+    return () => ipcRenderer.removeListener("thread:queue-changed", handler);
+  },
+  onThreadQueueCommand: (listener: (command: ThreadQueueCommand) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("thread:queue-command", handler);
+    return () => ipcRenderer.removeListener("thread:queue-command", handler);
   },
   onTerminalData: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

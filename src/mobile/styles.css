@@ -1078,6 +1078,71 @@ button {
   scrollbar-width: none;
 }
 
+.composer-queue {
+  display: grid;
+  gap: 7px;
+}
+
+.queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.queue-text {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  color: var(--text-dim);
+}
+
+.queue-text span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-text small {
+  flex-shrink: 0;
+  color: var(--accent-3);
+  font-size: 0.7rem;
+}
+
+.queue-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  padding: 8px 10px;
+  outline: none;
+}
+
+.queue-input:focus {
+  border-color: var(--accent-1);
+}
+
+.queue-act {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-dim);
+}
+
 .composer-attachment {
   position: relative;
   flex: 0 0 auto;

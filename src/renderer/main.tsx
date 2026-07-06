@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -1085,7 +1085,7 @@ function App(): React.JSX.Element {
   };
   const [busy, setBusy] = useState(false);
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>(() => readPersistedRunningTurns());
-  const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string; attachments?: ThreadAttachment[] }>>>({});
+  const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string; attachments?: ThreadAttachment[]; steering?: boolean }>>>({});
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal"]);
   const [bottomActive, setBottomActive] = useState<string | null>("terminal");
@@ -1360,6 +1360,34 @@ function App(): React.JSX.Element {
     });
     return dispose;
   }, []);
+
+  useEffect(() => {
+    const disposeChanged = window.devilCodex.onThreadQueueChanged((state: ThreadQueueState) => {
+      applyQueuedView(state.threadId, (state.queue ?? []).map((entry) => ({ id: entry.id, text: entry.text ?? "", attachments: entry.attachments, ...(entry.steering ? { steering: true } : {}) })));
+    });
+    const disposeCommand = window.devilCodex.onThreadQueueCommand((command: ThreadQueueCommand) => {
+      if (command.type === "enqueue") {
+        enqueueTurn(command.threadId, command.entry as QueuedTurn, Boolean(command.front));
+        return;
+      }
+      if (command.type === "update") { editQueuedTurn(command.threadId, command.id, command.text); return; }
+      if (command.type === "remove") { removeQueuedTurn(command.threadId, command.id); return; }
+      if (command.type === "steer") { steerQueuedTurn(command.threadId, command.id); return; }
+      if (command.type === "clear") clearQueuedTurns(command.threadId);
+    });
+    return () => {
+      disposeChanged();
+      disposeCommand();
+    };
+  }, []);
+
+  useEffect(() => {
+    const threadId = thread?.id;
+    if (!threadId) return;
+    void window.devilCodex.getThreadQueue({ threadId }).then((queue) => {
+      applyQueuedView(threadId, (queue ?? []).map((entry) => ({ id: entry.id, text: entry.text ?? "", attachments: entry.attachments, ...(entry.steering ? { steering: true } : {}) })));
+    }).catch(() => undefined);
+  }, [thread?.id]);
 
   useEffect(() => {
     const dispose = window.devilCodex.onUpdateState((state) => setUpdate(state));
@@ -2111,14 +2139,27 @@ function App(): React.JSX.Element {
     };
   }
 
+  function applyQueuedView(threadId: string, queue: Array<{ id: string; text: string; attachments?: ThreadAttachment[]; steering?: boolean }>): void {
+    setQueuedView((current) => {
+      if (queue.length === 0) {
+        if (!(threadId in current)) return current;
+        const next = { ...current };
+        delete next[threadId];
+        return next;
+      }
+      return { ...current, [threadId]: queue };
+    });
+  }
+
   // Mirror the queue ref into reactive state so the queued-message panel can
   // render (and edit) what's waiting. The ref stays the send-path source of
   // truth; this is the view projection.
   function syncQueuedView(threadId: string): void {
     const queue = queuedTurns.current.get(threadId) ?? [];
-    setQueuedView((current) => {
-      if (queue.length === 0) { if (!(threadId in current)) return current; const next = { ...current }; delete next[threadId]; return next; }
-      return { ...current, [threadId]: queue.map((entry) => ({ id: entry.id, text: entry.userItem.text ?? "", attachments: entry.userItem.attachments })) };
+    const nextQueue = queue.map((entry) => ({ id: entry.id, text: entry.userItem.text ?? "", attachments: entry.userItem.attachments, ...(entry.steering ? { steering: true } : {}) }));
+    applyQueuedView(threadId, nextQueue);
+    void window.devilCodex.syncThreadQueue({ threadId, queue: nextQueue.map((entry) => ({ ...entry, threadId })) }).catch((error) => {
+      console.warn("[devil-codex] queue sync failed", error);
     });
   }
 
