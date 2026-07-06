@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -62,7 +62,7 @@ type Route =
 // How many of the newest timeline items render by default; "이전 대화
 // 더보기" reveals another page of older items already held in threadHistory
 // (thread:read has no server-side pagination, so this windows client-side).
-const HISTORY_PAGE_SIZE = 30;
+const HISTORY_PAGE_SIZE = 20;
 
 type CreateThreadDraft = {
   cwd: string;
@@ -198,13 +198,13 @@ function App(): React.JSX.Element {
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const historyRef = useRef<ThreadHistoryItem[]>([]);
-  // Whole-page scroll (no inner scroll container) - track how close to the
-  // bottom the reader is so new/streamed messages only auto-follow when they
-  // were already at the bottom, and so "이전 대화 더보기" can restore the
-  // exact scroll position instead of yanking the viewport when older items
-  // get inserted above what's on screen.
+  const appRef = useRef<HTMLDivElement | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const composerWrapRef = useRef<HTMLDivElement | null>(null);
+  const navRef = useRef<HTMLElement | null>(null);
   const nearBottomRef = useRef(true);
   const pendingScrollAdjustRef = useRef<number | null>(null);
+  const forceScrollToBottomRef = useRef(false);
 
   useEffect(() => {
     return bridge.onState((snapshot) => setBridgeState(snapshot));
@@ -298,18 +298,37 @@ function App(): React.JSX.Element {
     if (route.view !== "thread") return;
     setVisibleHistoryCount(HISTORY_PAGE_SIZE);
     nearBottomRef.current = true;
+    forceScrollToBottomRef.current = true;
   }, [route.view, route.view === "thread" ? route.threadId : ""]);
 
-  // Whole page scrolls (composer is a fixed overlay), so track proximity to
-  // the bottom on the document itself rather than a dedicated scroll pane.
   useEffect(() => {
+    const container = threadScrollRef.current;
+    if (!container || route.view !== "thread") return;
     const onScroll = (): void => {
-      const doc = document.documentElement;
-      nearBottomRef.current = doc.scrollHeight - doc.scrollTop - doc.clientHeight < 140;
+      nearBottomRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+    onScroll();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  }, [route.view, route.view === "thread" ? route.threadId : "", loadingThread]);
+
+  useLayoutEffect(() => {
+    const host = appRef.current;
+    if (!host) return;
+    const applyBottomMetrics = (): void => {
+      host.style.setProperty("--nav-height", `${navRef.current?.offsetHeight ?? 0}px`);
+      host.style.setProperty("--composer-height", `${composerWrapRef.current?.offsetHeight ?? 0}px`);
+    };
+    applyBottomMetrics();
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => applyBottomMetrics());
+    if (navRef.current) resizeObserver?.observe(navRef.current);
+    if (composerWrapRef.current) resizeObserver?.observe(composerWrapRef.current);
+    window.addEventListener("resize", applyBottomMetrics);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", applyBottomMetrics);
+    };
+  }, [route.view, currentThread?.id, busy]);
 
   const visibleHistory = useMemo(
     () => threadHistory.slice(Math.max(0, threadHistory.length - visibleHistoryCount)),
@@ -318,29 +337,36 @@ function App(): React.JSX.Element {
   const hiddenHistoryCount = threadHistory.length - visibleHistory.length;
 
   function loadMoreHistory(): void {
-    pendingScrollAdjustRef.current = document.documentElement.scrollHeight;
+    pendingScrollAdjustRef.current = threadScrollRef.current?.scrollHeight ?? null;
     setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE);
   }
 
-  // Older items get inserted above the current viewport when "더보기" grows
-  // the window - compensate scrollTop by however much the page grew so the
-  // reader stays anchored on the same message instead of jumping.
   useLayoutEffect(() => {
-    if (pendingScrollAdjustRef.current == null) return;
+    const container = threadScrollRef.current;
+    if (!container || pendingScrollAdjustRef.current == null) return;
     const previousHeight = pendingScrollAdjustRef.current;
     pendingScrollAdjustRef.current = null;
-    const delta = document.documentElement.scrollHeight - previousHeight;
-    if (delta > 0) window.scrollBy(0, delta);
+    const delta = container.scrollHeight - previousHeight;
+    if (delta > 0) container.scrollTop += delta;
   }, [visibleHistory]);
 
-  // New/streamed messages: only auto-follow to the bottom if the reader was
-  // already there (or a thread was just opened) - never yank them down while
-  // they're reading back through history.
+  function scrollThreadToBottom(): void {
+    const container = threadScrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    nearBottomRef.current = true;
+  }
+
   useLayoutEffect(() => {
     if (route.view !== "thread" || loadingThread) return;
+    if (forceScrollToBottomRef.current) {
+      forceScrollToBottomRef.current = false;
+      scrollThreadToBottom();
+      return;
+    }
     if (!nearBottomRef.current) return;
-    window.scrollTo(0, document.documentElement.scrollHeight);
-  }, [route.view, loadingThread, visibleHistory.length]);
+    scrollThreadToBottom();
+  }, [route.view, loadingThread, visibleHistory]);
 
   useEffect(() => {
     historyRef.current = threadHistory;
@@ -416,6 +442,7 @@ function App(): React.JSX.Element {
 
   async function openThread(threadId: string, summary: ThreadSummary | ThreadRef | null): Promise<void> {
     setLoadingThread(true);
+    forceScrollToBottomRef.current = true;
     try {
       const known = summary ?? threadSummaries.find((item) => item.id === threadId) ?? projectSummaries.find((item) => item.id === threadId) ?? null;
       if (known) {
@@ -463,6 +490,7 @@ function App(): React.JSX.Element {
       historyRef.current = [];
       setThreadHistory([]);
       setComposerText("");
+      forceScrollToBottomRef.current = true;
       setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
       await refreshSlashCommands(thread.cwd, thread.model);
     } catch (error) {
@@ -489,6 +517,7 @@ function App(): React.JSX.Element {
     setThreadHistory(next);
     setComposerText("");
     setBusy(true);
+    if (nearBottomRef.current) forceScrollToBottomRef.current = true;
     try {
       await bridge.call<void>("turn:send", {
         threadId: currentThread?.id,
@@ -555,8 +584,8 @@ function App(): React.JSX.Element {
   }
 
   return (
-    <div className="mobile-app">
-      <div className="shell">
+    <div ref={appRef} className={`mobile-app ${route.view === "thread" ? "thread-app" : ""}`}>
+      <div className={`shell ${route.view === "thread" ? "thread-shell" : ""}`}>
         <header className="topbar">
           <div className="topbar-row">
             <div className="brand">
@@ -587,7 +616,7 @@ function App(): React.JSX.Element {
           </div>
         </header>
 
-        <main className="content">
+        <main className={`content ${route.view === "thread" ? "thread-content" : ""}`}>
           {!storedToken() && (
             <div className="empty-card card">
               <WifiOff size={24} />
@@ -796,75 +825,72 @@ function App(): React.JSX.Element {
             )}
 
             {route.view === "thread" && (
-              <motion.section
-                key="thread"
-                className="section"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.18, ease: "easeOut" }}
-              >
-                {currentThread && (
-                  <div className="card row-card glow-card glow-host">
-                    <GlowRing />
-                    <div className="row-head">
-                      <div className="row-title-group">
-                        <div className="row-icon"><MessageSquare size={16} /></div>
-                        <span className="row-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
+              <section key="thread" className="section thread-section">
+                <div className="thread-layout">
+                  {currentThread && (
+                    <div className="card row-card glow-card glow-host">
+                      <GlowRing />
+                      <div className="row-head">
+                        <div className="row-title-group">
+                          <div className="row-icon"><MessageSquare size={16} /></div>
+                          <span className="row-title">{threadLabel(currentThread) || basename(currentThread.cwd)}</span>
+                        </div>
+                        <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
                       </div>
-                      <span className="tiny">{currentThread.runtime ?? runtimeStatus?.state ?? "-"}</span>
+                      <div className="muted">{currentThread.cwd}</div>
+                      <div className="badge-row">
+                        <span className="badge accent">{currentThread.model}</span>
+                        {"provider" in currentThread && currentThread.provider && <span className="badge">{currentThread.provider}</span>}
+                        {currentUsageText && <span className="badge">{currentUsageText}</span>}
+                      </div>
                     </div>
-                    <div className="muted">{currentThread.cwd}</div>
-                    <div className="badge-row">
-                      <span className="badge accent">{currentThread.model}</span>
-                      {"provider" in currentThread && currentThread.provider && <span className="badge">{currentThread.provider}</span>}
-                      {currentUsageText && <span className="badge">{currentUsageText}</span>}
+                  )}
+
+                  {slashCommands.length > 0 && (
+                    <div className="chip-row">
+                      {slashCommands.map((command) => (
+                        <button
+                          type="button"
+                          key={command.name}
+                          className="chip"
+                          onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
+                        >
+                          /{command.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div ref={threadScrollRef} className="thread-scroll">
+                    <div className="timeline">
+                      {loadingThread && (
+                        <div className="empty-card card">
+                          <Loader2 size={22} className="spin" />
+                          <strong>불러오는 중</strong>
+                          <div className="muted" style={{ whiteSpace: "normal" }}>스레드 기록을 읽고 있습니다.</div>
+                        </div>
+                      )}
+                      {!loadingThread && hiddenHistoryCount > 0 && (
+                        <button type="button" className="load-more-button" onClick={loadMoreHistory}>
+                          <ChevronUp size={14} />이전 대화 더보기 ({hiddenHistoryCount})
+                        </button>
+                      )}
+                      {!loadingThread && visibleHistory.map((item) => (
+                        item.kind === "activity"
+                          ? <ActivityBlock key={item.id} item={item} />
+                          : <MessageBlock key={item.id} item={item} />
+                      ))}
+                      {!loadingThread && !threadHistory.length && (
+                        <div className="empty-card card">
+                          <MessageSquare size={22} />
+                          <strong>대화 없음</strong>
+                          <div className="muted" style={{ whiteSpace: "normal" }}>첫 메시지를 보내면 이 스레드의 타임라인이 시작됩니다.</div>
+                        </div>
+                      )}
                     </div>
                   </div>
-                )}
-
-                {slashCommands.length > 0 && (
-                  <div className="chip-row">
-                    {slashCommands.map((command) => (
-                      <button
-                        type="button"
-                        key={command.name}
-                        className="chip"
-                        onClick={() => setComposerText((current) => `${current}${current.trim() ? "\n" : ""}/${command.name} `)}
-                      >
-                        /{command.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <div className="timeline">
-                  {loadingThread && (
-                    <div className="empty-card card">
-                      <Loader2 size={22} className="spin" />
-                      <strong>불러오는 중</strong>
-                      <div className="muted" style={{ whiteSpace: "normal" }}>스레드 기록을 읽고 있습니다.</div>
-                    </div>
-                  )}
-                  {!loadingThread && hiddenHistoryCount > 0 && (
-                    <button type="button" className="load-more-button" onClick={loadMoreHistory}>
-                      <ChevronUp size={14} />이전 대화 더보기 ({hiddenHistoryCount})
-                    </button>
-                  )}
-                  {!loadingThread && visibleHistory.map((item) => (
-                    item.kind === "activity"
-                      ? <ActivityBlock key={item.id} item={item} />
-                      : <MessageBlock key={item.id} item={item} />
-                  ))}
-                  {!loadingThread && !threadHistory.length && (
-                    <div className="empty-card card">
-                      <MessageSquare size={22} />
-                      <strong>대화 없음</strong>
-                      <div className="muted" style={{ whiteSpace: "normal" }}>첫 메시지를 보내면 이 스레드의 타임라인이 시작됩니다.</div>
-                    </div>
-                  )}
                 </div>
-              </motion.section>
+              </section>
             )}
 
             {route.view === "usage" && (
@@ -915,7 +941,7 @@ function App(): React.JSX.Element {
         </main>
 
         {route.view === "thread" && currentThread && (
-          <div className="composer-wrap">
+          <div ref={composerWrapRef} className="composer-wrap">
             <div className="composer card">
               <textarea
                 value={composerText}
@@ -936,7 +962,7 @@ function App(): React.JSX.Element {
           </div>
         )}
 
-        <nav className="nav">
+        <nav ref={navRef} className="nav">
           <button type="button" className={`nav-btn ${routeTab === "projects" ? "active" : ""}`} onClick={() => setRoute({ view: "projects" })}>
             {routeTab === "projects" && <motion.span layoutId="nav-pill" className="nav-pill" transition={{ type: "spring", stiffness: 500, damping: 34 }} />}
             <FolderKanban size={18} />
@@ -975,12 +1001,12 @@ function App(): React.JSX.Element {
   );
 }
 
-function MessageBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
+const MessageBlock = memo(function MessageBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
   const kind = item.kind === "user" ? "user" : item.kind === "agent" ? "agent" : "system";
   const label = kind === "user" ? "나" : kind === "agent" ? "에이전트" : item.title || "시스템";
   const Icon = kind === "user" ? CircleUserRound : kind === "agent" ? Bot : Terminal;
   return (
-    <motion.div className={`msg-row ${kind}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: "easeOut" }}>
+    <div className={`msg-row ${kind}`}>
       <div className="msg-avatar"><Icon size={15} /></div>
       <div className="bubble">
         <div className="msg-meta">
@@ -989,14 +1015,14 @@ function MessageBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element 
         </div>
         {messageText(item) ? <MobileMarkdown text={messageText(item)} /> : <div className="msg-body">(비어 있음)</div>}
       </div>
-    </motion.div>
+    </div>
   );
-}
+});
 
-function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
+const ActivityBlock = memo(function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element {
   const totalTokens = item.cumulativeTokenUsage?.totalTokens ?? item.tokenUsage?.totalTokens;
   return (
-    <motion.article className="card activity-card" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: "easeOut" }}>
+    <article className="card activity-card">
       <div className="split-line">
         <span className="section-label" style={{ padding: 0 }}>작업 흐름</span>
         <span className="tiny">{item.status ?? "completed"}</span>
@@ -1032,9 +1058,9 @@ function ActivityBlock({ item }: { item: ThreadHistoryItem }): React.JSX.Element
           {totalTokens && <span className="badge">토큰 {totalTokens.toLocaleString()}</span>}
         </div>
       )}
-    </motion.article>
+    </article>
   );
-}
+});
 
 const DECISION_META: Record<string, { label: string; hint: string; tone: string }> = {
   accept: { label: "허용", hint: "이번 한 번만 승인", tone: "accept" },
