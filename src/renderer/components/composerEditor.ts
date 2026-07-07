@@ -21,6 +21,18 @@ export function insertPlainTextAtSelection(editor: HTMLDivElement, text: string)
     return true;
   }
 
+  // Let the browser editing engine perform normal text insertion first. In a
+  // contenteditable composer this preserves the native undo stack, so one
+  // Ctrl+Z removes the pasted text instead of stepping through a manually
+  // mutated DOM in surprising chunks.
+  try {
+    editor.focus();
+    if (document.execCommand("insertText", false, value)) return true;
+  } catch {
+    // Fall back to Range insertion below for environments that reject
+    // execCommand. That path is less undo-friendly but keeps paste working.
+  }
+
   const range = selection.getRangeAt(0);
   if (!editor.contains(range.commonAncestorContainer)) return false;
 

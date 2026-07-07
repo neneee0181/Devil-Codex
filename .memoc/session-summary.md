@@ -10,19 +10,18 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-07T18:10:00+09:00
+Last: 2026-07-07T18:25:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.2.0 ready: remote settings now offers both public Funnel QR and direct Tailscale QR fallback; allowed-thread picker UI cleaned up.
+- v0.2.1 ready: composer pasted text now uses native editor insertion first so Ctrl/Cmd+Z undo behaves normally.
 
 ## Changed
-- `src/main/main.cts`: bind remote server on all interfaces, add tokenized `tailnetUrl`/QR, sanitize new token URL fields.
-- `src/renderer/SettingsView.tsx`, `styles.css`: access cards, better QR/copy UX, styled allowed-thread cards.
-- contracts updated; version `0.2.0`.
+- `src/renderer/components/composerEditor.ts`: `insertPlainTextAtSelection()` tries `document.execCommand("insertText")` before Range fallback.
+- `package.json`, `package-lock.json`: version `0.2.1`.
 
 ## Open Tasks
-- Commit/tag/push `v0.2.0`.
+- Commit/tag/push `v0.2.1`.
 
 ## Resume
-- Passed: `npm run build`, `git diff --check`; current public Funnel curl `/healthz` returned 200 before source change.
+- Passed: `npm run build`, `git diff --check`.
