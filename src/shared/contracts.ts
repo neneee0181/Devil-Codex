@@ -164,7 +164,7 @@ export type RemoteControlMode = "tailnet" | "funnel";
 export interface RemoteDevice { id: string; name: string; hostname?: string; os?: string; createdAt?: number; lastSeenAt?: number; revoked?: boolean; }
 export interface RemoteClient { id: string; label: string; ip?: string; userAgent?: string; createdAt?: number; lastSeenAt?: number; }
 export interface RemoteTailscaleStatus { installed: boolean; running: boolean; loggedIn: boolean; hostname?: string; tailnet?: string; serviceUrl?: string; error?: string; }
-export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode; url?: string; qrDataUrl?: string; tokenPreview?: string; error?: string; tailscale: RemoteTailscaleStatus; devices: RemoteDevice[]; clients: RemoteClient[]; }
+export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode; url?: string; qrDataUrl?: string; tailnetUrl?: string; tailnetQrDataUrl?: string; tokenPreview?: string; error?: string; tailscale: RemoteTailscaleStatus; devices: RemoteDevice[]; clients: RemoteClient[]; }
 // Remote web is intentionally limited to the desktop-approved thread allowlist
 // (Settings -> 원격 제어 -> 허용 스레드). List/search/project results are
 // filtered server-side; when the allowlist is empty the mobile UI should only

@@ -362,7 +362,7 @@ function requireRemoteAllowed(id: string | undefined): void {
 }
 
 function sanitizeRemoteStatus(status: RemoteControlStatus): RemoteControlStatus {
-  const { url: _url, qrDataUrl: _qrDataUrl, tokenPreview: _tokenPreview, ...safe } = status;
+  const { url: _url, qrDataUrl: _qrDataUrl, tailnetUrl: _tailnetUrl, tailnetQrDataUrl: _tailnetQrDataUrl, tokenPreview: _tokenPreview, ...safe } = status;
   return safe;
 }
 
@@ -1689,6 +1689,10 @@ function remoteUrlWithToken(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/#.*$/, "")}/#t=${encodeURIComponent(token)}`;
 }
 
+function remoteTailnetBaseUrl(tailscaleIp: string | null): string | null {
+  return tailscaleIp ? `http://${tailscaleIp}:${REMOTE_CONTROL_PORT}` : null;
+}
+
 function remoteDeviceRow(device: { deviceId: string; deviceName: string; approvedAt: number; lastSeenAt?: number }): RemoteDevice {
   return {
     id: device.deviceId,
@@ -1715,6 +1719,8 @@ async function remoteStatus(): Promise<RemoteControlStatus> {
     mode: "funnel",
     ...(remotePublicUrl ? { url: remoteUrlWithToken(remotePublicUrl, authSnapshot.token) } : {}),
     ...(remotePublicUrl ? { qrDataUrl: await QRCode.toDataURL(remoteUrlWithToken(remotePublicUrl, authSnapshot.token), { margin: 1, width: 320 }) } : {}),
+    ...(remoteTailnetBaseUrl(tailscale.tailscaleIp) && remoteServer ? { tailnetUrl: remoteUrlWithToken(remoteTailnetBaseUrl(tailscale.tailscaleIp)!, authSnapshot.token) } : {}),
+    ...(remoteTailnetBaseUrl(tailscale.tailscaleIp) && remoteServer ? { tailnetQrDataUrl: await QRCode.toDataURL(remoteUrlWithToken(remoteTailnetBaseUrl(tailscale.tailscaleIp)!, authSnapshot.token), { margin: 1, width: 320 }) } : {}),
     tokenPreview: remoteTokenPreview(authSnapshot.token),
     ...(remoteLastError ? { error: remoteLastError } : {}),
     tailscale: {
@@ -1750,7 +1756,7 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
 
   const dnsName = cleanTailscaleName(tailscale.dnsName);
   if (!dnsName) throw new Error("Tailscale Funnel URL을 만들 DNS 이름을 찾지 못했습니다.");
-  const bindHost = "127.0.0.1";
+  const bindHost = "0.0.0.0";
   if (!bindHost) throw new Error("Tailscale 100.64/10 인터페이스 IP를 찾지 못했습니다.");
 
   const auth = remoteAuth();

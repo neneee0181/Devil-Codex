@@ -10,19 +10,19 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-07T17:05:00+09:00
+Last: 2026-07-07T18:10:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.1.71 ready: remote web is allowed-thread-only; empty allowed list now shows guidance instead of projects/new-thread UI.
+- v0.2.0 ready: remote settings now offers both public Funnel QR and direct Tailscale QR fallback; allowed-thread picker UI cleaned up.
 
 ## Changed
-- `src/main/main.cts`: remote lists always filtered by `remoteAllowedThreadIds`; remote `thread:create` always denied; `remote:scope` always restricted.
-- `src/mobile/main.tsx`: default remote scope starts restricted to avoid project/create UI flash.
-- contract comments updated; version `0.1.71`.
+- `src/main/main.cts`: bind remote server on all interfaces, add tokenized `tailnetUrl`/QR, sanitize new token URL fields.
+- `src/renderer/SettingsView.tsx`, `styles.css`: access cards, better QR/copy UX, styled allowed-thread cards.
+- contracts updated; version `0.2.0`.
 
 ## Open Tasks
-- Commit/tag/push `v0.1.71`.
+- Commit/tag/push `v0.2.0`.
 
 ## Resume
-- Passed: `npm run build`, `git diff --check`.
+- Passed: `npm run build`, `git diff --check`; current public Funnel curl `/healthz` returned 200 before source change.

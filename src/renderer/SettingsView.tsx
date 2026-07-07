@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Bell, CreditCard, Globe2, Search, TerminalSquare } from "lucide-react";
+import { Bell, Check, Copy, CreditCard, Globe2, QrCode, Search, TerminalSquare, Wifi } from "lucide-react";
 import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
@@ -192,7 +192,7 @@ function RemoteControlSection(): React.JSX.Element {
           else void runAction("disable", () => window.devilCodex.remoteDisable());
         }} disabled={disabled} />
       </Row>
-      <Row title="접속 모드" detail="Funnel 공개 URL만 사용합니다. tailnet 직접 접속 모드는 현재 비활성화되어 있습니다.">
+      <Row title="접속 모드" detail="Funnel 공개 URL을 기본으로 사용하고, 같은 Tailnet에 붙은 휴대폰을 위한 직접 접속 주소도 함께 준비합니다.">
         <Select value={selectedMode} options={["funnel"]} onChange={handleModeChange} disabled={disabled} />
       </Row>
       {hasPendingModeChange && <Row title="모드 변경 대기" detail="현재 실행 모드와 선택한 모드가 다릅니다. 변경 적용을 누르면 서버와 QR을 새 모드로 다시 준비합니다.">
@@ -216,7 +216,7 @@ function RemoteControlSection(): React.JSX.Element {
       </Row>
     </div>
 
-    {selectedMode === "funnel" && <p className="section-help" style={{ color: "#d6a86a", marginTop: 12 }}>Funnel은 공개 URL을 만듭니다. QR 또는 URL을 아는 사람은 접속을 시도할 수 있으므로 토큰 재발급과 기기 승인을 함께 사용해야 합니다.</p>}
+    {selectedMode === "funnel" && <p className="section-help" style={{ color: "#d6a86a", marginTop: 12 }}>Funnel은 공개 URL을 만듭니다. 휴대폰에서 공개 URL을 찾지 못하면 Tailscale 앱을 켠 뒤 아래의 직접 접속 주소를 사용하세요.</p>}
     {remoteErrorMessage && <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
       <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>{remoteErrorMessage}</p>
       {isFunnelActivationError && <>
@@ -229,18 +229,26 @@ function RemoteControlSection(): React.JSX.Element {
       {needsHttpsCertificateHelp && <p className="section-help" style={{ color: "#ef9a94", marginTop: 0 }}>이 오류는 Tailscale 설치 문제라기보다 Tailscale Admin Console에서 HTTPS Certificates 또는 MagicDNS가 꺼져 있을 때 자주 나타납니다. Admin Console의 DNS/HTTPS 설정에서 해당 기능이 활성화되어 있는지 확인하세요.</p>}
     </div>}
 
+    <div className="remote-access-grid">
+      <RemoteAccessCard
+        title="공개 Funnel"
+        detail="Tailscale Funnel이 공개 HTTPS 주소로 PC의 원격 웹을 프록시합니다."
+        icon={<Globe2 size={17} />}
+        url={status?.url}
+        qrDataUrl={status?.qrDataUrl}
+        disabled={!status?.enabled}
+      />
+      <RemoteAccessCard
+        title="Tailscale 직접"
+        detail="휴대폰에도 Tailscale이 켜져 있으면 이 주소가 DNS/Funnel 문제를 우회합니다."
+        icon={<Wifi size={17} />}
+        url={status?.tailnetUrl}
+        qrDataUrl={status?.tailnetQrDataUrl}
+        disabled={!status?.enabled}
+      />
+    </div>
+
     <div className="setting-card" style={{ marginTop: 16 }}>
-      <Row title="접속 URL" detail="모바일 브라우저나 다른 PC에서 열 주소입니다. QR이 있으면 같은 주소를 담고 있습니다.">
-        <div style={valueBlockStyle}>
-          <code style={inlineCodeStyle}>{status?.url ?? "아직 URL이 준비되지 않았습니다."}</code>
-          {status?.url && <button className="secondary" onClick={() => void window.devilCodex.clipboardWriteText({ text: status.url! })}>복사</button>}
-        </div>
-      </Row>
-      <Row title="QR 코드" detail="휴대폰에서 바로 접속할 때 사용합니다. 서버가 아직 QR을 만들지 못했으면 비어 있을 수 있습니다.">
-        <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
-          {status?.qrDataUrl ? <img src={status.qrDataUrl} alt="원격 제어 QR 코드" style={{ width: 144, height: 144, borderRadius: 10, background: "#fff", padding: 8 }} /> : <span style={{ color: "#9a9a9a", fontSize: 12 }}>QR 준비 안 됨</span>}
-        </div>
-      </Row>
       <Row title="Tailscale 상태" detail="설치 여부, 로그인 상태, 호스트 정보를 확인합니다.">
         <div style={{ display: "grid", gap: 4, justifyItems: "end", textAlign: "right", minWidth: 240 }}>
           <strong>{status?.tailscale.installed ? status.tailscale.loggedIn ? "연결됨" : "설치됨" : "미설치"}</strong>
@@ -266,11 +274,30 @@ function RemoteControlSection(): React.JSX.Element {
 
     <div className="setting-card" style={{ marginTop: 16 }}>
       <Row title="허용 스레드" detail="특정 프로젝트의 특정 스레드만 골라 원격 접속을 그 스레드로 제한합니다. 승인된 기기라도 여기서 허용하지 않은 스레드는 목록/대화/전송 전부 차단됩니다.">
-        <span style={{ color: "#9a9a9a", fontSize: 12 }}>{allowedThreadIds.length ? `${allowedThreadIds.length}개 스레드로 제한 중` : "제한 없음 (전체 접근)"}</span>
+        <span style={{ color: "#9a9a9a", fontSize: 12 }}>{allowedThreadIds.length ? `${allowedThreadIds.length}개 스레드 허용됨` : "원격 웹에 표시할 스레드 없음"}</span>
       </Row>
       <AllowedThreadsPicker allowed={allowedThreadIds} onChange={setAllowedThreadIds} />
     </div>
   </>;
+}
+
+function RemoteAccessCard({ title, detail, icon, url, qrDataUrl, disabled }: { title: string; detail: string; icon: React.ReactNode; url?: string; qrDataUrl?: string; disabled?: boolean }): React.JSX.Element {
+  return <div className="remote-access-card">
+    <div className="remote-access-head">
+      <span>{icon}</span>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+    </div>
+    <div className="remote-access-body">
+      {qrDataUrl ? <img src={qrDataUrl} alt={`${title} QR 코드`} /> : <div className="remote-qr-empty"><QrCode size={24} /><span>QR 준비 안 됨</span></div>}
+      <div className="remote-access-url">
+        <code>{url ?? "원격 제어를 켜면 주소가 표시됩니다."}</code>
+        <button className="secondary" onClick={() => url && void window.devilCodex.clipboardWriteText({ text: url })} disabled={disabled || !url}><Copy size={14} />복사</button>
+      </div>
+    </div>
+  </div>;
 }
 
 const ALLOWED_THREADS_RUNTIMES = [["codex", "코덱스"], ["claude-code", "클로드 코드"]] as const;
@@ -324,7 +351,7 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
   const toggle = (id: string): void => onChange(allowed.includes(id) ? allowed.filter((item) => item !== id) : [...allowed, id]);
 
   return <div className="allowed-threads">
-    <p className="section-help" style={{ margin: 0 }}>비워두면 이 PC의 모든 스레드에 원격 접근이 가능합니다. 하나라도 추가하면 원격 클라이언트는 아래 목록의 스레드만 보고 이어서 대화할 수 있습니다.</p>
+    <p className="section-help" style={{ margin: 0 }}>원격 웹은 여기서 허용한 스레드만 표시합니다. 비어 있으면 휴대폰에는 스레드 목록 대신 허용 스레드를 추가하라는 안내만 표시됩니다.</p>
     <div className="allowed-threads-tabs" role="tablist" aria-label="런타임 선택">
       {ALLOWED_THREADS_RUNTIMES.map(([id, label]) => <button key={id} type="button" className={runtimeTab === id ? "active" : ""} onClick={() => setRuntimeTab(id)}>{label}</button>)}
     </div>
@@ -336,15 +363,19 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
       <button type="button" className="secondary" onClick={() => void reload()} disabled={loading}>{loading ? "불러오는 중…" : "새로고침"}</button>
     </div>
     <div className="thread-list">
-      {threadsForSelected.length ? threadsForSelected.map((thread) => (
-        <label key={thread.id} style={{ ...listItemStyle, cursor: "pointer" }}>
-          <span style={{ display: "grid", gap: 2, minWidth: 0 }}>
-            <strong style={listStrongStyle}>{thread.title || thread.id}</strong>
-            <small style={listSmallStyle}>{thread.model}{thread.runtime ? ` · ${thread.runtime}` : ""}</small>
+      {threadsForSelected.length ? threadsForSelected.map((thread) => {
+        const checked = allowed.includes(thread.id);
+        return (
+        <label key={thread.id} className={`allowed-thread-option ${checked ? "checked" : ""}`}>
+          <span className="allowed-thread-check" aria-hidden="true">{checked ? <Check size={14} /> : null}</span>
+          <span className="allowed-thread-copy">
+            <strong>{thread.title || thread.id}</strong>
+            <small>{thread.model}{thread.runtime ? ` · ${thread.runtime}` : ""}</small>
           </span>
-          <input type="checkbox" checked={allowed.includes(thread.id)} onChange={() => toggle(thread.id)} />
+          <input type="checkbox" checked={checked} onChange={() => toggle(thread.id)} />
         </label>
-      )) : <span className="thread-list-empty">{selectedCwd ? "이 프로젝트에 스레드가 없습니다." : "먼저 프로젝트를 선택하세요."}</span>}
+        );
+      }) : <span className="thread-list-empty">{selectedCwd ? "이 프로젝트에 스레드가 없습니다." : "먼저 프로젝트를 선택하세요."}</span>}
     </div>
     <div className="allowed-threads-summary">
       <strong>현재 허용된 스레드 ({allowed.length})</strong>
@@ -358,7 +389,7 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
             </span>
             <button type="button" className="secondary" onClick={() => toggle(id)}>제거</button>
           </div>;
-        }) : <span className="thread-list-empty">허용된 스레드가 없습니다 (전체 접근).</span>}
+        }) : <span className="thread-list-empty">아직 허용된 스레드가 없습니다. 원격 웹에는 안내 화면만 표시됩니다.</span>}
       </div>
     </div>
   </div>;
