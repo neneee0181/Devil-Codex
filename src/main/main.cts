@@ -343,21 +343,22 @@ let remoteLastTailscaleStatus: Awaited<ReturnType<TailscaleCli["status"]>> | und
 let remoteProtocol: "http" | "https" = "http";
 // Sync cache of settings.remoteAllowedThreadIds so sendToRenderer (called
 // synchronously from many hot paths) can gate broadcasts without an await.
-// null = unrestricted (default, matches pre-allowlist behavior). Refreshed
-// once at startup and whenever settings:save touches the allowlist.
-let remoteAllowlistCache: Set<string> | null = null;
+// Remote web is intentionally scoped to desktop-approved threads only.
+// An empty set means the remote client can connect, but cannot list/read/create
+// any thread until Settings -> 원격 제어 -> 허용 스레드 includes at least one.
+let remoteAllowlistCache = new Set<string>();
 const threadQueueSnapshots = new Map<string, QueuedTurnView[]>();
 function applyRemoteAllowlistCache(settings: Pick<CodexSettings, "remoteAllowedThreadIds">): void {
-  remoteAllowlistCache = settings.remoteAllowedThreadIds?.length ? new Set(settings.remoteAllowedThreadIds) : null;
+  remoteAllowlistCache = new Set(settings.remoteAllowedThreadIds ?? []);
 }
 function remoteAccessDenied(): never {
   throw new Error("이 스레드는 원격 접속 허용 목록에 없습니다. 설정 -> 원격 제어 -> 허용 스레드에서 추가하세요.");
 }
 function filterRemoteAllowed<T extends { id: string }>(list: T[]): T[] {
-  return remoteAllowlistCache ? list.filter((item) => remoteAllowlistCache!.has(item.id)) : list;
+  return list.filter((item) => remoteAllowlistCache.has(item.id));
 }
 function requireRemoteAllowed(id: string | undefined): void {
-  if (remoteAllowlistCache && (!id || !remoteAllowlistCache.has(id))) remoteAccessDenied();
+  if (!id || !remoteAllowlistCache.has(id)) remoteAccessDenied();
 }
 
 function sanitizeRemoteStatus(status: RemoteControlStatus): RemoteControlStatus {
@@ -415,15 +416,9 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   wrapSingle("turn:send", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("turn:interrupt", (input) => (input as { threadId?: string } | undefined)?.threadId);
   wrapSingle("approval:respond", (input) => (input as { threadId?: string } | undefined)?.threadId);
-  const createBase = ipcHandlers.get("thread:create");
-  if (createBase) {
-    remote.set("thread:create", async (input) => {
-      if (remoteAllowlistCache) remoteAccessDenied();
-      return createBase(input);
-    });
-  }
+  remote.set("thread:create", async () => remoteAccessDenied());
   remote.set("remote:status", async () => sanitizeRemoteStatus(await remoteStatus()));
-  remote.set("remote:scope", () => ({ restricted: Boolean(remoteAllowlistCache) }));
+  remote.set("remote:scope", () => ({ restricted: true }));
   remote.set("providers:select", async (input) => {
     const saved = await providerSettingsStore.select(input as { provider: ProviderId; model: string; accountId?: string });
     await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
@@ -838,10 +833,8 @@ function sendThreadQueueCommand(command: ThreadQueueCommand): void {
 function sendToRenderer(channel: string, payload: unknown): void {
   if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, payload);
   if (!remoteServer) return;
-  if (remoteAllowlistCache) {
-    const threadId = remoteEventThreadId(channel, payload);
-    if (threadId && !remoteAllowlistCache.has(threadId)) return;
-  }
+  const threadId = remoteEventThreadId(channel, payload);
+  if (threadId && !remoteAllowlistCache.has(threadId)) return;
   remoteServer.broadcast(channel, channel === "remote:status" ? sanitizeRemoteStatus(payload as RemoteControlStatus) : payload);
 }
 

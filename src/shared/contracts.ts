@@ -165,12 +165,10 @@ export interface RemoteDevice { id: string; name: string; hostname?: string; os?
 export interface RemoteClient { id: string; label: string; ip?: string; userAgent?: string; createdAt?: number; lastSeenAt?: number; }
 export interface RemoteTailscaleStatus { installed: boolean; running: boolean; loggedIn: boolean; hostname?: string; tailnet?: string; serviceUrl?: string; error?: string; }
 export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode; url?: string; qrDataUrl?: string; tokenPreview?: string; error?: string; tailscale: RemoteTailscaleStatus; devices: RemoteDevice[]; clients: RemoteClient[]; }
-// Whether this session's remote client is limited to an explicit thread
-// allowlist (Settings -> 원격 제어 -> 허용 스레드). When restricted, the
-// thread:list/thread:search/thread:projects results the same client receives
-// are already filtered server-side to just the allowed threads - this flag
-// only tells the mobile UI whether to show the full project browser or the
-// flat "allowed threads only" view.
+// Remote web is intentionally limited to the desktop-approved thread allowlist
+// (Settings -> 원격 제어 -> 허용 스레드). List/search/project results are
+// filtered server-side; when the allowlist is empty the mobile UI should only
+// ask the user to allow a thread from the desktop app.
 export interface RemoteScope { restricted: boolean; }
 export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; remoteAllowedThreadIds: string[]; }
 export type ProviderId =

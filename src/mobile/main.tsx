@@ -312,7 +312,7 @@ function App(): React.JSX.Element {
   const [codexModels, setCodexModels] = useState<ProviderModel[]>([]);
   const [slashCommands, setSlashCommands] = useState<ClaudeSlashCommandInfo[]>([]);
   const [usageReport, setUsageReport] = useState<ProviderUsageReport | null>(null);
-  const [remoteScope, setRemoteScope] = useState<RemoteScope | null>(null);
+  const [remoteScope, setRemoteScope] = useState<RemoteScope>({ restricted: true });
   const [projectSummaries, setProjectSummaries] = useState<ThreadSummary[]>([]);
   const [threadSummaries, setThreadSummaries] = useState<ThreadSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("");
