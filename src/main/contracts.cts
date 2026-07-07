@@ -212,7 +212,7 @@ export interface ProviderUsageWindow { label: string; usedPercent: number; remai
 export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot" | "antigravity"; label: string; connected: boolean; windows: ProviderUsageWindow[]; accountId?: string; accountLabel?: string; accountEmail?: string; unavailable?: string; error?: string; updatedAt: number; }
 export interface ProviderUsageReport { entries: ProviderUsageEntry[]; }
 export interface ProviderUsageChangedEvent { provider?: ProviderId | "unknown"; completed?: boolean; at: number; }
-export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; }
+export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; cacheMissReason?: string; cacheMissedInputTokens?: number; }
 export interface ProviderRequestLogEntry {
   id: string;
   provider: ProviderId | "unknown";

@@ -29,6 +29,10 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
   const cacheReadInputTokens = tokenNumber(raw.cacheReadInputTokens ?? raw.cache_read_input_tokens);
   const cacheCreationInputTokens = tokenNumber(raw.cacheCreationInputTokens ?? raw.cache_creation_input_tokens);
   const reasoningOutputTokens = tokenNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
+  const cacheMissReason = typeof (raw.cacheMissReason ?? raw.cache_miss_reason) === "string"
+    ? String(raw.cacheMissReason ?? raw.cache_miss_reason)
+    : undefined;
+  const cacheMissedInputTokens = tokenNumber(raw.cacheMissedInputTokens ?? raw.cache_missed_input_tokens);
   return {
     inputTokens,
     outputTokens,
@@ -36,6 +40,8 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
     ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
     ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(cacheMissReason ? { cacheMissReason } : {}),
+    ...(cacheMissedInputTokens !== undefined ? { cacheMissedInputTokens } : {}),
     totalTokens,
   };
 }

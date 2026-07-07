@@ -1931,7 +1931,7 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   console.log(`[devil-codex computer] control server on ${computerSock}, MCP script ${computerScript}`);
 }
 
-async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean }): Promise<string | undefined> {
+async function claudeMcpConfig(): Promise<string | undefined> {
   const settings = await settingsStore.load().catch(() => null);
   const { script, computerScript, askScript, subagentScript } = mcpScripts();
   const mcpServers: Record<string, unknown> = {};
@@ -1970,32 +1970,28 @@ async function claudeMcpConfig(options?: { browser?: boolean; computer?: boolean
     }
   }
 
-  if (settings?.devilMcpEnabled || options?.browser || options?.computer) {
+  if (settings?.devilMcpEnabled) {
     try {
       const sock = await browserControl.start();
       const computerSock = await desktopControl.start();
-      if (settings?.devilMcpEnabled || options?.browser) {
-        mcpServers.devil_browser = {
-          command: process.execPath,
-          args: [script],
-          env: {
-            ELECTRON_RUN_AS_NODE: "1",
-            DEVIL_BROWSER_SOCK: sock,
-            DEVIL_BROWSER_SECRET: browserControlSecret,
-          },
-        };
-      }
-      if (settings?.devilMcpEnabled || options?.computer) {
-        mcpServers.devil_computer = {
-          command: process.execPath,
-          args: [computerScript],
-          env: {
-            ELECTRON_RUN_AS_NODE: "1",
-            DEVIL_COMPUTER_SOCK: computerSock,
-            DEVIL_COMPUTER_SECRET: desktopControlSecret,
-          },
-        };
-      }
+      mcpServers.devil_browser = {
+        command: process.execPath,
+        args: [script],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          DEVIL_BROWSER_SOCK: sock,
+          DEVIL_BROWSER_SECRET: browserControlSecret,
+        },
+      };
+      mcpServers.devil_computer = {
+        command: process.execPath,
+        args: [computerScript],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          DEVIL_COMPUTER_SOCK: computerSock,
+          DEVIL_COMPUTER_SECRET: desktopControlSecret,
+        },
+      };
     } catch (error) {
       console.warn("[devil-codex mcp] Claude browser/computer MCP disabled:", error instanceof Error ? error.message : error);
     }
@@ -2646,14 +2642,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // store the raw input.text, so the visible user message stays untouched.
     const { englishOutput, askUserMcpEnabled } = await settingsStore.load();
     const englishDirective = englishOutput ? `\n\n---\n${ENGLISH_OUTPUT_DIRECTIVE}` : "";
-    // devil_ask MCP server is registered for every provider under claude-code
-    // runtime (see claudeMcpConfig), so the directive must follow — otherwise
-    // the tool is loaded but the model is never told when to use it, which
-    // made ask_user appear/disappear depending on which provider was active.
-    const askDirective = askUserMcpEnabled ? `\n\n---\n${ASK_USER_MCP_DIRECTIVE}` : "";
+    // ask_user behavior lives in the MCP tool description. Re-appending the
+    // full directive to every turn makes the model-bound prompt larger and can
+    // disturb provider prompt-cache reuse after model/runtime changes.
     const turnInput = {
       ...request,
-      text: `${request.text}${attachmentEnrichment.context}${askDirective}${englishDirective}`,
+      text: `${request.text}${attachmentEnrichment.context}${englishDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
     if (!request.subagent && requestedRuntime(request.runtime) !== "claude-code") {
@@ -2730,10 +2724,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
           resume: resumeClaudeCode,
           nativeSessionId,
           attachments: request.attachments,
-          mcpConfig: await claudeMcpConfig({
-            browser: (request.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "browser-use" || skill.path === "devil://claude-runtime/browser-use"),
-            computer: (request.skills ?? []).some((skill: { name?: string; path?: string }) => skill.name === "computer-use" || skill.path === "devil://claude-runtime/computer-use"),
-          }),
+          mcpConfig: await claudeMcpConfig(),
           approvalPolicy: request.approvalPolicy,
           sandboxMode: request.sandboxMode,
           planMode: Boolean(request.planMode),

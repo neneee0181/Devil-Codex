@@ -458,6 +458,19 @@ function hasAgentMessageForTurn(items: ThreadHistoryItem[], turnId: string): boo
   return items.some((item) => item.kind === "agent" && item.turnId === turnId && item.text.trim());
 }
 
+function removeMissingFinalNoticeForTurn(items: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
+  if (!turnId || !hasAgentMessageForTurn(items, turnId)) return items;
+  const next = items.filter((item) => item.id !== `missing-final-${turnId}`);
+  return next.length === items.length ? items : next;
+}
+
+function removeStaleMissingFinalNotices(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const turnsWithAgent = new Set(items.filter((item) => item.kind === "agent" && item.turnId && item.text.trim()).map((item) => item.turnId!));
+  if (!turnsWithAgent.size) return items;
+  const next = items.filter((item) => !item.id.startsWith("missing-final-") || !item.turnId || !turnsWithAgent.has(item.turnId));
+  return next.length === items.length ? items : next;
+}
+
 function appendMissingAgentMessagesForTurn(local: ThreadHistoryItem[], synced: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
   if (!turnId) return local;
   const seen = new Set(local.filter((item) => item.kind === "agent").map(agentMessageKey));
@@ -630,7 +643,7 @@ function dedupeAgentItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
 }
 
 function dedupeTimelineItems(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  return dedupeAgentItems(dedupePreAnswerUserItems(items));
+  return removeStaleMissingFinalNotices(dedupeAgentItems(dedupePreAnswerUserItems(items)));
 }
 
 function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadActivityEntry[] = []): ThreadActivityEntry[] {
@@ -688,12 +701,12 @@ function annotateAgentMessages(items: ThreadHistoryItem[], turnId: string, pendi
   return changed ? next : items;
 }
 
-function finalAnswerMissingNotice(turnId: string): ThreadHistoryItem {
+function finalAnswerMissingNotice(turnId: string, runtimeLabel = "모델 런타임"): ThreadHistoryItem {
   return {
     id: `missing-final-${turnId || crypto.randomUUID()}`,
     kind: "system",
     title: "최종 응답 본문 누락",
-    text: "Codex가 작업 완료 이벤트를 보냈지만 최종 답변 본문 이벤트가 도착하지 않았습니다. 작업 결과는 위의 활동 로그를 기준으로 확인해 주세요.",
+    text: `${runtimeLabel}가 작업 완료 이벤트를 보냈지만 최종 답변 본문 이벤트가 도착하지 않았습니다. 작업 결과는 위의 활동 로그를 기준으로 확인해 주세요.`,
     turnId,
   };
 }
@@ -748,6 +761,10 @@ type ThreadUsageModel = {
   cacheCreationTokens: number;
   reasoningOutputTokens: number;
   totalTokens: number;
+  freshTokens: number;
+  cacheMisses: number;
+  latestCacheMissReason?: string;
+  latestCacheMissedInputTokens?: number;
   durationMs: number;
   estimatedCost: number;
   pricedTokens: number;
@@ -757,6 +774,9 @@ type ThreadUsageSummary = {
   completed: number;
   failed: number;
   totalTokens: number;
+  freshTokens: number;
+  cacheReadTokens: number;
+  cacheMisses: number;
   estimatedCost: number;
   pricedTokens: number;
   contextUsage?: ContextUsage;
@@ -861,6 +881,11 @@ function providerUsageInputBreakdown(usage: ProviderTokenUsage): { uncachedInput
   return { uncachedInput, cached, cacheRead, cacheCreation, total: Math.max(usage.totalTokens ?? 0, uncachedInput + cached + usage.outputTokens) };
 }
 
+function providerUsageFreshTokens(usage: ProviderTokenUsage): number {
+  const breakdown = providerUsageInputBreakdown(usage);
+  return breakdown.uncachedInput + breakdown.cacheCreation + usage.outputTokens;
+}
+
 function providerTokenTotal(usage: ProviderTokenUsage): number {
   return providerUsageInputBreakdown(usage).total;
 }
@@ -888,9 +913,11 @@ function threadUsageRowDetail(row: ThreadUsageModel): string {
   if (row.completed > 0) parts.push(`완료 ${row.completed}회`);
   if (row.failed > 0) parts.push(`실패 ${row.failed}회`);
   if (row.completed > 0 && row.durationMs > 0) parts.push(`평균 ${formatDurationShort(row.durationMs / row.completed)}`);
+  if (row.freshTokens > 0) parts.push(`실사용 ${compactTokenCount(row.freshTokens)}`);
   if (row.inputTokens > 0 || row.outputTokens > 0) parts.push(`입력 ${compactTokenCount(row.inputTokens)} / 출력 ${compactTokenCount(row.outputTokens)}`);
   if (row.cacheCreationTokens > 0) parts.push(`캐시 생성 ${compactTokenCount(row.cacheCreationTokens)}`);
   if (row.cacheReadTokens > 0) parts.push(`캐시 재사용 ${compactTokenCount(row.cacheReadTokens)}`);
+  if (row.cacheMisses > 0) parts.push(`캐시 미스 ${row.cacheMisses}회${row.latestCacheMissReason ? ` · ${row.latestCacheMissReason}` : ""}`);
   else if (row.cachedInputTokens > 0 && row.cacheCreationTokens === 0) parts.push(`캐시 ${compactTokenCount(row.cachedInputTokens)}`);
   return parts.join(" · ");
 }
@@ -915,6 +942,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       cacheCreationTokens: 0,
       reasoningOutputTokens: 0,
       totalTokens: 0,
+      freshTokens: 0,
+      cacheMisses: 0,
       durationMs: 0,
       estimatedCost: 0,
       pricedTokens: 0,
@@ -932,6 +961,12 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       row.cacheCreationTokens += usageBreakdown.cacheCreation;
       row.reasoningOutputTokens += entry.usage.reasoningOutputTokens ?? 0;
       row.totalTokens += providerTokenTotal(entry.usage);
+      row.freshTokens += providerUsageFreshTokens(entry.usage);
+      if (entry.usage.cacheMissReason) {
+        row.cacheMisses += 1;
+        row.latestCacheMissReason = entry.usage.cacheMissReason;
+        row.latestCacheMissedInputTokens = entry.usage.cacheMissedInputTokens;
+      }
       const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
       row.estimatedCost += cost.cost;
       row.pricedTokens += cost.pricedTokens;
@@ -945,6 +980,9 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     completed: models.reduce((sum, row) => sum + row.completed, 0),
     failed: models.reduce((sum, row) => sum + row.failed, 0),
     totalTokens: models.reduce((sum, row) => sum + row.totalTokens, 0),
+    freshTokens: models.reduce((sum, row) => sum + row.freshTokens, 0),
+    cacheReadTokens: models.reduce((sum, row) => sum + row.cacheReadTokens, 0),
+    cacheMisses: models.reduce((sum, row) => sum + row.cacheMisses, 0),
     estimatedCost: models.reduce((sum, row) => sum + row.estimatedCost, 0),
     pricedTokens: models.reduce((sum, row) => sum + row.pricedTokens, 0),
     contextUsage: input.contextUsage,
@@ -2046,10 +2084,21 @@ function App(): React.JSX.Element {
   // backgrounded one (cache-only). Mirrors the live-event append path.
   function appendItemToThread(threadId: string, item: ThreadHistoryItem): void {
     if (!threadId) return;
+    const runtimeForThread = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : agentRuntime;
+    const save = (next: ThreadHistoryItem[]): void => { void window.devilCodex.cacheThreadHistory({ id: threadId, items: next, runtime: runtimeForThread }).catch(() => undefined); };
     if (threadRef.current?.id === threadId) {
-      setItems((current) => { const next = [...current, item]; itemsRef.current = next; itemsOwnerRef.current = threadId; threadHistoryCache.current.set(threadId, next); return next; });
+      setItems((current) => {
+        const next = [...current, item];
+        itemsRef.current = next;
+        itemsOwnerRef.current = threadId;
+        threadHistoryCache.current.set(threadId, next);
+        save(next);
+        return next;
+      });
     } else {
-      threadHistoryCache.current.set(threadId, [...(threadHistoryCache.current.get(threadId) ?? []), item]);
+      const next = [...(threadHistoryCache.current.get(threadId) ?? []), item];
+      threadHistoryCache.current.set(threadId, next);
+      save(next);
     }
   }
 
@@ -2486,12 +2535,14 @@ function App(): React.JSX.Element {
             await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
           }
           const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
-          let recoveredHistory = cachedRuntime === "claude-code"
-            ? annotateAgentMessages(history.length ? history : localHistory, turnId, completedPending ?? undefined)
-            : annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
+          let recoveredHistory = annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
+          recoveredHistory = removeMissingFinalNoticeForTurn(recoveredHistory, turnId);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
-            if (!alreadyWarned) recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId)];
+            if (!alreadyWarned) {
+              const runtimeLabel = runtimeAgentLabel(cachedRuntime, completedPending?.provider, providers.settings?.providers ?? []);
+              recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId, runtimeLabel)];
+            }
           }
           threadHistoryCache.current.set(threadId, recoveredHistory);
           if (threadRef.current?.id === threadId && recoveredHistory !== localHistory) {
@@ -3191,17 +3242,6 @@ function App(): React.JSX.Element {
     if (activeThreadBusy && queueThread) {
       const sidecars = readSidecarSettings();
       const pending: PendingTurnState = { threadId: queueThread.id, cwd: workspace, text, model: sendModel, runtime: composerRuntime, provider, accountId: sendAccountId, skills: selectedSkills, attachments: imageAttachments, attachmentDetails, sidecars, contextUsage, ...permissions, ...turnOptions, retriedAfterCompaction: false };
-      const activeTurnId = runningTurnsRef.current[queueThread.id]?.turnId ?? activeTurnsByThread.current.get(queueThread.id);
-      const canNativeSteer = composerRuntime === "codex" && provider === "codex" && activeTurnId && selectedSkills.length === 0 && imageAttachments.length === 0 && attachmentDetails.length === 0;
-      if (canNativeSteer) {
-        appendItemToThread(queueThread.id, userItem);
-        try {
-          await window.devilCodex.steerTurn({ threadId: queueThread.id, text, expectedTurnId: activeTurnId, runtime: "codex" });
-          return;
-        } catch (error) {
-          appendItemToThread(queueThread.id, { id: crypto.randomUUID(), kind: "system", title: "스티어링 실패", text: `${String(error)}\n대기열로 전환합니다.` });
-        }
-      }
       enqueueTurn(queueThread.id, { id: userItem.id, pending, userItem });
       return;
     }
@@ -4706,10 +4746,19 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
         </>}
         {usage.requests > 0 ? <>
           <div className="environment-usage-summary">
+            <span><small>실사용 토큰</small><strong>{compactTokenCount(usage.freshTokens)}</strong></span>
+            <span><small>전체 처리량</small><strong>{compactTokenCount(usage.totalTokens)}</strong></span>
             <span><small>예상 비용</small><strong>{threadUsageCostLabel(usage.estimatedCost, usage.pricedTokens, usage.totalTokens)}</strong></span>
-            <span><small>완료</small><strong>{usage.completed}회</strong></span>
-            <span><small>실패</small><strong>{usage.failed}회</strong></span>
+            <span><small>완료 / 실패</small><strong>{usage.completed} / {usage.failed}</strong></span>
           </div>
+          {usage.cacheReadTokens > 0 && <div className="environment-usage-context">
+            <span>캐시 재사용</span>
+            <b>{compactTokenCount(usage.cacheReadTokens)} 포함</b>
+          </div>}
+          {usage.cacheMisses > 0 && <div className="environment-usage-context overflow">
+            <span>캐시 미스</span>
+            <b>{usage.cacheMisses}회 감지</b>
+          </div>}
           <div className="environment-usage-models">
             {visibleUsageModels.map((row) => <div key={row.key} title={row.label}>
               <span><strong>{row.label}</strong><small>{threadUsageRowDetail(row)}</small></span>

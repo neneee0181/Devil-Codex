@@ -32,12 +32,22 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
   const totalTokens = tokenNumber(raw.totalTokens ?? raw.total_tokens) ?? inputTokens + outputTokens;
   if (totalTokens <= 0) return undefined;
   const cachedInputTokens = tokenNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
+  const cacheReadInputTokens = tokenNumber(raw.cacheReadInputTokens ?? raw.cache_read_input_tokens);
+  const cacheCreationInputTokens = tokenNumber(raw.cacheCreationInputTokens ?? raw.cache_creation_input_tokens);
   const reasoningOutputTokens = tokenNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
+  const cacheMissReason = typeof (raw.cacheMissReason ?? raw.cache_miss_reason) === "string"
+    ? String(raw.cacheMissReason ?? raw.cache_miss_reason)
+    : undefined;
+  const cacheMissedInputTokens = tokenNumber(raw.cacheMissedInputTokens ?? raw.cache_missed_input_tokens);
   return {
     inputTokens,
     outputTokens,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(cacheMissReason ? { cacheMissReason } : {}),
+    ...(cacheMissedInputTokens !== undefined ? { cacheMissedInputTokens } : {}),
     totalTokens,
   };
 }

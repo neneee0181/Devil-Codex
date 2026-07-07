@@ -10,18 +10,17 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-06T14:40:00+09:00
+Last: 2026-07-07T15:18:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- Remote-control mobile v0.1.55 ready: responsive chat/usage, image attachments, model picker, remote status WS.
+- Cache/token usage fix completed. UI now separates fresh tokens, throughput, cache reuse/creation, cache miss diagnostics, and stale missing-final warnings. Model-change notices persist in thread history. Busy follow-up messages always show queued edit/steer/cancel UI before steering.
 
 ## Changed
-- Mobile thread view now uses compact toolbar with info/skills/model panels, internal scroll, image previews/send, latest-history model preference.
-- Remote WS now allows safe `remote:status`/`providers:select`; Settings subscribes to live remote status. Remote status strips URL/QR/token for remote clients.
+- Runtime/contracts/history usage parsing, Claude cache-miss diagnostics, renderer usage/settings UI, Claude MCP config stability, prompt injection cleanup, queue steering path.
 
 ## Open Tasks
-- Manual iPhone Safari test: compact chat, long code scroll, image-only send, model switch, Settings device live update.
+- Version bump/tag/push pending.
 
 ## Resume
-- Passed: `npm run build`; `git diff --check` only CRLF warnings. Build output `dist-mobile/` is generated, not source.
+- Passed: `PATH=/opt/homebrew/bin:$PATH npm run build`.

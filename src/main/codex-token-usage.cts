@@ -33,12 +33,22 @@ function tokenUsageFromRaw(value: unknown): ProviderTokenUsage | undefined {
   const outputTokens = finiteNumber(raw.outputTokens ?? raw.output_tokens ?? raw.completionTokens ?? raw.completion_tokens) ?? 0;
   const totalTokens = finiteNumber(raw.totalTokens ?? raw.total_tokens) ?? inputTokens + outputTokens;
   const cachedInputTokens = finiteNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
+  const cacheReadInputTokens = finiteNumber(raw.cacheReadInputTokens ?? raw.cache_read_input_tokens);
+  const cacheCreationInputTokens = finiteNumber(raw.cacheCreationInputTokens ?? raw.cache_creation_input_tokens);
   const reasoningOutputTokens = finiteNumber(raw.reasoningOutputTokens ?? raw.reasoning_output_tokens);
+  const cacheMissReason = typeof (raw.cacheMissReason ?? raw.cache_miss_reason) === "string"
+    ? String(raw.cacheMissReason ?? raw.cache_miss_reason)
+    : undefined;
+  const cacheMissedInputTokens = finiteNumber(raw.cacheMissedInputTokens ?? raw.cache_missed_input_tokens);
   return positiveUsage({
     inputTokens,
     outputTokens,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(cacheMissReason ? { cacheMissReason } : {}),
+    ...(cacheMissedInputTokens !== undefined ? { cacheMissedInputTokens } : {}),
     totalTokens,
   });
 }

@@ -17,8 +17,8 @@ type ClaudeSdkQuery = AsyncIterable<ClaudeSdkMessage> & {
   setModel?: (model?: string) => Promise<void>;
   setPermissionMode?: (mode: string) => Promise<void>;
 };
-type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; total_tokens: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
-export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; totalTokens: number };
+type TurnUsageSnapshot = { usage: { input_tokens: number; output_tokens: number; cached_input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; total_tokens: number; cache_miss_reason?: string; cache_missed_input_tokens?: number }; contextUsage?: ContextUsage; modelContextWindow?: number };
+export type ClaudeTurnUsage = { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; totalTokens: number; cacheMissReason?: string; cacheMissedInputTokens?: number };
 
 const CLAUDE_CONTEXT_USAGE_TIMEOUT_MS = 1500;
 // Keep an idle Claude Code process alive briefly so follow-up turns reuse the
@@ -297,6 +297,8 @@ function turnUsageResult(snapshot: TurnUsageSnapshot | undefined): ClaudeTurnUsa
     ...(snapshot.usage.cached_input_tokens ? { cachedInputTokens: snapshot.usage.cached_input_tokens } : {}),
     ...(snapshot.usage.cache_read_input_tokens ? { cacheReadInputTokens: snapshot.usage.cache_read_input_tokens } : {}),
     ...(snapshot.usage.cache_creation_input_tokens ? { cacheCreationInputTokens: snapshot.usage.cache_creation_input_tokens } : {}),
+    ...(snapshot.usage.cache_miss_reason ? { cacheMissReason: snapshot.usage.cache_miss_reason } : {}),
+    ...(snapshot.usage.cache_missed_input_tokens ? { cacheMissedInputTokens: snapshot.usage.cache_missed_input_tokens } : {}),
     totalTokens: snapshot.usage.total_tokens,
   };
 }
@@ -312,6 +314,14 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
   const input = num(record.input_tokens);
   const output = num(record.output_tokens);
   if (input + cached + output <= 0) return undefined;
+  const diagnostics = message.diagnostics && typeof message.diagnostics === "object" ? message.diagnostics as Record<string, unknown> : {};
+  const miss = diagnostics.cache_miss_reason && typeof diagnostics.cache_miss_reason === "object"
+    ? diagnostics.cache_miss_reason as Record<string, unknown>
+    : undefined;
+  const cacheMissReason = typeof diagnostics.cache_miss_reason === "string"
+    ? diagnostics.cache_miss_reason
+    : typeof miss?.type === "string" ? miss.type : undefined;
+  const cacheMissedInputTokens = num(diagnostics.cache_missed_input_tokens ?? miss?.cache_missed_input_tokens);
   const models = message.modelUsage && typeof message.modelUsage === "object"
     ? Object.values(message.modelUsage as Record<string, { contextWindow?: unknown }>)
     : [];
@@ -324,6 +334,8 @@ function resultUsage(message: ClaudeSdkMessage): TurnUsageSnapshot | undefined {
       ...(cached ? { cached_input_tokens: cached } : {}),
       ...(cacheRead ? { cache_read_input_tokens: cacheRead } : {}),
       ...(cacheCreation ? { cache_creation_input_tokens: cacheCreation } : {}),
+      ...(cacheMissReason ? { cache_miss_reason: cacheMissReason } : {}),
+      ...(cacheMissedInputTokens ? { cache_missed_input_tokens: cacheMissedInputTokens } : {}),
       total_tokens: promptInput + output,
     },
     ...(contextWindow > 0 && promptInput > 0 ? {
@@ -624,6 +636,25 @@ export class ClaudeCodeRuntime extends EventEmitter {
       await Promise.resolve(input.onCompleted?.(completedText, { turnId })).catch(() => undefined);
       if (completedText && !this.hasStreamedAgentText(input.threadId, turnId)) {
         this.emitEvent({ method: "item/completed", params: { threadId: input.threadId, turnId, item: { id: itemId, type: "agentMessage", text: completedText } } });
+      }
+      if (usageSnapshot?.usage.cache_miss_reason) {
+        this.emitEvent({
+          method: "item/completed",
+          params: {
+            threadId: input.threadId,
+            turnId,
+            item: {
+              id: `claude-cache-miss-${turnId}`,
+              type: "providerDiagnostics",
+              title: "Claude 캐시 미스",
+              detail: [
+                `reason: ${usageSnapshot.usage.cache_miss_reason}`,
+                usageSnapshot.usage.cache_missed_input_tokens ? `missed input: ${usageSnapshot.usage.cache_missed_input_tokens.toLocaleString()} tokens` : "",
+              ].filter(Boolean).join("\n"),
+              status: "completed",
+            },
+          },
+        });
       }
       this.emitEvent({
         method: "turn/completed",

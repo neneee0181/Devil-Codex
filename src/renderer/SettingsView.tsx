@@ -414,6 +414,9 @@ type ModelUsageRow = {
   durationMs: number;
   estimatedCost: number;
   pricedTokens: number;
+  cacheMisses: number;
+  latestCacheMissReason?: string;
+  latestCacheMissedInputTokens?: number;
 };
 
 function ProviderUsagePage({ report, requestLog, providerSettings, state, onRefresh }: { report: { entries: ProviderUsageEntry[] } | null; requestLog: ProviderRequestLogEntry[]; providerSettings: ProviderSettings | null; state: string; onRefresh: () => void }): React.JSX.Element {
@@ -437,6 +440,7 @@ function DevilUsageTab({ summary, state }: { summary: ReturnType<typeof summariz
       <UsageMetric title="실사용 토큰" value={formatTokenCount(summary.freshTokens)} detail="신규 입력 + 캐시 생성 + 출력 (CLI /cost 비교 기준)" />
       <UsageMetric title="전체 처리량" value={formatTokenCount(summary.totalTokens)} detail={summary.cacheReadTokens > 0 ? `캐시 재사용 ${formatTokenCount(summary.cacheReadTokens)} 포함` : `${summary.completed}개 완료 요청`} />
       <UsageMetric title="예상 비용" value={summary.estimatedCost > 0 ? formatUsd(summary.estimatedCost) : "-"} detail={summary.pricedTokens > 0 ? "공개 단가 기준" : "단가 매칭 없음"} />
+      {summary.cacheMisses > 0 && <UsageMetric title="캐시 미스" value={`${summary.cacheMisses}회`} detail="Provider가 캐시를 새로 만든 요청" />}
       <UsageMetric title="요청 수" value={`${summary.requests}회`} detail={summary.failed ? `${summary.failed}회 실패 포함` : "실패 없음"} />
     </div>
     {!hasUsage
@@ -463,6 +467,7 @@ function ModelUsageCard({ row }: { row: ModelUsageRow }): React.JSX.Element {
     <footer>
       {row.cacheReadTokens > 0 && <small>캐시 재사용 {formatTokenCount(row.cacheReadTokens)}</small>}
       {row.cacheCreationTokens > 0 && <small>캐시 생성 {formatTokenCount(row.cacheCreationTokens)}</small>}
+      {row.cacheMisses > 0 && <small className="usage-cache-miss">캐시 미스 {row.cacheMisses}회{row.latestCacheMissReason ? ` · ${row.latestCacheMissReason}` : ""}{row.latestCacheMissedInputTokens ? ` · ${formatTokenCount(row.latestCacheMissedInputTokens)}` : ""}</small>}
       {row.reasoningOutputTokens > 0 && <small>추론 출력 {formatTokenCount(row.reasoningOutputTokens)}</small>}
       <small>평균 {formatDuration(row.completed ? row.durationMs / row.completed : 0)}</small>
       {row.failed > 0 && <small className="usage-failed">{row.failed}회 실패</small>}
@@ -497,7 +502,7 @@ function approvalValue(label: string): string { return label === "사용 안 함
 function sandboxLabel(value: string): string { return value === "read-only" ? "읽기 전용" : value === "danger-full-access" ? "전체 접근" : "작업 공간 쓰기"; }
 function sandboxValue(label: string): string { return label === "읽기 전용" ? "read-only" : label === "전체 접근" ? "danger-full-access" : "workspace-write"; }
 
-function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: ProviderSettings | null): { rows: ModelUsageRow[]; totalTokens: number; freshTokens: number; cacheReadTokens: number; estimatedCost: number; pricedTokens: number; requests: number; completed: number; failed: number } {
+function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: ProviderSettings | null): { rows: ModelUsageRow[]; totalTokens: number; freshTokens: number; cacheReadTokens: number; cacheMisses: number; estimatedCost: number; pricedTokens: number; requests: number; completed: number; failed: number } {
   const labels = new Map<ProviderId, string>((settings?.providers ?? []).map((provider) => [provider.id, provider.label]));
   const rows = new Map<string, ModelUsageRow>();
   for (const entry of entries) {
@@ -521,6 +526,7 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
       durationMs: 0,
       estimatedCost: 0,
       pricedTokens: 0,
+      cacheMisses: 0,
     };
     current.requests += 1;
     if (entry.status === "failed") current.failed += 1;
@@ -540,6 +546,7 @@ function summarizeDevilUsage(entries: ProviderRequestLogEntry[], settings: Provi
     totalTokens: sorted.reduce((sum, row) => sum + row.totalTokens, 0),
     freshTokens: sorted.reduce((sum, row) => sum + row.freshTokens, 0),
     cacheReadTokens: sorted.reduce((sum, row) => sum + row.cacheReadTokens, 0),
+    cacheMisses: sorted.reduce((sum, row) => sum + row.cacheMisses, 0),
     estimatedCost: sorted.reduce((sum, row) => sum + row.estimatedCost, 0),
     pricedTokens: sorted.reduce((sum, row) => sum + row.pricedTokens, 0),
     requests: sorted.reduce((sum, row) => sum + row.requests, 0),
@@ -568,6 +575,11 @@ function addUsage(row: ModelUsageRow, usage: ProviderTokenUsage): void {
   // "Fresh" tokens exclude cache reads: what the model actually processed for
   // the first time. This is the number comparable to the stock CLI's /cost.
   row.freshTokens += uncachedInput + cacheCreation + usage.outputTokens;
+  if (usage.cacheMissReason) {
+    row.cacheMisses += 1;
+    row.latestCacheMissReason = usage.cacheMissReason;
+    row.latestCacheMissedInputTokens = usage.cacheMissedInputTokens;
+  }
 }
 
 function providerFallbackLabel(provider: ProviderId): string {
