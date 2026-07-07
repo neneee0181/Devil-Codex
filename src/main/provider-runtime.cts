@@ -78,6 +78,9 @@ async function readSse(response: Response, provider: string, onData: (payload: R
 }
 
 function delta(provider: ExternalProvider, event: Record<string, unknown>): string {
+  if (provider === "copilot") {
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") return event.delta;
+  }
   if (provider === "anthropic" || provider === "claude-code") return String((event.delta as Record<string, unknown> | undefined)?.text ?? "");
   if (provider === "google" || provider === "antigravity") {
     const root = provider === "antigravity" ? (event.response as Record<string, unknown> | undefined) ?? event : event;

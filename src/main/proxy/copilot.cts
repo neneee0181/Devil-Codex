@@ -6,6 +6,11 @@ import { copilotChatHeaders } from "../provider-oauth.cjs";
 
 const COPILOT_API = "https://api.githubcopilot.com";
 
+function supportsResponsesApi(model: string): boolean {
+  const id = model.toLowerCase();
+  return /^gpt-5(?:[.\-_]|$)/.test(id) || /^gpt-4\.1(?:[.\-_]|$)/.test(id) || /^o\d/.test(id) || /^codex(?:[.\-_]|$)/.test(id);
+}
+
 function flatten(parts: { type: string; text?: string }[]): string {
   return parts.map((p) => (p.type === "text" ? p.text ?? "" : "")).join("");
 }
@@ -25,6 +30,13 @@ function wireToolCallName(part: { name: string; namespace?: string }): string {
 
 function toolResultWireName(result: OcxToolResultMessage): string {
   return sanitizeName(namespacedToolName(result.toolNamespace, result.toolName || "tool_result"));
+}
+
+function responsesContent(parts: OcxContentPart[], role: "user" | "developer" | "assistant"): Array<Record<string, unknown>> {
+  return parts.map((part) => {
+    if (part.type === "image") return { type: "input_image", image_url: part.dataUrl, ...(part.detail ? { detail: part.detail } : {}) };
+    return { type: role === "assistant" ? "output_text" : "input_text", text: part.text };
+  });
 }
 
 function toChatMessages(parsed: OcxParsedRequest): unknown[] {
@@ -60,9 +72,58 @@ function toChatMessages(parsed: OcxParsedRequest): unknown[] {
   return out;
 }
 
+function toResponsesInput(parsed: OcxParsedRequest): unknown[] {
+  const out: unknown[] = [];
+  for (const msg of parsed.context.messages) {
+    if (msg.role === "user" || msg.role === "developer") {
+      out.push({ type: "message", role: msg.role, content: responsesContent(msg.content, msg.role) });
+    } else if (msg.role === "assistant") {
+      const a = msg as OcxAssistantMessage;
+      const text = a.content.filter((p) => p.type === "text").map((p) => (p.type === "text" ? p.text : "")).join("");
+      if (text) out.push({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+      for (const part of a.content) {
+        if (part.type !== "toolCall") continue;
+        out.push({ type: "function_call", call_id: part.id, name: wireToolCallName(part), arguments: part.arguments || "{}" });
+      }
+    } else if (msg.role === "toolResult") {
+      const tr = msg as OcxToolResultMessage;
+      out.push({ type: "function_call_output", call_id: tr.toolCallId, output: flatten(tr.content) });
+    }
+  }
+  return out.length ? out : [{ type: "message", role: "user", content: [{ type: "input_text", text: "" }] }];
+}
+
+function buildResponsesBody(parsed: OcxParsedRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = { model: parsed.model, input: toResponsesInput(parsed), stream: true };
+  if (parsed.context.instructions) body.instructions = parsed.context.instructions;
+  const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  if (selectedTools.length) {
+    body.tools = selectedTools.map((tool) => ({
+      type: "function",
+      name: sanitizeName(namespacedToolName(tool.namespace, tool.name)),
+      description: tool.description ?? "",
+      parameters: normalizeSchema(tool.parameters),
+      ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
+    }));
+    const choice = parsed.options.toolChoice;
+    if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice;
+    else if (choice && "name" in choice) body.tool_choice = { type: "function", name: sanitizeName(choice.name) };
+  }
+  if (parsed.options.maxOutputTokens !== undefined) body.max_output_tokens = parsed.options.maxOutputTokens;
+  if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
+  if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
+  if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
+  if (parsed.options.reasoning !== undefined) body.reasoning = { effort: parsed.options.reasoning === "xhigh" ? "high" : parsed.options.reasoning };
+  if (parsed.options.serviceTier !== undefined) body.service_tier = parsed.options.serviceTier;
+  return body;
+}
+
 export function buildCopilotRequest(parsed: OcxParsedRequest, auth: string | { bearer: string; apiUrl?: string }): { url: string; headers: Record<string, string>; body: string } {
   const bearer = typeof auth === "string" ? auth : auth.bearer;
   const apiUrl = typeof auth === "string" ? COPILOT_API : auth.apiUrl ?? COPILOT_API;
+  if (supportsResponsesApi(parsed.model)) {
+    return { url: `${apiUrl}/responses`, headers: copilotChatHeaders(bearer), body: JSON.stringify(buildResponsesBody(parsed)) };
+  }
   const body: Record<string, unknown> = { model: parsed.model, messages: toChatMessages(parsed), stream: true };
   const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
   if (selectedTools.length) {
@@ -105,7 +166,9 @@ export async function* streamCopilot(response: Response): AsyncGenerator<Adapter
   const decoder = new TextDecoder();
   let buffer = "";
   const tools = new Map<number, { started: boolean }>();
+  const responseTools = new Map<string, { callId: string; name: string; args: string; started: boolean }>();
   let usage: OcxUsage | undefined;
+  let sawResponsesTextDelta = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -134,6 +197,72 @@ export async function* streamCopilot(response: Response): AsyncGenerator<Adapter
             ...(cached ? { cachedInputTokens: cached } : {}),
           };
         }
+        if (data.type === "response.output_text.delta" && typeof data.delta === "string" && data.delta) {
+          sawResponsesTextDelta = true;
+          yield { type: "text_delta", text: data.delta };
+          continue;
+        }
+        if (data.type === "response.function_call_arguments.delta") {
+          const itemId = String(data.item_id ?? data.output_item_id ?? data.call_id ?? "");
+          const existing = responseTools.get(itemId);
+          if (existing && typeof data.delta === "string") {
+            if (!existing.started) {
+              yield { type: "tool_call_start", id: existing.callId, name: existing.name };
+              existing.started = true;
+            }
+            existing.args += data.delta;
+            yield { type: "tool_call_delta", arguments: data.delta };
+          }
+          continue;
+        }
+        if (data.type === "response.function_call_arguments.done") {
+          const itemId = String(data.item_id ?? data.output_item_id ?? data.call_id ?? "");
+          const existing = responseTools.get(itemId);
+          if (existing) {
+            if (!existing.started) yield { type: "tool_call_start", id: existing.callId, name: existing.name };
+            if (typeof data.arguments === "string" && data.arguments && !existing.args) yield { type: "tool_call_delta", arguments: data.arguments };
+            yield { type: "tool_call_end" };
+            responseTools.delete(itemId);
+          }
+          continue;
+        }
+        if (data.type === "response.output_item.added" || data.type === "response.output_item.done") {
+          const item = data.item as Record<string, unknown> | undefined;
+          if (item?.type === "function_call") {
+            const itemId = String(item.id ?? item.call_id ?? "");
+            const callId = String(item.call_id ?? itemId);
+            const name = String(item.name ?? "");
+            const args = typeof item.arguments === "string" ? item.arguments : "";
+            const existing = responseTools.get(itemId) ?? { callId, name, args: "", started: false };
+            existing.callId = callId || existing.callId;
+            existing.name = name || existing.name;
+            responseTools.set(itemId, existing);
+            if (data.type === "response.output_item.done") {
+              if (!existing.started) yield { type: "tool_call_start", id: existing.callId, name: existing.name };
+              if (args && !existing.args) yield { type: "tool_call_delta", arguments: args };
+              yield { type: "tool_call_end" };
+              responseTools.delete(itemId);
+            }
+          }
+          continue;
+        }
+        if (data.type === "response.completed") {
+          const responsePayload = data.response as Record<string, unknown> | undefined;
+          const output = responsePayload?.output as Array<Record<string, unknown>> | undefined;
+          if (output && !sawResponsesTextDelta) {
+            for (const item of output) {
+              if (item.type !== "message") continue;
+              const content = item.content as Array<Record<string, unknown>> | undefined;
+              for (const part of content ?? []) {
+                if (part.type === "output_text" && typeof part.text === "string" && part.text) yield { type: "text_delta", text: part.text };
+              }
+            }
+          }
+          const u = responsePayload?.usage as Record<string, unknown> | undefined;
+          if (u) usage = responsesUsage(u);
+          yield { type: "done", usage };
+          return;
+        }
         const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
         if (!choice) continue;
         const delta = choice.delta as Record<string, unknown> | undefined;
@@ -157,4 +286,16 @@ export async function* streamCopilot(response: Response): AsyncGenerator<Adapter
   } finally {
     reader.releaseLock();
   }
+}
+
+function responsesUsage(u: Record<string, unknown>): OcxUsage {
+  const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  const inputDetails = u.input_tokens_details as Record<string, unknown> | undefined;
+  const outputDetails = u.output_tokens_details as Record<string, unknown> | undefined;
+  return {
+    inputTokens: num(u.input_tokens),
+    outputTokens: num(u.output_tokens),
+    ...(num(inputDetails?.cached_tokens) ? { cachedInputTokens: num(inputDetails?.cached_tokens) } : {}),
+    ...(num(outputDetails?.reasoning_tokens) ? { reasoningOutputTokens: num(outputDetails?.reasoning_tokens) } : {}),
+  };
 }
