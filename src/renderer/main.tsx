@@ -2109,6 +2109,21 @@ function App(): React.JSX.Element {
     void window.devilCodex.cacheThreadHistory({ id: threadId, items, runtime: runtimeForThread }).catch(() => undefined);
   }
 
+  function removeItemFromThread(threadId: string, itemId: string): void {
+    if (!threadId || !itemId) return;
+    const remove = (current: ThreadHistoryItem[]): ThreadHistoryItem[] => current.filter((item) => item.id !== itemId);
+    if (threadRef.current?.id === threadId) {
+      setItems((current) => {
+        const next = remove(current);
+        itemsRef.current = next;
+        persistThreadHistory(threadId, next);
+        return next;
+      });
+      return;
+    }
+    persistThreadHistory(threadId, remove(threadHistoryCache.current.get(threadId) ?? []));
+  }
+
   function ensureCompactionMarker(threadId: string, turnId?: string): void {
     if (!threadId) return;
     const entry = { id: `compaction-${turnId || threadId}`, kind: "compaction" as const, title: "컨텍스트가 자동으로 압축됨", status: "completed" as const };
@@ -2280,11 +2295,37 @@ function App(): React.JSX.Element {
     const index = queue.findIndex((item) => item.id === id);
     if (index < 0) return;
     const [entry] = queue.splice(index, 1);
+    if (queue.length === 0) queuedTurns.current.delete(threadId);
+    else queuedTurns.current.set(threadId, queue);
+    syncQueuedView(threadId);
+
+    const activeTurnId = runningTurnsRef.current[threadId]?.turnId ?? activeTurnsByThread.current.get(threadId);
+    const canNativeSteer = entry.pending.runtime === "codex"
+      && (entry.pending.provider ?? "codex") === "codex"
+      && Boolean(activeTurnId)
+      && (entry.pending.skills ?? []).length === 0
+      && (entry.pending.attachments ?? []).length === 0
+      && (entry.pending.attachmentDetails ?? []).length === 0;
+    if (canNativeSteer && activeTurnId) {
+      const modelNotice = modelChangeItemForThread(threadId, entry.pending.provider ?? "codex", entry.pending.model, entry.pending.accountId);
+      if (modelNotice) appendItemToThread(threadId, modelNotice);
+      appendItemToThread(threadId, entry.userItem);
+      void window.devilCodex.steerTurn({ threadId, text: entry.pending.text, expectedTurnId: activeTurnId, runtime: "codex" }).catch((error) => {
+        if (modelNotice) removeItemFromThread(threadId, modelNotice.id);
+        removeItemFromThread(threadId, entry.userItem.id);
+        appendItemToThread(threadId, { id: crypto.randomUUID(), kind: "system", title: "스티어링 실패", text: `${String(error)}\n대기열 중단 방식으로 다시 시도합니다.` });
+        entry.pending = steeringPending(entry.pending);
+        entry.steering = true;
+        enqueueTurn(threadId, entry, true);
+        if (runningTurnsRef.current[threadId]) interruptForSteer(threadId);
+        else startQueuedTurn(threadId);
+      });
+      return;
+    }
+
     entry.pending = steeringPending(entry.pending);
     entry.steering = true;
-    queue.unshift(entry);
-    queuedTurns.current.set(threadId, queue);
-    syncQueuedView(threadId);
+    enqueueTurn(threadId, entry, true);
     if (runningTurnsRef.current[threadId]) interruptForSteer(threadId);
     else startQueuedTurn(threadId);
   }
