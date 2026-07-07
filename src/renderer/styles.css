@@ -789,7 +789,7 @@ button:active:not(:disabled) { transform: scale(.96); }
 .send-button:disabled { background: #454545; color: #838383; }
 .stop-button { color: #303030; }
 
-.environment-card { position: absolute; z-index: 6; top: 14px; right: 16px; width: min(300px, calc(100% - 24px)); max-height: min(680px, calc(100vh - 112px)); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
+.environment-card { position: absolute; z-index: 24; top: 6px; right: 16px; box-sizing: border-box; width: min(300px, calc(100% - 24px)); max-height: min(560px, calc(100vh - 210px)); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border: 1px solid #3a3a3a; border-radius: 16px; background: #2c2c2c; box-shadow: 0 18px 60px #00000045; padding: 7px; font-size: 13px; }
 .environment-card header { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 8px; color: #a7a7a7; font-size: 12px; }
 .environment-card header button { display: grid; width: 24px; height: 24px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #a7a7a7; font-size: 18px; }
 .environment-card header button:hover { background: #3a3a3a; }

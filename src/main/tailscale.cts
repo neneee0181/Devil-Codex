@@ -148,7 +148,21 @@ export class TailscaleCli {
 
     try {
       const result = await this.exec(cliPath, ["status", "--json"]);
-      const parsed = JSON.parse(result.stdout) as TailscaleStatusJson;
+      const statusOutput = result.stdout.trim();
+      let parsed: TailscaleStatusJson;
+      try {
+        parsed = JSON.parse(statusOutput) as TailscaleStatusJson;
+      } catch {
+        return {
+          installed: true,
+          online: false,
+          dnsName: null,
+          tailscaleIp: null,
+          localInterfaceIp: detectLocalTailscaleIp(),
+          cliPath,
+          error: statusOutput || result.stderr.trim() || "Tailscale returned a non-JSON status response.",
+        };
+      }
       const dnsName = parsed.Self?.DNSName?.trim() ?? "";
       const tailscaleIp = parsed.Self?.TailscaleIPs?.find((value) => isTailscaleIpv4(String(value)));
       return {
