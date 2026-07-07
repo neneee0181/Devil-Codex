@@ -16,7 +16,7 @@ const defaults: CodexSettings = {
   subagentMcpEnabled: true,
   englishOutput: false,
   remoteControlEnabled: false,
-  remoteControlMode: "tailnet",
+  remoteControlMode: "funnel",
   remoteAllowedThreadIds: [],
 };
 const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode", remoteAllowedThreadIds: "remote_allowed_thread_ids" } as const;
@@ -31,7 +31,7 @@ const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "
 // non-priority tier set by stock (e.g. "flex") is preserved on save while the
 // speed stays "standard", so Devil never clobbers a tier it doesn't model.
 const reasoningEffortValues = new Set<CodexSettings["reasoningEffort"]>(["low", "medium", "high", "xhigh"]);
-const remoteControlModeValues = new Set<RemoteControlMode>(["tailnet", "funnel"]);
+const remoteControlModeValues = new Set<RemoteControlMode>(["funnel"]);
 
 function readReasoningEffort(source: string): CodexSettings["reasoningEffort"] | undefined {
   const value = readValue(source, keys.reasoningEffort) as CodexSettings["reasoningEffort"] | undefined;

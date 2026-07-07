@@ -2482,10 +2482,13 @@ function App(): React.JSX.Element {
           const localHistory = threadHistoryCache.current.get(threadId) ?? visibleItemsForThread(threadId) ?? [];
           const cachedAccountId = threadRef.current?.id === threadId ? threadRef.current.accountId : undefined;
           const cachedRuntime = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : pendingForThread(threadId)?.runtime ?? agentRuntime;
-          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
-          if (cachedRuntime === "claude-code") return;
+          if (cachedRuntime !== "claude-code") {
+            await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
+          }
           const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
-          let recoveredHistory = annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
+          let recoveredHistory = cachedRuntime === "claude-code"
+            ? annotateAgentMessages(history.length ? history : localHistory, turnId, completedPending ?? undefined)
+            : annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
             if (!alreadyWarned) recoveredHistory = [...recoveredHistory, finalAnswerMissingNotice(turnId)];

@@ -33,10 +33,13 @@ type ClaudeJsonLine = {
   cwd?: string;
   timestamp?: string;
   isSidechain?: boolean;
+  isMeta?: boolean;
   isApiErrorMessage?: boolean;
   apiErrorStatus?: number;
   error?: string;
   version?: string;
+  promptSource?: string;
+  origin?: { kind?: unknown };
   content?: unknown;
   compactMetadata?: Record<string, unknown>;
   compact_metadata?: Record<string, unknown>;
@@ -102,17 +105,83 @@ function isClaudeHookNoiseText(text: string): boolean {
     || /Loading caveman mode/i.test(normalized);
 }
 
+function stripClaudeRuntimePrefix(text: string): string {
+  return text
+    .replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "")
+    .replace(/^Base directory for this skill:[\s\S]*?\n\n## User Request\n\n/, "")
+    .trim();
+}
+
+function isClaudeAutoContinuationText(text: string): boolean {
+  const normalized = text.trimStart();
+  return normalized.startsWith("<task-notification")
+    || normalized.startsWith("<scheduled-wakeup")
+    || normalized.startsWith("<background-task");
+}
+
+function isClaudeInternalUserLine(line: ClaudeJsonLine, text: string): boolean {
+  if (line.isMeta) return true;
+  if (String(line.origin?.kind ?? "") === "task-notification") return true;
+  if (String(line.promptSource ?? "") === "system" && isClaudeAutoContinuationText(text)) return true;
+  return isClaudeAutoContinuationText(text);
+}
+
 function isClaudeToolResultOnly(content: unknown): boolean {
   const parts = claudeContentParts(content);
   return parts.length > 0 && parts.every((part) => String(part.type ?? "") === "tool_result");
 }
 
+function xmlTagValue(text: string, tag: string): string {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i").exec(text);
+  return match?.[1]?.trim() ?? "";
+}
+
+function claudeTaskNotificationEntry(id: string, text: string): ThreadActivityEntry {
+  const status = xmlTagValue(text, "status");
+  const summary = xmlTagValue(text, "summary");
+  const taskId = xmlTagValue(text, "task-id");
+  const outputFile = xmlTagValue(text, "output-file");
+  const detail = [
+    summary,
+    taskId ? `task: ${taskId}` : "",
+    outputFile ? `output: ${outputFile}` : "",
+  ].filter(Boolean).join("\n");
+  return {
+    id,
+    kind: "diagnostic",
+    title: "Claude 백그라운드 작업 알림",
+    detail: detail || text,
+    status: status === "failed" || status === "stopped" ? "failed" : "completed",
+  };
+}
+
 function hasClaudeImportNoise(items: ThreadHistoryItem[]): boolean {
   return items.some((item) => {
     if (item.kind === "user" && isClaudeLocalCommandText(item.text)) return true;
+    if (item.kind === "user" && isClaudeAutoContinuationText(item.text)) return true;
+    if (item.kind === "user" && stripClaudeRuntimePrefix(item.text) !== item.text.trim()) return true;
+    if (item.kind === "user" && item.text.trimStart().startsWith("Base directory for this skill:")) return true;
     if (item.kind === "activity" && item.id.startsWith("activity-") && !item.turnId?.startsWith("claude-")) return true;
     return false;
   });
+}
+
+function latestVisibleClaudeTime(lines: ClaudeJsonLine[]): number {
+  let latest = 0;
+  for (const line of lines) {
+    if (line.type !== "user" && line.type !== "assistant") continue;
+    const role = String(line.message?.role ?? line.type);
+    const text = stripClaudeRuntimePrefix(claudeTextContent(line.message?.content));
+    if (role === "user") {
+      if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(line.message?.content) || isClaudeInternalUserLine(line, text)) continue;
+    } else if (role === "assistant") {
+      if (!text || isClaudeHookNoiseText(text)) continue;
+    } else {
+      continue;
+    }
+    latest = Math.max(latest, claudeLineTime(line));
+  }
+  return latest;
 }
 
 function claudeLineTime(line: ClaudeJsonLine): number {
@@ -158,15 +227,17 @@ function claudeCompactTitle(line: ClaudeJsonLine): string {
 
 function claudeSessionFallbackText(lines: ClaudeJsonLine[]): string {
   const leafUuid = String((lines.find((line) => line.type === "last-prompt") as Record<string, unknown> | undefined)?.leafUuid ?? "");
-  const leafText = leafUuid ? claudeLineText(lines.find((line) => line.uuid === leafUuid) ?? {}) : "";
-  if (leafText && !isClaudeLocalCommandText(leafText) && !isClaudeHookNoiseText(leafText)) return leafText;
+  const leafLine = leafUuid ? lines.find((line) => line.uuid === leafUuid) : undefined;
+  const leafText = leafLine ? stripClaudeRuntimePrefix(claudeLineText(leafLine)) : "";
+  if (leafText && !isClaudeLocalCommandText(leafText) && !isClaudeHookNoiseText(leafText) && !isClaudeInternalUserLine(leafLine ?? {}, leafText)) return leafText;
   for (const line of lines) {
-    const text = claudeLineText(line);
+    const text = stripClaudeRuntimePrefix(claudeLineText(line));
     if (!text) continue;
     if (/resume cancelled/i.test(text)) continue;
     if (/^(Kept model as|Set model to)/i.test(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim())) continue;
     if (isClaudeLocalCommandText(text)) continue;
     if (isClaudeHookNoiseText(text)) continue;
+    if (isClaudeInternalUserLine(line, text)) continue;
     return text;
   }
   return "";
@@ -565,7 +636,9 @@ export class ProviderTranscriptStore {
       const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text || fallbackText || firstUser;
       const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0) || nowSeconds();
       const existing = all.items[threadId] ?? [];
-      if (history.length && (history.length >= existing.length || hasClaudeImportNoise(existing))) all.items[threadId] = history;
+      const nativeUpdatedAt = latestVisibleClaudeTime(lines);
+      const localUpdatedAt = all.meta[threadId]?.updatedAt ?? 0;
+      if (history.length && (history.length >= existing.length || nativeUpdatedAt > localUpdatedAt || hasClaudeImportNoise(existing))) all.items[threadId] = history;
       else all.items[threadId] ??= [];
       all.meta[threadId] = {
         ...all.meta[threadId],
@@ -633,8 +706,8 @@ export class ProviderTranscriptStore {
         const role = String(line.message?.role ?? line.type);
         const content = line.message?.content;
         if (role === "user") {
-          const text = claudeTextContent(content);
-          if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(content)) {
+          const text = stripClaudeRuntimePrefix(claudeTextContent(content));
+          if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(content) && !isClaudeInternalUserLine(line, text)) {
             turnId_ = `${threadId}-claude-turn-${index_++}`;
           }
           turnIdByIndex[index] = turnId_;
@@ -665,7 +738,12 @@ export class ProviderTranscriptStore {
       const content = line.message?.content;
       const id = String(line.uuid ?? `${threadId}-claude-${index}`);
       if (role === "user") {
-        const text = claudeTextContent(content);
+        const text = stripClaudeRuntimePrefix(claudeTextContent(content));
+        if (text && isClaudeInternalUserLine(line, text)) {
+          const turnId = turnIdByIndex[index] || currentTurnId;
+          if (turnId && isClaudeAutoContinuationText(text)) ensureActivity(turnId, claudeTaskNotificationEntry(id, text));
+          return;
+        }
         if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return;
         currentTurnId = `${threadId}-claude-turn-${turnIndex++}`;
         items.push({ id, kind: "user", text, turnId: currentTurnId });

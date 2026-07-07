@@ -422,6 +422,11 @@ function compactDetail(meta: Record<string, unknown>): string {
 }
 
 type ActiveTurn = { context: TurnContext; resolve: () => void; reject: (error: unknown) => void };
+type BackgroundTurn = ActiveTurn & { background: true; startedAt: number; usageSnapshot?: TurnUsageSnapshot };
+
+function isBackgroundTurn(turn: ActiveTurn): turn is BackgroundTurn {
+  return (turn as { background?: unknown }).background === true;
+}
 
 // One live Claude Code process per Devil thread. Later turns stream into the
 // same process instead of respawning per turn, matching the stock CLI's
@@ -660,19 +665,26 @@ export class ClaudeCodeRuntime extends EventEmitter {
       // does not render a spurious "요청 실패" system row.
       return { sessionId: nativeSessionId, turnId, usage: turnUsageResult(usageSnapshot), ...(sdkContextUsage ?? usageSnapshot?.contextUsage ? { contextUsage: sdkContextUsage ?? usageSnapshot?.contextUsage } : {}) };
     }).finally(() => {
-      this.active.delete(input.threadId);
+      const currentTurn = instance.currentTurn;
+      const stillThisTurn = currentTurn?.context.turnId === turnId;
+      const anotherTurnStarted = Boolean(currentTurn && !stillThisTurn);
+      if (!anotherTurnStarted) this.active.delete(input.threadId);
       this.streamedAgentText.delete(`${input.threadId}:${turnId}`);
-      for (const [id, tool] of this.toolRuns) {
-        if (tool.threadId === input.threadId) this.toolRuns.delete(id);
-      }
-      for (const [id, pending] of this.pendingApprovals) {
-        if (pending.threadId === input.threadId) {
-          this.pendingApprovals.delete(id);
-          pending.resolve("cancel");
+      if (!anotherTurnStarted) {
+        for (const [id, tool] of this.toolRuns) {
+          if (tool.threadId === input.threadId) this.toolRuns.delete(id);
+        }
+        for (const [id, pending] of this.pendingApprovals) {
+          if (pending.threadId === input.threadId) {
+            this.pendingApprovals.delete(id);
+            pending.resolve("cancel");
+          }
         }
       }
-      instance.currentTurn = undefined;
-      this.scheduleIdleReap(input.threadId, instance);
+      if (stillThisTurn) instance.currentTurn = undefined;
+      if (!anotherTurnStarted) {
+        this.scheduleIdleReap(input.threadId, instance);
+      }
     });
     return result;
   }
@@ -811,7 +823,7 @@ export class ClaudeCodeRuntime extends EventEmitter {
   private async pumpInstance(threadId: string, instance: ThreadInstance): Promise<void> {
     try {
       for await (const message of instance.request) {
-        const turn = instance.currentTurn;
+        const turn = instance.currentTurn ?? this.backgroundTurnForMessage(threadId, instance, message);
         if (!turn) {
           const sessionId = "session_id" in message && typeof message.session_id === "string" ? message.session_id : undefined;
           if (sessionId) instance.sessionId = sessionId;
@@ -820,6 +832,28 @@ export class ClaudeCodeRuntime extends EventEmitter {
         this.handleSdkMessage(message, turn.context);
         if (message.type === "result") {
           instance.currentTurn = undefined;
+          if (isBackgroundTurn(turn)) {
+            const status = String(message.subtype ?? "") === "success" ? "completed" : "failed";
+            this.emitEvent({
+              method: "turn/completed",
+              params: {
+                threadId,
+                turnId: turn.context.turnId,
+                turn: {
+                  id: turn.context.turnId,
+                  status,
+                  durationMs: Date.now() - turn.startedAt,
+                  ...(turn.usageSnapshot ? {
+                    usage: turn.usageSnapshot.usage,
+                    ...(turn.usageSnapshot.modelContextWindow ? { modelContextWindow: turn.usageSnapshot.modelContextWindow } : {}),
+                    ...(turn.usageSnapshot.contextUsage ? { contextUsage: turn.usageSnapshot.contextUsage } : {}),
+                  } : {}),
+                },
+              },
+            });
+            if (this.active.get(threadId) === instance.abortController) this.active.delete(threadId);
+            this.streamedAgentText.delete(`${threadId}:${turn.context.turnId}`);
+          }
           turn.resolve();
         }
       }
@@ -831,6 +865,48 @@ export class ClaudeCodeRuntime extends EventEmitter {
     } finally {
       this.disposeInstance(threadId, instance, { abort: true });
     }
+  }
+
+  private backgroundTurnForMessage(threadId: string, instance: ThreadInstance, message: ClaudeSdkMessage): BackgroundTurn | undefined {
+    if (instance.disposed || instance.currentTurn) return undefined;
+    if (!this.isClaudeContinuationMessage(message)) return undefined;
+    const turnId = `claude-bg-${crypto.randomUUID()}`;
+    const itemId = `claude-message-${crypto.randomUUID()}`;
+    const startedAt = Date.now();
+    const turn: BackgroundTurn = {
+      background: true,
+      startedAt,
+      context: {
+        threadId,
+        turnId,
+        fallbackItemId: itemId,
+        onTextDelta: () => undefined,
+        onFinalText: () => undefined,
+        onSessionId: (sessionId) => {
+          instance.sessionId = sessionId;
+        },
+        onUsage: (snapshot) => {
+          turn.usageSnapshot = snapshot;
+        },
+      },
+      resolve: () => undefined,
+      reject: () => undefined,
+    };
+    instance.currentTurn = turn;
+    this.active.set(threadId, instance.abortController);
+    this.emitEvent({ method: "turn/started", params: { threadId, turnId, turn: { id: turnId, startedAt: startedAt / 1000 } } });
+    return turn;
+  }
+
+  private isClaudeContinuationMessage(message: ClaudeSdkMessage): boolean {
+    if (message.parent_tool_use_id) return false;
+    if (message.type === "result") return false;
+    if (message.type === "assistant" || message.type === "user" || message.type === "stream_event") return true;
+    if (message.type === "system") {
+      const subtype = String(message.subtype ?? "");
+      return subtype === "compact_boundary" || subtype === "status" || subtype === "permission_denied";
+    }
+    return false;
   }
 
   private disposeInstance(threadId: string, instance: ThreadInstance, opts: { abort: boolean }): void {

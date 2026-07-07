@@ -99,7 +99,7 @@ function RemoteControlSection(): React.JSX.Element {
   const [status, setStatus] = useState<RemoteControlStatus | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | "tailscale-up" | null>(null);
-  const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("tailnet");
+  const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("funnel");
   const [error, setError] = useState<string | null>(null);
   const scopeCodex = useCodexSettings();
   const allowedThreadIds = scopeCodex.settings?.remoteAllowedThreadIds ?? [];
@@ -114,7 +114,7 @@ function RemoteControlSection(): React.JSX.Element {
     try {
       const next = await window.devilCodex.remoteStatus();
       setStatus(next);
-      setSelectedMode(next.mode);
+      setSelectedMode("funnel");
       setState("ready");
     } catch (cause) {
       setState("error");
@@ -125,7 +125,7 @@ function RemoteControlSection(): React.JSX.Element {
   useEffect(() => { void reload(); }, []);
   useEffect(() => window.devilCodex.onRemoteStatus((next) => {
     setStatus(next);
-    setSelectedMode(next.mode);
+    setSelectedMode("funnel");
     setError(null);
     setState("ready");
   }), []);
@@ -136,7 +136,7 @@ function RemoteControlSection(): React.JSX.Element {
     try {
       const next = await task();
       setStatus(next);
-      setSelectedMode(next.mode);
+      setSelectedMode("funnel");
       setState("ready");
     } catch (cause) {
       setError(toErrorMessage(cause, "원격 제어 작업에 실패했습니다."));
@@ -160,7 +160,7 @@ function RemoteControlSection(): React.JSX.Element {
     try {
       const result = await window.devilCodex.remoteTailscaleUp();
       setStatus(result.status);
-      setSelectedMode(result.status.mode);
+      setSelectedMode("funnel");
       if (result.authUrl) {
         setError(`Tailscale 로그인이 필요합니다. 브라우저에서 인증을 완료한 뒤 다시 시도하세요: ${result.authUrl}`);
         void window.devilCodex.openExternalUrl({ url: result.authUrl });
@@ -182,26 +182,21 @@ function RemoteControlSection(): React.JSX.Element {
   const needsHttpsCertificateHelp = !isFunnelActivationError && /does not support getting TLS certs|tls cert|certificate|HTTPS Certificates|인증서/i.test(remoteErrorMessage ?? "");
   const disabled = state === "loading" || action !== null;
   const hasPendingModeChange = Boolean(status?.enabled && selectedMode !== status.mode);
-  const handleModeChange = (value: string): void => {
-    const nextMode = value as RemoteControlMode;
-    if (nextMode === selectedMode) return;
-    setSelectedMode(nextMode);
-    if (status?.enabled) setError(null);
-  };
+  const handleModeChange = (_value: string): void => setSelectedMode("funnel");
 
   return <>
     <div className="setting-card">
       <Row title="원격 제어 사용" detail="켜면 현재 PC를 다른 기기에서 열 수 있는 임시 접속 주소와 인증 토큰을 준비합니다.">
         <Toggle value={Boolean(status?.enabled)} onChange={(value) => {
-          if (value) void runAction("enable", () => window.devilCodex.remoteEnable({ mode: selectedMode }));
+          if (value) void runAction("enable", () => window.devilCodex.remoteEnable({ mode: "funnel" }));
           else void runAction("disable", () => window.devilCodex.remoteDisable());
         }} disabled={disabled} />
       </Row>
-      <Row title="접속 모드" detail="tailnet은 같은 Tailscale 네트워크 안에서만 열리고, Funnel은 외부 인터넷 공개 URL을 사용합니다. 실행 중에 바꾸면 서버와 QR을 새 모드로 다시 준비합니다.">
-        <Select value={selectedMode} options={["tailnet", "funnel"]} onChange={handleModeChange} disabled={disabled} />
+      <Row title="접속 모드" detail="Funnel 공개 URL만 사용합니다. tailnet 직접 접속 모드는 현재 비활성화되어 있습니다.">
+        <Select value={selectedMode} options={["funnel"]} onChange={handleModeChange} disabled={disabled} />
       </Row>
       {hasPendingModeChange && <Row title="모드 변경 대기" detail="현재 실행 모드와 선택한 모드가 다릅니다. 변경 적용을 누르면 서버와 QR을 새 모드로 다시 준비합니다.">
-        <button className="secondary" onClick={() => void runAction("apply", () => window.devilCodex.remoteEnable({ mode: selectedMode }))} disabled={disabled}>변경 적용</button>
+        <button className="secondary" onClick={() => void runAction("apply", () => window.devilCodex.remoteEnable({ mode: "funnel" }))} disabled={disabled}>변경 적용</button>
       </Row>}
       <Row title="현재 상태" detail="main 프로세스가 반환한 원격 제어 상태를 그대로 보여줍니다.">
         <div style={{ display: "grid", gap: 6, justifyItems: "end", textAlign: "right", minWidth: 220 }}>

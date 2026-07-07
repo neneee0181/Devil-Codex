@@ -32,7 +32,7 @@ import { AskControlServer, type AskAnswerPayload, type AskQuestionPayload } from
 import { SubagentControlServer, type SubagentDelegatePayload, type SubagentDelegateResult } from "./subagent-control-server.cjs";
 import { RemoteAuthStore } from "./remote-auth.cjs";
 import { RemoteServer } from "./remote-server.cjs";
-import { TAILSCALE_DOWNLOAD_URL, TailscaleCli, detectLocalTailscaleIp } from "./tailscale.cjs";
+import { TAILSCALE_DOWNLOAD_URL, TailscaleCli } from "./tailscale.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
@@ -216,6 +216,8 @@ function truncateMirroredRolloutText(text: string, maxChars: number): string {
 function stripInternalDirectives(text: string): string {
   const withoutDirectiveBlocks = text
     .replace(/\r\n/g, "\n")
+    .replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "")
+    .replace(/^Base directory for this skill:[\s\S]*?\n\n## User Request\n\n/, "")
     .replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "")
     .replace(new RegExp(`\\n*---\\n${escapeRegExp(ASK_USER_MCP_DIRECTIVE)}\\s*$`), "")
     .replace(/\n*---\n\[Ask-user MCP directive\][\s\S]*?(?=\n---\n|\n#|\n\d+\. |\n[A-Z][^\n]*:\n|$)/g, "")
@@ -224,7 +226,11 @@ function stripInternalDirectives(text: string): string {
 }
 
 function isInternalContinuationSummary(text: string): boolean {
-  return text.trimStart().startsWith("This session is being continued from a previous conversation that ran out of context.");
+  const normalized = text.trimStart();
+  return normalized.startsWith("This session is being continued from a previous conversation that ran out of context.")
+    || normalized.startsWith("<task-notification")
+    || normalized.startsWith("<scheduled-wakeup")
+    || normalized.startsWith("<background-task");
 }
 
 function stripInternalDirectivesFromHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -1713,7 +1719,7 @@ async function remoteStatus(): Promise<RemoteControlStatus> {
   const tailscale = remoteLastTailscaleStatus ?? await new TailscaleCli().status();
   return {
     enabled: settings.remoteControlEnabled && Boolean(remoteServer),
-    mode: settings.remoteControlMode,
+    mode: "funnel",
     ...(remotePublicUrl ? { url: remoteUrlWithToken(remotePublicUrl, authSnapshot.token) } : {}),
     ...(remotePublicUrl ? { qrDataUrl: await QRCode.toDataURL(remoteUrlWithToken(remotePublicUrl, authSnapshot.token), { margin: 1, width: 320 }) } : {}),
     tokenPreview: remoteTokenPreview(authSnapshot.token),
@@ -1732,23 +1738,10 @@ async function remoteStatus(): Promise<RemoteControlStatus> {
   };
 }
 
-async function maybeTailscaleTls(hostname: string): Promise<{ cert: Buffer; key: Buffer } | undefined> {
-  const tlsDir = join(app.getPath("userData"), "remote-control");
-  const certFile = join(tlsDir, "tailscale.crt");
-  const keyFile = join(tlsDir, "tailscale.key");
-  try {
-    await new TailscaleCli().cert({ hostname, certFile, keyFile });
-    const [cert, key] = await Promise.all([readFile(certFile), readFile(keyFile)]);
-    return { cert, key };
-  } catch (error) {
-    remoteLastError = `Tailscale 인증서를 만들지 못해 HTTP로 폴백했습니다: ${error instanceof Error ? error.message : String(error)}`;
-    return undefined;
-  }
-}
-
 async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteControlStatus> {
+  if (mode !== "funnel") throw new Error("tailnet 접속 모드는 현재 비활성화되어 있습니다. Funnel만 사용할 수 있습니다.");
   const previous = await settingsStore.load();
-  if (mode === "funnel" && previous.remoteControlMode !== "funnel") {
+  if (previous.remoteControlMode !== "funnel") {
     await new TailscaleCli().funnelOn(REMOTE_CONTROL_PORT);
   }
 
@@ -1763,13 +1756,12 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
   if (!tailscale.online) throw new Error(tailscale.error || "Tailscale 로그인 또는 연결이 필요합니다.");
 
   const dnsName = cleanTailscaleName(tailscale.dnsName);
-  if (mode === "funnel" && !dnsName) throw new Error("Tailscale Funnel URL을 만들 DNS 이름을 찾지 못했습니다.");
-  const tailnetIp = tailscale.tailscaleIp ?? detectLocalTailscaleIp();
-  const bindHost = mode === "funnel" ? "127.0.0.1" : tailnetIp;
+  if (!dnsName) throw new Error("Tailscale Funnel URL을 만들 DNS 이름을 찾지 못했습니다.");
+  const bindHost = "127.0.0.1";
   if (!bindHost) throw new Error("Tailscale 100.64/10 인터페이스 IP를 찾지 못했습니다.");
 
   const auth = remoteAuth();
-  const tls = dnsName && mode === "tailnet" ? await maybeTailscaleTls(dnsName) : undefined;
+  const tls = undefined;
   remoteProtocol = tls ? "https" : "http";
   const server = new RemoteServer({
     handlers: buildRemoteIpcHandlers(),
@@ -1800,20 +1792,15 @@ async function startRemoteControl(mode: RemoteControlMode): Promise<RemoteContro
   const started = await server.start({ host: bindHost, port: REMOTE_CONTROL_PORT, ...(tls ? { tls } : {}) });
   remoteServer = server;
 
-  if (mode === "funnel") {
-    try {
-      await new TailscaleCli().funnelOn(started.port);
-    } catch (error) {
-      await stopRemoteControl({ saveSettings: false });
-      throw error;
-    }
-    remotePublicUrl = `https://${dnsName}`;
-  } else {
-    const hostForUrl = dnsName ?? bindHost;
-    remotePublicUrl = `${remoteProtocol}://${hostForUrl}:${started.port}`;
+  try {
+    await new TailscaleCli().funnelOn(started.port);
+  } catch (error) {
+    await stopRemoteControl({ saveSettings: false });
+    throw error;
   }
+  remotePublicUrl = `https://${dnsName}`;
 
-  await settingsStore.save({ ...previous, remoteControlEnabled: true, remoteControlMode: mode });
+  await settingsStore.save({ ...previous, remoteControlEnabled: true, remoteControlMode: "funnel" });
   const status = await remoteStatus();
   sendToRenderer("remote:status", status);
   return status;
@@ -2179,7 +2166,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return next;
   });
   ipcMain.handle("remote:status", () => remoteStatus());
-  ipcMain.handle("remote:enable", async (_event, input: { mode?: RemoteControlMode }) => startRemoteControl(input?.mode === "funnel" ? "funnel" : "tailnet"));
+  ipcMain.handle("remote:enable", async (_event, input: { mode?: RemoteControlMode }) => startRemoteControl(input?.mode === "tailnet" ? "tailnet" : "funnel"));
   ipcMain.handle("remote:disable", () => stopRemoteControl());
   ipcMain.handle("remote:regenerate-token", () => regenerateRemoteToken());
   ipcMain.handle("remote:revoke-device", (_event, input: { deviceId?: string }) => revokeRemoteDevice(String(input?.deviceId ?? "")));
