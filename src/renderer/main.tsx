@@ -922,57 +922,100 @@ function threadUsageRowDetail(row: ThreadUsageModel): string {
   return parts.join(" · ");
 }
 
-function summarizeThreadUsage(input: { threadId?: string; contextUsage?: ContextUsage; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[] }): ThreadUsageSummary {
+function emptyThreadUsageRow(input: { key: string; label: string; provider: ProviderId | "unknown"; model: string }): ThreadUsageModel {
+  return {
+    key: input.key,
+    label: input.label,
+    provider: input.provider,
+    model: input.model,
+    requests: 0,
+    completed: 0,
+    failed: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    freshTokens: 0,
+    cacheMisses: 0,
+    durationMs: 0,
+    estimatedCost: 0,
+    pricedTokens: 0,
+  };
+}
+
+function addUsageToThreadRow(row: ThreadUsageModel, usage: ProviderTokenUsage): void {
+  const usageBreakdown = providerUsageInputBreakdown(usage);
+  row.inputTokens += usageBreakdown.uncachedInput;
+  row.outputTokens += usage.outputTokens;
+  row.cachedInputTokens += usageBreakdown.cached;
+  row.cacheReadTokens += usageBreakdown.cacheRead;
+  row.cacheCreationTokens += usageBreakdown.cacheCreation;
+  row.reasoningOutputTokens += usage.reasoningOutputTokens ?? 0;
+  row.totalTokens += providerTokenTotal(usage);
+  row.freshTokens += providerUsageFreshTokens(usage);
+  if (usage.cacheMissReason) {
+    row.cacheMisses += 1;
+    row.latestCacheMissReason = usage.cacheMissReason;
+    row.latestCacheMissedInputTokens = usage.cacheMissedInputTokens;
+  }
+}
+
+function summarizeThreadUsage(input: { threadId?: string; contextUsage?: ContextUsage; providers: ProviderInfo[]; requestLog: ProviderRequestLogEntry[]; items: ThreadHistoryItem[]; defaultRuntime: AgentRuntimeId; defaultProvider: ProviderId; defaultModel: string }): ThreadUsageSummary {
   const rows = new Map<string, ThreadUsageModel>();
   for (const entry of input.requestLog) {
     if (!input.threadId || !entry.threadId || entry.threadId !== input.threadId) continue;
     const key = `${entry.provider}:${entry.accountId ?? "default"}:${entry.model}`;
-    const row = rows.get(key) ?? {
+    const row = rows.get(key) ?? emptyThreadUsageRow({
       key,
       label: `${providerDisplayName(entry.provider, input.providers)}${entry.accountLabel ? ` · ${entry.accountLabel}` : ""} · ${entry.model || "unknown"}`,
       provider: entry.provider,
       model: entry.model || "unknown",
-      requests: 0,
-      completed: 0,
-      failed: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      reasoningOutputTokens: 0,
-      totalTokens: 0,
-      freshTokens: 0,
-      cacheMisses: 0,
-      durationMs: 0,
-      estimatedCost: 0,
-      pricedTokens: 0,
-    };
+    });
     row.requests += 1;
     if (entry.status === "completed") row.completed += 1;
     if (entry.status === "failed") row.failed += 1;
     row.durationMs += entry.durationMs ?? 0;
     if (entry.usage) {
-      const usageBreakdown = providerUsageInputBreakdown(entry.usage);
-      row.inputTokens += usageBreakdown.uncachedInput;
-      row.outputTokens += entry.usage.outputTokens;
-      row.cachedInputTokens += usageBreakdown.cached;
-      row.cacheReadTokens += usageBreakdown.cacheRead;
-      row.cacheCreationTokens += usageBreakdown.cacheCreation;
-      row.reasoningOutputTokens += entry.usage.reasoningOutputTokens ?? 0;
-      row.totalTokens += providerTokenTotal(entry.usage);
-      row.freshTokens += providerUsageFreshTokens(entry.usage);
-      if (entry.usage.cacheMissReason) {
-        row.cacheMisses += 1;
-        row.latestCacheMissReason = entry.usage.cacheMissReason;
-        row.latestCacheMissedInputTokens = entry.usage.cacheMissedInputTokens;
-      }
+      addUsageToThreadRow(row, entry.usage);
       const cost = estimateProviderUsageCost(entry.provider, entry.model, entry.usage);
       row.estimatedCost += cost.cost;
       row.pricedTokens += cost.pricedTokens;
     }
     rows.set(key, row);
   }
+
+  if (rows.size === 0) {
+    const timelineUsageByTurn = new Map<string, ThreadHistoryItem>();
+    input.items.forEach((item, index) => {
+      if (!item.turnId || !item.tokenUsage) return;
+      timelineUsageByTurn.set(item.turnId, { ...item, id: `${item.id}:${index}` });
+    });
+    for (const item of timelineUsageByTurn.values()) {
+      const provider = item.provider ?? (item.runtime === "claude-code" ? "claude-code" : input.defaultProvider);
+      const runtime = item.runtime ?? input.defaultRuntime;
+      const model = item.model ?? input.defaultModel;
+      const key = `${provider}:${item.accountId ?? "thread"}:${model}`;
+      const row = rows.get(key) ?? emptyThreadUsageRow({
+        key,
+        label: `${runtimeAgentLabel(runtime, provider, input.providers)} · ${model || "unknown"}`,
+        provider,
+        model: model || "unknown",
+      });
+      row.requests += 1;
+      if (item.status === "failed") row.failed += 1;
+      else row.completed += 1;
+      row.durationMs += item.durationMs ?? 0;
+      addUsageToThreadRow(row, item.tokenUsage);
+      const cost = estimateProviderUsageCost(provider, model, item.tokenUsage);
+      row.estimatedCost += cost.cost;
+      row.pricedTokens += cost.pricedTokens;
+      rows.set(key, row);
+    }
+  }
+
   const models = [...rows.values()].sort((a, b) => b.estimatedCost - a.estimatedCost || b.totalTokens - a.totalTokens || b.requests - a.requests);
   const contextLimit = contextUsageLimit(input.contextUsage);
   return {
@@ -1831,7 +1874,11 @@ function App(): React.JSX.Element {
     contextUsage,
     providers: providers.settings?.providers ?? [],
     requestLog: quickUsage.requestLog,
-  }), [thread?.id, contextUsage, providers.settings?.providers, quickUsage.requestLog]);
+    items,
+    defaultRuntime: composerRuntime,
+    defaultProvider: composerProviderId,
+    defaultModel: composerModel,
+  }), [thread?.id, contextUsage, providers.settings?.providers, quickUsage.requestLog, items, composerRuntime, composerProviderId, composerModel]);
   const sideConversationRuntime = thread?.runtime ?? composerRuntime;
   const sideConversationProvider: ProviderId = sideConversationRuntime === "claude-code" ? composerProviderId : "codex";
   const sideConversationAccountId = sideConversationProvider === "codex" ? undefined : composerAccountId;
