@@ -10,17 +10,18 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-07T15:52:00+09:00
+Last: 2026-07-07T16:20:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- Environment usage parity follow-up: Codex native threads now use timeline `tokenUsage` as a fallback when no provider request log exists, so the environment modal shows request count and model token stats instead of only context/loading.
+- v0.1.69 ready: macOS Tailscale remote/Funnel CLI detection now works when Electron lacks shell PATH.
 
 ## Changed
-- `src/renderer/main.tsx` thread usage aggregation.
+- `src/main/tailscale.cts`: tries Tailscale.app bundle CLI and common absolute paths on macOS/Linux, not only PATH `tailscale`.
+- `package.json`, `package-lock.json`: version `0.1.69`.
 
 ## Open Tasks
-- Version bump/tag/push pending for usage modal hotfix.
+- Commit/tag/push `v0.1.69`.
 
 ## Resume
-- Passed: `PATH=/opt/homebrew/bin:$PATH npm run build`.
+- Passed: `npm run build`; restricted-PATH smoke resolved `/Applications/Tailscale.app/Contents/MacOS/tailscale` and status installed/online.

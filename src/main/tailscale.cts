@@ -53,6 +53,22 @@ function fallbackCliPath(): string {
     : "tailscale";
 }
 
+function tailscaleCliCandidates(windowsFallbackPath: string): string[] {
+  const candidates = process.platform === "win32"
+    ? ["tailscale", windowsFallbackPath]
+    : process.platform === "darwin"
+      ? [
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/usr/local/bin/tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/bin/tailscale",
+      ]
+      : ["tailscale", "/usr/local/bin/tailscale", "/usr/bin/tailscale", "/bin/tailscale"];
+  return [...new Set(candidates)];
+}
+
 function safeMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error);
@@ -99,7 +115,7 @@ export class TailscaleCli {
 
   async detectCli(): Promise<string | null> {
     if (this.detectedCliPath !== undefined) return this.detectedCliPath;
-    const candidates = process.platform === "win32" ? ["tailscale", this.windowsFallbackPath] : ["tailscale"];
+    const candidates = tailscaleCliCandidates(this.windowsFallbackPath);
     for (const candidate of candidates) {
       if (candidate !== "tailscale" && !existsSync(candidate)) continue;
       try {
