@@ -75,10 +75,6 @@ function claudeContentParts(content: unknown): Record<string, unknown>[] {
   return content.filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object");
 }
 
-function claudeHasToolUse(content: unknown): boolean {
-  return claudeContentParts(content).some((part) => String(part.type ?? "") === "tool_use");
-}
-
 function isClaudeApiErrorLine(line: ClaudeJsonLine): boolean {
   return Boolean(line.isApiErrorMessage || line.error || line.apiErrorStatus);
 }
@@ -618,31 +614,43 @@ export class ProviderTranscriptStore {
       items.push({ id: `activity-${turnId}`, kind: "activity", text: "", turnId, status: "completed", activities: [entry] });
     };
 
-    const nextRealUserIndex = (start: number): number => {
-      for (let index = start + 1; index < lines.length; index += 1) {
-        const line = lines[index]!;
+    // First pass: assign each line the turnId the main pass will also assign,
+    // and record — per turn — the index of the LAST assistant text line (the
+    // true final answer). A trailing housekeeping tool call after that line
+    // (TodoWrite, hooks, etc.) must not demote the real final answer into a
+    // "작업 메모" activity, which is what a "does a tool run later?" check did
+    // before: it punished the final answer whenever anything (even an
+    // invisible follow-up tool call) happened afterward. Mirrors the
+    // Codex-side isFinalAssistantMessage "last text wins" rule in
+    // thread-history.cts.
+    const turnIdByIndex: string[] = [];
+    const lastTextIndexByTurn = new Map<string, number>();
+    {
+      let index_ = 0;
+      let turnId_ = "";
+      lines.forEach((line, index) => {
+        if (line.type !== "user" && line.type !== "assistant") { turnIdByIndex[index] = turnId_; return; }
         const role = String(line.message?.role ?? line.type);
-        if (role !== "user") continue;
-        const text = claudeTextContent(line.message?.content);
-        if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(line.message?.content)) return index;
-      }
-      return lines.length;
-    };
-
-    const hasLaterToolBeforeNextUser = (start: number): boolean => {
-      const end = nextRealUserIndex(start);
-      for (let index = start + 1; index < end; index += 1) {
-        const line = lines[index]!;
-        const role = String(line.message?.role ?? line.type);
-        if (role === "assistant" && claudeHasToolUse(line.message?.content)) return true;
-        if (role === "user" && isClaudeToolResultOnly(line.message?.content)) return true;
-      }
-      return false;
-    };
+        const content = line.message?.content;
+        if (role === "user") {
+          const text = claudeTextContent(content);
+          if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(content)) {
+            turnId_ = `${threadId}-claude-turn-${index_++}`;
+          }
+          turnIdByIndex[index] = turnId_;
+          return;
+        }
+        if (role !== "assistant") { turnIdByIndex[index] = turnId_; return; }
+        const turnId = turnId_ || `${threadId}-claude-turn-${index_}`;
+        turnIdByIndex[index] = turnId;
+        const text = claudeTextContent(content);
+        if (text && !isClaudeHookNoiseText(text) && !isClaudeApiErrorLine(line)) lastTextIndexByTurn.set(turnId, index);
+      });
+    }
 
     lines.forEach((line, index) => {
       if (line.type === "system" && line.subtype === "compact_boundary") {
-        const turnId = currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
+        const turnId = turnIdByIndex[index] || currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
         ensureActivity(turnId, {
           id: String(line.uuid ?? `${threadId}-claude-compact-${index}`),
           kind: "compaction",
@@ -664,16 +672,15 @@ export class ProviderTranscriptStore {
         return;
       }
       if (role !== "assistant") return;
-      const turnId = currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
+      const turnId = turnIdByIndex[index] || currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
       const text = claudeTextContent(content);
-      const hasTool = claudeHasToolUse(content);
       if (text && !isClaudeHookNoiseText(text)) {
         if (isClaudeApiErrorLine(line)) {
           items.push({ id, kind: "system", title: claudeApiErrorTitle(line), text, turnId, status: "failed", runtime: "claude-code", provider: "claude-code" });
-        } else if (hasTool || hasLaterToolBeforeNextUser(index)) {
-          ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
-        } else {
+        } else if (index === lastTextIndexByTurn.get(turnId)) {
           items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
+        } else {
+          ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
         }
       }
       for (const part of claudeContentParts(content).filter((part) => String(part.type ?? "") === "tool_use")) {

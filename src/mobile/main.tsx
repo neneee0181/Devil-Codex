@@ -215,6 +215,32 @@ function mergeThreadHistory(remote: ThreadHistoryItem[], local: ThreadHistoryIte
   return carry.length ? [...remote, ...carry] : remote;
 }
 
+// Parity with the desktop renderer (see src/renderer/main.tsx dedupedItems):
+// the model sometimes echoes the same final answer as a "작업 메모" activity
+// entry (or as an earlier duplicate standalone agent message) alongside the
+// real standalone final message. Strip those echoes so the final answer only
+// shows once, as a normal chat bubble — not buried inside "작업 흐름".
+function dedupeThreadHistory(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const finalText = new Map<string, string>();
+  const lastAgentIndex = new Map<string, number>();
+  items.forEach((item, index) => {
+    if (item.kind === "agent" && item.turnId) { finalText.set(item.turnId, (item.text ?? "").trim()); lastAgentIndex.set(item.turnId, index); }
+  });
+  return items.flatMap((item, index) => {
+    if (item.kind === "agent" && item.turnId) {
+      if (index !== lastAgentIndex.get(item.turnId) && (item.text ?? "").trim() === finalText.get(item.turnId)) return [];
+      return [item];
+    }
+    if (item.kind === "activity" && item.turnId) {
+      const ft = finalText.get(item.turnId);
+      if (!ft) return [item];
+      const activities = (item.activities ?? []).filter((entry) => !(entry.kind === "message" && entry.title === "작업 메모" && (entry.detail ?? "").trim() === ft));
+      return [{ ...item, activities }];
+    }
+    return [item];
+  });
+}
+
 function attachmentPreview(item: ThreadAttachment): string | null {
   if (item.kind !== "image") return null;
   return item.url || item.content || null;
@@ -474,11 +500,12 @@ function App(): React.JSX.Element {
     input.style.height = `${Math.min(Math.max(input.scrollHeight, 44), 140)}px`;
   }, [composerText]);
 
+  const dedupedHistory = useMemo(() => dedupeThreadHistory(threadHistory), [threadHistory]);
   const visibleHistory = useMemo(
-    () => threadHistory.slice(Math.max(0, threadHistory.length - visibleHistoryCount)),
-    [threadHistory, visibleHistoryCount],
+    () => dedupedHistory.slice(Math.max(0, dedupedHistory.length - visibleHistoryCount)),
+    [dedupedHistory, visibleHistoryCount],
   );
-  const hiddenHistoryCount = threadHistory.length - visibleHistory.length;
+  const hiddenHistoryCount = dedupedHistory.length - visibleHistory.length;
 
   function loadMoreHistory(): void {
     pendingScrollAdjustRef.current = threadScrollRef.current?.scrollHeight ?? null;
