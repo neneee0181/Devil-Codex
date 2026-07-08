@@ -1177,6 +1177,10 @@ button:active:not(:disabled) { transform: scale(.96); }
 .file-options { width: 190px; }
 .workspace-file-body.tree-closed { grid-template-columns: minmax(0, 1fr); }
 .workspace-file-body.tree-closed > aside { display: none; }
+.workspace-file-body > main, .workspace-file-body > main pre, .workspace-file-body > main code, .workspace-markdown { user-select: text; -webkit-user-select: text; cursor: text; }
+.workspace-file-body > aside { position: relative; }
+.tree-resizer { position: absolute; top: 0; left: -3px; z-index: 3; width: 7px; height: 100%; cursor: col-resize; }
+.tree-resizer:hover, .tree-resizer:active { background: linear-gradient(90deg, transparent, #65aef055, transparent); }
 .file-code.wrap > div { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-markdown { width: min(100%, 760px); margin: 0 auto; padding: 26px 30px 70px; color: #dfdfdf; overflow-wrap: anywhere; }
 .workspace-markdown > :first-child { margin-top: 0; }

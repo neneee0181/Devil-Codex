@@ -25,6 +25,11 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [externalChanged, setExternalChanged] = useState(false);
+  const [treeWidth, setTreeWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("devil-codex:file-tree-width"));
+    return Number.isFinite(stored) && stored >= 160 ? stored : 260;
+  });
+  const bodyRef = useRef<HTMLDivElement>(null);
   const openWithRef = useRef<HTMLDivElement>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
   // Refs so the fs-change listener (registered once per workspace) reads the
@@ -137,6 +142,25 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     finally { setSaving(false); }
   };
 
+  const startTreeResize = (event: React.MouseEvent): void => {
+    event.preventDefault();
+    const onMove = (move: MouseEvent): void => {
+      const rect = bodyRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const next = Math.max(160, Math.min(rect.width - 220, rect.right - move.clientX));
+      setTreeWidth(next);
+    };
+    const onUp = (): void => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      setTreeWidth((width) => { localStorage.setItem("devil-codex:file-tree-width", String(Math.round(width))); return width; });
+    };
+    document.body.style.cursor = "col-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   const openExternal = async (app: ExternalTarget): Promise<void> => {
     setOpenWith(false);
     const result = await window.devilCodex.openWorkspace({ cwd: fullPath, target: app });
@@ -171,11 +195,11 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     </header>
     {locked && <div className="file-lock-banner"><Lock size={13} /> AI가 파일을 수정하는 중입니다. 실시간으로 반영되며 직접 편집은 잠시 비활성화됩니다.</div>}
     {editing && externalChanged && <div className="file-lock-banner">이 파일이 외부에서 변경되었습니다. 저장하면 현재 편집 내용으로 덮어씁니다.</div>}
-    <div className={`workspace-file-body${treeOpen ? "" : " tree-closed"}`}>
+    <div ref={bodyRef} className={`workspace-file-body${treeOpen ? "" : " tree-closed"}`} style={treeOpen ? { gridTemplateColumns: `minmax(0, 1fr) ${treeWidth}px` } : undefined}>
       <main>{editing && selected
         ? <textarea className="file-editor" spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
         : selected?.kind === "image" ? <img src={selected.content} alt={selected.path} /> : selected?.kind === "text" && isMarkdown ? <div className="workspace-markdown"><MarkdownContent text={selected.content} onOpenFile={(path) => void openFile(path)} /></div> : selected?.kind === "text" ? <Suspense fallback={<div className="file-empty">코드 불러오는 중…</div>}><CodePreview path={selected.path} code={selected.content} wrap={wrap} /></Suspense> : selected ? <pre>{selected.content}</pre> : <div className="file-empty"><FolderOpen size={36} /><strong>파일 열기</strong><span>워크스페이스 트리에서 파일을 선택하세요</span></div>}</main>
-      <aside><label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 필터링…" /></label><div className="workspace-tree">{rows}</div></aside>
+      <aside>{treeOpen && <div className="tree-resizer" onMouseDown={startTreeResize} role="separator" aria-orientation="vertical" title="트리 너비 조절" />}<label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 필터링…" /></label><div className="workspace-tree">{rows}</div></aside>
     </div>
     {notice && <div className="file-save-notice">{notice}</div>}
     {error && <button className="file-error" onClick={() => setError("")}>{error} ×</button>}

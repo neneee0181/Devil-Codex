@@ -1343,6 +1343,19 @@ function createWindow(): void {
     },
   });
 
+  // Right-click menu so selected page text (file viewer, chat, etc.) can be
+  // copied. The app menu only gives Cmd/Ctrl+C; without this a drag-selection
+  // has no visible way to copy on the file panel and other read-only surfaces.
+  windowRef.webContents.on("context-menu", (_event, params) => {
+    const items: MenuItemConstructorOptions[] = [];
+    if (params.isEditable && params.editFlags.canCut) items.push({ role: "cut" });
+    if (params.selectionText) items.push({ role: "copy" });
+    if (params.isEditable && params.editFlags.canPaste) items.push({ role: "paste" });
+    if (items.length) items.push({ type: "separator" });
+    items.push({ role: "selectAll" });
+    Menu.buildFromTemplate(items).popup({ window: windowRef ?? undefined });
+  });
+
   // Capture the embedded browser's guest WebContents for one control path.
   windowRef.webContents.on("did-attach-webview", (_event, guest) => browserView.attach(guest));
   windowRef.on("close", (event) => {
