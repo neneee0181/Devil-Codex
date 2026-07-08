@@ -1566,6 +1566,22 @@ function App(): React.JSX.Element {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [view, workspace, thread, items, projectDraft, environmentOpen, settingsSection, search]);
 
+  // Guarantee Ctrl/Cmd+C copies a plain page selection (file viewer, chat
+  // transcript, etc.). The native app-menu copy role was not reliably copying
+  // read-only DOM selections, so intercept the copy path and write the current
+  // selection ourselves. Editable fields keep their native behavior — an input
+  // or textarea selection is not reflected by window.getSelection().
+  useEffect(() => {
+    const onCopy = (event: ClipboardEvent): void => {
+      const selection = window.getSelection()?.toString() ?? "";
+      if (!selection) return;
+      event.clipboardData?.setData("text/plain", selection);
+      event.preventDefault();
+    };
+    document.addEventListener("copy", onCopy);
+    return () => document.removeEventListener("copy", onCopy);
+  }, []);
+
   useEffect(() => { localStorage.setItem("devil-codex:sidebar-width", String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem("devil-codex:utility-width", String(utilityWidth)); }, [utilityWidth]);
   useEffect(() => {
