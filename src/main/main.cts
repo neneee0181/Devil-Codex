@@ -11,7 +11,7 @@ import { CodexAppServer, syncStockThreadPermissions } from "./app-server.cjs";
 import { getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
 import { applyWorkspaceHunk, commitWorkspace, createPullRequest, listGitBranches, pushWorkspace, stageWorkspaceFiles, switchGitBranch, unstageWorkspaceFiles } from "./git-workflow.cjs";
 import { undoFileChanges } from "./file-rollback.cjs";
-import { findWorkspaceFile, listWorkspaceDirectory, previewLocalImage, readWorkspaceEntry, writeWorkspaceFile } from "./file-service.cjs";
+import { createWorkspaceEntry, deleteWorkspaceEntry, findWorkspaceFile, listWorkspaceDirectory, previewLocalImage, readWorkspaceEntry, renameWorkspaceEntry, writeWorkspaceFile } from "./file-service.cjs";
 import { WorkspaceWatcher } from "./workspace-watcher.cjs";
 import { TerminalManager } from "./terminal-manager.cjs";
 import { CodexSettingsStore } from "./codex-settings.cjs";
@@ -1347,6 +1347,10 @@ function createWindow(): void {
   // copied. The app menu only gives Cmd/Ctrl+C; without this a drag-selection
   // has no visible way to copy on the file panel and other read-only surfaces.
   windowRef.webContents.on("context-menu", (_event, params) => {
+    // Only surface the native menu when there is something to act on; a plain
+    // right-click with no selection is left to the renderer (e.g. the file tree
+    // shows its own rename/move/delete/new menu).
+    if (!params.selectionText && !params.isEditable) return;
     const items: MenuItemConstructorOptions[] = [];
     if (params.isEditable && params.editFlags.canCut) items.push({ role: "cut" });
     if (params.selectionText) items.push({ role: "copy" });
@@ -2137,6 +2141,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("workspace:list-directory", (_event, input) => listWorkspaceDirectory(input.cwd, input.path));
   ipcMain.handle("workspace:read-file", (_event, input) => readWorkspaceEntry(input.cwd, input.path));
   ipcMain.handle("workspace:write-file", (_event, input) => writeWorkspaceFile(input.cwd, input.path, input.content));
+  ipcMain.handle("workspace:rename-entry", (_event, input) => renameWorkspaceEntry(input.cwd, input.from, input.to));
+  ipcMain.handle("workspace:delete-entry", (_event, input) => deleteWorkspaceEntry(input.cwd, input.path));
+  ipcMain.handle("workspace:create-entry", (_event, input) => createWorkspaceEntry(input.cwd, input.path, input.kind));
   ipcMain.handle("workspace:watch", (_event, input) => { workspaceWatcher.watch(input.cwd); });
   ipcMain.handle("workspace:unwatch", (_event, input) => { workspaceWatcher.unwatch(input.cwd); });
   ipcMain.handle("workspace:find-file", (_event, input) => findWorkspaceFile(input.cwd, input.query));

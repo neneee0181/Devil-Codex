@@ -82,6 +82,9 @@ const api: DevilCodexApi = {
   listWorkspaceDirectory: (input) => ipcRenderer.invoke("workspace:list-directory", input),
   readWorkspaceFile: (input) => ipcRenderer.invoke("workspace:read-file", input),
   writeWorkspaceFile: (input) => ipcRenderer.invoke("workspace:write-file", input),
+  renameWorkspaceEntry: (input) => ipcRenderer.invoke("workspace:rename-entry", input),
+  deleteWorkspaceEntry: (input) => ipcRenderer.invoke("workspace:delete-entry", input),
+  createWorkspaceEntry: (input) => ipcRenderer.invoke("workspace:create-entry", input),
   watchWorkspaceFiles: (input) => ipcRenderer.invoke("workspace:watch", input),
   unwatchWorkspaceFiles: (input) => ipcRenderer.invoke("workspace:unwatch", input),
   onWorkspaceFilesChanged: (listener: (payload: { cwd: string }) => void) => {

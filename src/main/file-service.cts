@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" };
@@ -42,6 +42,40 @@ export async function writeWorkspaceFile(cwd: string, path: string, content: str
   }
   await writeFile(target.full, content, "utf8");
   return { path: target.path };
+}
+
+async function workspaceEntryExists(full: string): Promise<boolean> {
+  try { await stat(full); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+// Rename or move an entry: `to` is a workspace-relative path, so changing the
+// parent segment moves it. Both endpoints stay inside the workspace root.
+export async function renameWorkspaceEntry(cwd: string, from: string, to: string): Promise<{ path: string }> {
+  const src = inside(cwd, from);
+  const dst = inside(cwd, to);
+  if (src.full === src.root || dst.full === dst.root) throw new Error("경로가 필요합니다.");
+  if (src.full === dst.full) return { path: dst.path };
+  if (await workspaceEntryExists(dst.full)) throw new Error("이미 존재하는 경로입니다.");
+  await mkdir(dirname(dst.full), { recursive: true });
+  await rename(src.full, dst.full);
+  return { path: dst.path };
+}
+
+export async function deleteWorkspaceEntry(cwd: string, path: string): Promise<{ path: string }> {
+  const target = inside(cwd, path);
+  if (target.full === target.root) throw new Error("워크스페이스 루트는 삭제할 수 없습니다.");
+  await rm(target.full, { recursive: true, force: true });
+  return { path: target.path };
+}
+
+export async function createWorkspaceEntry(cwd: string, path: string, kind: "file" | "folder"): Promise<{ path: string; kind: "file" | "folder" }> {
+  const target = inside(cwd, path);
+  if (target.full === target.root) throw new Error("이름이 필요합니다.");
+  if (await workspaceEntryExists(target.full)) throw new Error("이미 존재하는 경로입니다.");
+  if (kind === "folder") await mkdir(target.full, { recursive: true });
+  else { await mkdir(dirname(target.full), { recursive: true }); await writeFile(target.full, "", "utf8"); }
+  return { path: target.path, kind };
 }
 
 export async function findWorkspaceFile(cwd: string, query: string): Promise<string | null> {

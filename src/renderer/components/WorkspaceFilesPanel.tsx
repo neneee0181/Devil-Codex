@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Code2, Copy, FileText, Folder, FolderOpen, Lock, MoreHorizontal, Pencil, Save, Search, WrapText, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Code2, Copy, FilePlus, FileText, Folder, FolderOpen, FolderInput, FolderPlus, Lock, MoreHorizontal, Pencil, Save, Search, Trash2, WrapText, X } from "lucide-react";
 import type { ExternalTarget, OpenWorkspaceTarget, WorkspaceEntry, WorkspaceFile } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { FileTypeIcon } from "./FileTypeIcon";
@@ -29,9 +29,13 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     const stored = Number(localStorage.getItem("devil-codex:file-tree-width"));
     return Number.isFinite(stored) && stored >= 160 ? stored : 260;
   });
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: WorkspaceEntry | null } | null>(null);
+  const [dialog, setDialog] = useState<{ action: "rename" | "move" | "new-file" | "new-folder"; base: string; title: string; value: string } | null>(null);
+  const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const openWithRef = useRef<HTMLDivElement>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   // Refs so the fs-change listener (registered once per workspace) reads the
   // latest tree/selection/edit state without re-subscribing on every keystroke.
   const expandedRef = useRef(expanded);
@@ -44,6 +48,7 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
   dirtyRef.current = editing && selected ? draft !== selected.content : false;
   useOutsideDismiss(openWithRef, () => setOpenWith(false), openWith);
   useOutsideDismiss(fileMenuRef, () => setFileMenu(false), fileMenu);
+  useOutsideDismiss(menuRef, () => setMenu(null), Boolean(menu));
 
   const load = useCallback(async (path: string): Promise<void> => {
     const entries = await window.devilCodex.listWorkspaceDirectory({ cwd: workspace, path });
@@ -167,11 +172,64 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     if (!result.ok) setError(result.detail || "파일을 열지 못했습니다.");
   };
   const copy = async (text: string): Promise<void> => { await navigator.clipboard.writeText(text); setFileMenu(false); };
+
+  const openMenu = (event: React.MouseEvent, entry: WorkspaceEntry | null): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (locked) return;
+    setMenu({ x: event.clientX, y: event.clientY, entry });
+  };
+  const startDialog = (action: "rename" | "move" | "new-file" | "new-folder", entry: WorkspaceEntry | null): void => {
+    setMenu(null);
+    if (action === "rename" && entry) setDialog({ action, base: entry.path, title: "이름 변경", value: entry.name });
+    else if (action === "move" && entry) setDialog({ action, base: entry.path, title: "이동 (워크스페이스 기준 경로)", value: entry.path });
+    else if (action === "new-file") setDialog({ action, base: entry?.path ?? "", title: entry ? `${entry.name}에 새 파일` : "새 파일 (루트)", value: "" });
+    else if (action === "new-folder") setDialog({ action, base: entry?.path ?? "", title: entry ? `${entry.name}에 새 폴더` : "새 폴더 (루트)", value: "" });
+  };
+  const removeEntry = async (entry: WorkspaceEntry): Promise<void> => {
+    setMenu(null);
+    if (!window.confirm(`'${entry.name}'을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    try {
+      await window.devilCodex.deleteWorkspaceEntry({ cwd: workspace, path: entry.path });
+      if (selectedRef.current && (selectedRef.current.path === entry.path || selectedRef.current.path.startsWith(`${entry.path}/`))) { setSelected(null); setEditing(false); }
+      await load(parentPath(entry.path)).catch(() => undefined);
+      setNotice("삭제했습니다."); window.setTimeout(() => setNotice(""), 2500);
+    } catch (reason) { setError(String(reason)); }
+  };
+  const submitDialog = async (): Promise<void> => {
+    if (!dialog || busy) return;
+    const value = dialog.value.trim();
+    if (!value) return;
+    setBusy(true);
+    try {
+      if (dialog.action === "rename") {
+        const parent = parentPath(dialog.base);
+        const to = parent ? `${parent}/${value}` : value;
+        await window.devilCodex.renameWorkspaceEntry({ cwd: workspace, from: dialog.base, to });
+        await Promise.all([load(parent).catch(() => undefined)]);
+        if (selectedRef.current?.path === dialog.base) await openFile(to);
+      } else if (dialog.action === "move") {
+        const from = dialog.base;
+        await window.devilCodex.renameWorkspaceEntry({ cwd: workspace, from, to: value });
+        await Promise.all([load(parentPath(from)).catch(() => undefined), load(parentPath(value)).catch(() => undefined)]);
+        if (selectedRef.current?.path === from) await openFile(value);
+      } else {
+        const kind = dialog.action === "new-folder" ? "folder" as const : "file" as const;
+        const path = dialog.base ? `${dialog.base}/${value}` : value;
+        await window.devilCodex.createWorkspaceEntry({ cwd: workspace, path, kind });
+        if (dialog.base) setExpanded((current) => new Set(current).add(dialog.base));
+        await load(dialog.base).catch(() => undefined);
+        if (kind === "file") await openFile(path);
+      }
+      setDialog(null);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(false); }
+  };
   const rows = useMemo(() => {
     const render = (dir: string, depth: number): React.JSX.Element[] => (directories[dir] ?? []).flatMap((entry) => {
       if (query && !entry.name.toLowerCase().includes(query) && entry.kind === "file") return [];
       const open = expanded.has(entry.path);
-      const row = <button type="button" className={selected?.path === entry.path ? "active" : ""} style={{ paddingLeft: 10 + depth * 18 }} key={entry.path} onClick={() => {
+      const row = <button type="button" className={selected?.path === entry.path ? "active" : ""} style={{ paddingLeft: 10 + depth * 18 }} key={entry.path} onContextMenu={(event) => openMenu(event, entry)} onClick={() => {
         if (entry.kind === "file") { void openFile(entry.path); return; }
         setExpanded((current) => { const next = new Set(current); if (open) next.delete(entry.path); else next.add(entry.path); return next; });
         if (!open && !directories[entry.path]) void load(entry.path);
@@ -199,8 +257,20 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
       <main>{editing && selected
         ? <textarea className="file-editor" spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
         : selected?.kind === "image" ? <img src={selected.content} alt={selected.path} /> : selected?.kind === "text" && isMarkdown ? <div className="workspace-markdown"><MarkdownContent text={selected.content} onOpenFile={(path) => void openFile(path)} /></div> : selected?.kind === "text" ? <Suspense fallback={<div className="file-empty">코드 불러오는 중…</div>}><CodePreview path={selected.path} code={selected.content} wrap={wrap} /></Suspense> : selected ? <pre>{selected.content}</pre> : <div className="file-empty"><FolderOpen size={36} /><strong>파일 열기</strong><span>워크스페이스 트리에서 파일을 선택하세요</span></div>}</main>
-      <aside>{treeOpen && <div className="tree-resizer" onMouseDown={startTreeResize} role="separator" aria-orientation="vertical" title="트리 너비 조절" />}<label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 필터링…" /></label><div className="workspace-tree">{rows}</div></aside>
+      <aside>{treeOpen && <div className="tree-resizer" onMouseDown={startTreeResize} role="separator" aria-orientation="vertical" title="트리 너비 조절" />}<label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 필터링…" /></label><div className="workspace-tree" onContextMenu={(event) => openMenu(event, null)}>{rows}<div className="workspace-tree-pad" onContextMenu={(event) => openMenu(event, null)} /></div></aside>
     </div>
+    {menu && <div ref={menuRef} className="file-context-menu" style={{ top: menu.y, left: menu.x }}>
+      {menu.entry?.kind === "folder" && <><button onClick={() => startDialog("new-file", menu.entry)}><FilePlus size={15} />새 파일</button><button onClick={() => startDialog("new-folder", menu.entry)}><FolderPlus size={15} />새 폴더</button><div className="file-context-sep" /></>}
+      {!menu.entry && <><button onClick={() => startDialog("new-file", null)}><FilePlus size={15} />새 파일 (루트)</button><button onClick={() => startDialog("new-folder", null)}><FolderPlus size={15} />새 폴더 (루트)</button></>}
+      {menu.entry && <><button onClick={() => startDialog("rename", menu.entry)}><Pencil size={15} />이름 변경</button><button onClick={() => startDialog("move", menu.entry)}><FolderInput size={15} />위치 이동</button><button className="danger" onClick={() => void removeEntry(menu.entry!)}><Trash2 size={15} />삭제</button></>}
+    </div>}
+    {dialog && <div className="file-dialog-backdrop" onMouseDown={() => setDialog(null)}>
+      <form className="file-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitDialog(); }}>
+        <strong>{dialog.title}</strong>
+        <input autoFocus value={dialog.value} onChange={(event) => setDialog((current) => current ? { ...current, value: event.target.value } : current)} onKeyDown={(event) => { if (event.key === "Escape") setDialog(null); }} placeholder={dialog.action === "move" ? "예: src/foo/bar.ts" : "이름 입력"} />
+        <div className="file-dialog-actions"><button type="button" onClick={() => setDialog(null)}>취소</button><button type="submit" className="primary" disabled={busy || !dialog.value.trim()}>{busy ? "처리 중…" : "확인"}</button></div>
+      </form>
+    </div>}
     {notice && <div className="file-save-notice">{notice}</div>}
     {error && <button className="file-error" onClick={() => setError("")}>{error} ×</button>}
   </div>;

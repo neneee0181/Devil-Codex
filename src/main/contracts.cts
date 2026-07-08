@@ -433,6 +433,9 @@ export interface DevilCodexApi {
   listWorkspaceDirectory: (input: { cwd: string; path?: string }) => Promise<WorkspaceEntry[]>;
   readWorkspaceFile: (input: { cwd: string; path: string }) => Promise<WorkspaceFile>;
   writeWorkspaceFile: (input: { cwd: string; path: string; content: string }) => Promise<{ path: string }>;
+  renameWorkspaceEntry: (input: { cwd: string; from: string; to: string }) => Promise<{ path: string }>;
+  deleteWorkspaceEntry: (input: { cwd: string; path: string }) => Promise<{ path: string }>;
+  createWorkspaceEntry: (input: { cwd: string; path: string; kind: "file" | "folder" }) => Promise<{ path: string; kind: "file" | "folder" }>;
   watchWorkspaceFiles: (input: { cwd: string }) => Promise<void>;
   unwatchWorkspaceFiles: (input: { cwd: string }) => Promise<void>;
   onWorkspaceFilesChanged: (listener: (payload: { cwd: string }) => void) => () => void;
