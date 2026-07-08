@@ -102,7 +102,7 @@ export function googleContents(parsed: OcxParsedRequest): unknown[] {
         if (part.type === "toolCall") {
           let args: unknown = {};
           try { args = JSON.parse(part.arguments || "{}"); } catch { args = {}; }
-          return [{ functionCall: { name: wireToolCallName(part), args } }];
+          return [{ functionCall: { name: wireToolCallName(part), args }, ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}) }];
         }
         return [];
       });
@@ -368,7 +368,16 @@ export async function* streamGoogle(response: Response, options: { label?: strin
             const record = part as Record<string, unknown>;
             const fn = record.functionCall as Record<string, unknown> | undefined;
             if (fn?.name) {
-              yield { type: "tool_call_start", id: `call_${crypto.randomUUID().replace(/-/g, "")}`, name: String(fn.name) };
+              const thoughtSignature = typeof record.thoughtSignature === "string"
+                ? record.thoughtSignature
+                : typeof record.thought_signature === "string"
+                  ? record.thought_signature
+                  : typeof fn.thoughtSignature === "string"
+                    ? fn.thoughtSignature
+                    : typeof fn.thought_signature === "string"
+                      ? fn.thought_signature
+                      : undefined;
+              yield { type: "tool_call_start", id: `call_${crypto.randomUUID().replace(/-/g, "")}`, name: String(fn.name), ...(thoughtSignature ? { thoughtSignature } : {}) };
               yield { type: "tool_call_delta", arguments: JSON.stringify(fn.args ?? {}) };
               yield { type: "tool_call_end" };
             }

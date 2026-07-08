@@ -5,7 +5,7 @@ export interface OcxTextContent { type: "text"; text: string }
 export interface OcxImageContent { type: "image"; dataUrl: string; detail?: string }
 export type OcxContentPart = OcxTextContent | OcxImageContent;
 
-export interface OcxToolCall { type: "toolCall"; id: string; name: string; arguments: string; namespace?: string }
+export interface OcxToolCall { type: "toolCall"; id: string; name: string; arguments: string; namespace?: string; thoughtSignature?: string }
 export interface OcxThinkingContent { type: "thinking"; text: string }
 export type OcxAssistantContentPart = OcxTextContent | OcxThinkingContent | OcxToolCall;
 
@@ -60,7 +60,7 @@ export type AdapterEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
   | { type: "reasoning_raw_delta"; text: string }
-  | { type: "tool_call_start"; id: string; name: string }
+  | { type: "tool_call_start"; id: string; name: string; thoughtSignature?: string }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
   | { type: "done"; usage?: OcxUsage }

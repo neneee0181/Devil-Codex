@@ -46,6 +46,9 @@ let reportProxyError: ((message: string) => void) | undefined;
 let reportRequestLogChanged: ((event: { provider: ProviderRequestLogEntry["provider"]; completed: boolean }) => void) | undefined;
 const sidecarSettingsByThread = new Map<string, SidecarSettings>();
 const sidecarStatsByThread = new Map<string, SidecarStats>();
+const antigravityToolSignaturesByThread = new Map<string, Map<string, string>>();
+let antigravityToolSignaturesLoaded = false;
+let antigravityToolSignaturesWrite = Promise.resolve();
 const requestLog: ProviderRequestLogEntry[] = [];
 let requestLogLoaded = false;
 let requestLogWrite = Promise.resolve();
@@ -174,6 +177,69 @@ function requestPartStats(parsed: OcxParsedRequest): { tools: number; images: nu
 function usesNativeImages(provider: ProxyProvider): boolean {
   if (provider === "openai" || provider === "anthropic" || provider === "google" || provider === "antigravity") return true;
   return Boolean(apiProviderConfig(provider)?.allowImages);
+}
+
+function antigravityToolSignaturesPath(): string {
+  return join(app.getPath("userData"), "providers", "antigravity-tool-signatures.json");
+}
+
+async function loadAntigravityToolSignatures(): Promise<void> {
+  if (antigravityToolSignaturesLoaded) return;
+  antigravityToolSignaturesLoaded = true;
+  try {
+    const parsed = JSON.parse(await readFile(antigravityToolSignaturesPath(), "utf8")) as Record<string, Record<string, string>>;
+    for (const [threadId, signatures] of Object.entries(parsed)) {
+      const entries = Object.entries(signatures).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      if (entries.length) antigravityToolSignaturesByThread.set(threadId, new Map(entries.slice(-200)));
+    }
+  } catch {
+    // Missing cache is normal; signatures are relearned from future Antigravity streams.
+  }
+}
+
+function persistAntigravityToolSignatures(): void {
+  if (!antigravityToolSignaturesLoaded) return;
+  antigravityToolSignaturesWrite = antigravityToolSignaturesWrite.then(async () => {
+    const threads = Array.from(antigravityToolSignaturesByThread.entries()).slice(-100);
+    const out: Record<string, Record<string, string>> = {};
+    for (const [threadId, signatures] of threads) {
+      out[threadId] = Object.fromEntries(Array.from(signatures.entries()).slice(-200));
+    }
+    const path = antigravityToolSignaturesPath();
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(out, null, 2), { mode: 0o600 });
+  }).catch(() => undefined);
+}
+
+function applyAntigravityToolSignatures(threadId: string, parsed: OcxParsedRequest): void {
+  if (!threadId) return;
+  const signatures = antigravityToolSignaturesByThread.get(threadId);
+  if (!signatures?.size) return;
+  for (const message of parsed.context.messages) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.content) {
+      if (part.type === "toolCall" && !part.thoughtSignature) {
+        const signature = signatures.get(part.id);
+        if (signature) part.thoughtSignature = signature;
+      }
+    }
+  }
+}
+
+async function* rememberAntigravityToolSignatures(threadId: string, stream: AsyncGenerator<AdapterEvent>): AsyncGenerator<AdapterEvent> {
+  for await (const event of stream) {
+    if (threadId && event.type === "tool_call_start" && event.thoughtSignature) {
+      let signatures = antigravityToolSignaturesByThread.get(threadId);
+      if (!signatures) {
+        signatures = new Map<string, string>();
+        antigravityToolSignaturesByThread.set(threadId, signatures);
+      }
+      signatures.set(event.id, event.thoughtSignature);
+      if (signatures.size > 200) signatures.delete(signatures.keys().next().value as string);
+      persistAntigravityToolSignatures();
+    }
+    yield event;
+  }
 }
 
 function startRequestLog(entry: ProviderRequestLogEntry): void {
@@ -328,6 +394,10 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   const controller = new AbortController();
   res.on("close", () => controller.abort());
   const threadId = threadIdFromRequest(req, body);
+  if (provider === "antigravity") {
+    await loadAntigravityToolSignatures();
+    applyAntigravityToolSignatures(threadId, parsed);
+  }
   const sidecars = sidecarState(threadId);
   const stats = requestPartStats(parsed);
   const startedAt = Date.now();
@@ -356,6 +426,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   let usage: ProviderRequestLogEntry["usage"] | undefined;
   try {
     stream = await streamForProvider({ provider, accountId, parsed, req, sidecars, signal: controller.signal });
+    if (provider === "antigravity") stream = rememberAntigravityToolSignatures(threadId, stream);
   } catch (error) {
     failureMessage = redactSensitiveText(error instanceof Error ? error.message : String(error));
     stream = (async function* () { yield { type: "error", message: failureMessage } as AdapterEvent; })();
