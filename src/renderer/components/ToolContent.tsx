@@ -2,7 +2,7 @@ import { Bot, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Folder, F
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { AgentRuntimeId, BrowserState, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry } from "../../shared/contracts";
+import type { AgentRuntimeId, BrowserState, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange, WorkspaceChanges, WorkspaceDiff, WorkspaceEntry } from "../../shared/contracts";
 import type { ToolKind } from "./ToolLauncherMenu";
 import { WorkspaceFilesPanel } from "./WorkspaceFilesPanel";
 import { MarkdownContent } from "./MarkdownContent";
@@ -59,7 +59,7 @@ const INSPECTOR_SCRIPT = `(function(){return new Promise(function(resolve){
   window.__devilCancelPick=function(){cleanup();resolve(null);};
   document.addEventListener('mousemove',move,true);document.addEventListener('click',click,true);document.addEventListener('keydown',key,true);
 });})();`;
-type SideChatTarget = { thread: { id: string; label: string }; runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
+type SideChatTarget = { thread: { id: string; label: string }; runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode };
 const sideChatModelPageSize = 10;
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const SIDE_CHAT_DRAFTS_KEY = "devil-codex:side-chat-drafts";
@@ -756,7 +756,7 @@ const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
 // Conversation state is lifted to the parent (history/onHistory) so it survives
 // tab switches and the optimistic message isn't lost on reload.
 export function SideChat({ target, history, busy, pick, lockedModel = false, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; lockedModel?: boolean; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
-  const { thread, cwd, providers } = target;
+  const { thread, cwd, providers, approvalPolicy, sandboxMode } = target;
   // A delegated subagent thread runs on its own provider/runtime (e.g. DeepSeek
   // through the Codex app-server) regardless of the parent chat's runtime. The
   // spawn pick (locked, auto:false) carries the child's actual provider, so
@@ -815,7 +815,7 @@ export function SideChat({ target, history, busy, pick, lockedModel = false, onP
           // (already loaded from createThread), so a failed resume is fine — proceed.
           if (runtime === "codex" && attempt.provider === "codex") await window.devilCodex.resumeThread({ id: thread.id, model: attempt.model }).catch(() => undefined);
           console.log("[devil-sidechat] send", { threadId: thread.id, ...attempt });
-          await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: attempt.model, runtime, provider: attempt.provider, accountId: attempt.accountId ?? accountId, subagent: true, attachments: images, attachmentDetails: atts });
+          await window.devilCodex.sendTurn({ threadId: thread.id, cwd, text: text || "첨부 파일을 확인해줘.", model: attempt.model, runtime, provider: attempt.provider, accountId: attempt.accountId ?? accountId, subagent: true, attachments: images, attachmentDetails: atts, ...(approvalPolicy ? { approvalPolicy } : {}), ...(sandboxMode ? { sandboxMode } : {}) });
           lastError = undefined;
           setModelStatus(`사용 모델: ${attempt.label}`);
           break;

@@ -59,6 +59,20 @@ function emptyThreadStateId(workspace: string, projectDraft: boolean): string {
   return `${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
 }
 
+// Mirror of the composer's persisted approval mode (Composer APPROVAL_MODE_KEY).
+// Read here so side chats can reuse the same mode the user picked in the main
+// composer instead of silently falling back to the runtime defaults.
+function storedComposerApprovalMode(): "ask" | "agent" | "full" {
+  const value = typeof localStorage === "undefined" ? null : localStorage.getItem("devil-codex:approval-mode");
+  return value === "ask" || value === "agent" || value === "full" ? value : "agent";
+}
+
+function sideChatPermissionsForMode(mode: "ask" | "agent" | "full"): { approvalPolicy: import("../shared/contracts").ThreadApprovalPolicy; sandboxMode: import("../shared/contracts").ThreadSandboxMode } {
+  if (mode === "full") return { approvalPolicy: "never", sandboxMode: "danger-full-access" };
+  if (mode === "ask") return { approvalPolicy: "on-request", sandboxMode: "read-only" };
+  return { approvalPolicy: "on-request", sandboxMode: "workspace-write" };
+}
+
 function threadStateKey(runtime: AgentRuntimeId, threadId?: string | null, emptyStateId = "__none__"): string {
   return `${runtime}:${threadId ?? emptyStateId}`;
 }
@@ -1886,6 +1900,11 @@ function App(): React.JSX.Element {
     ? composerModel
     : providers.settings?.provider === "codex" ? model : "gpt-5.5";
   const sideConversationProviders = sideConversationRuntime === "claude-code" ? composerProviders : providers.settings?.providers ?? [];
+  // Side chats must inherit the composer's approval mode. Without it the child
+  // thread falls back to the app-server/SDK defaults (Codex on-request, Claude
+  // "default" per-tool approval on a hidden thread), which diverges from the
+  // main chat and can leave the side chat unable to read the repository.
+  const sideConversationPermissions = sideChatPermissionsForMode(storedComposerApprovalMode());
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
     return needle ? dedupedItems.filter((item) => `${item.title ?? ""}\n${item.text}\n${JSON.stringify(item.activities ?? [])}`.toLowerCase().includes(needle)) : dedupedItems;
@@ -3955,6 +3974,7 @@ function App(): React.JSX.Element {
         runtime: sideConversationRuntime,
         provider: sideConversationProvider,
         accountId: sideConversationAccountId,
+        ...sideConversationPermissions,
       });
       const label = sideChats.length === 0 ? "사이드 채팅" : `사이드 채팅 ${sideChats.length + 1}`;
       setSideChats((prev) => [...prev, { id: created.id, label }]);
@@ -4230,10 +4250,10 @@ function App(): React.JSX.Element {
         )}
         </div>
 
-        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:right-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} sideChatCreating={sideChatCreatingDock === "right"} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
+        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:right-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} sideChatCreating={sideChatCreatingDock === "right"} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
         </div>
 
-        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:bottom-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onNewSideChat={() => void newSideChat("bottom")} sideChatCreating={sideChatCreatingDock === "bottom"} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
+        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:bottom-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onNewSideChat={() => void newSideChat("bottom")} sideChatCreating={sideChatCreatingDock === "bottom"} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
       </section>
       {gitDialogOpen && <GitWorkflowDialog cwd={workspace} changes={changes} onClose={() => setGitDialogOpen(false)} onRefresh={() => refreshChanges()} onError={setExternalError} />}
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}

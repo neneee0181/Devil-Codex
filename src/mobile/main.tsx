@@ -443,7 +443,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     if (route.view !== "thread" || !route.threadId) return;
-    const summary = threadSummaries.find((item) => item.id === route.threadId) ?? projectSummaries.find((item) => item.id === route.threadId) ?? currentThread;
+    const summary = threadSummaries.find((item) => item.id === route.threadId) ?? projectSummaries.find((item) => item.id === route.threadId) ?? (currentThread?.id === route.threadId ? currentThread : null);
     if (summary) {
       setCurrentThread(summary);
       if (summary.cwd) setSelectedProject(summary.cwd);
@@ -454,6 +454,11 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     if (route.view !== "thread") return;
+    if (currentThreadIdRef.current !== route.threadId) {
+      currentThreadIdRef.current = route.threadId;
+      historyRef.current = [];
+      setThreadHistory([]);
+    }
     setVisibleHistoryCount(HISTORY_PAGE_SIZE);
     nearBottomRef.current = true;
     forceScrollToBottomRef.current = true;

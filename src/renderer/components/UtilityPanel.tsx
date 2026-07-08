@@ -1,6 +1,6 @@
 import { useCallback, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Maximize2, Minimize2, X } from "lucide-react";
-import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadAttachment, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
+import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
 import { ToolContent, SideChat, type ContentTool } from "./ToolContent";
@@ -56,7 +56,7 @@ export function UtilityPanel({
   subagentList: Array<{ id: string; label: string }>;
   browserSessionKey: string;
   terminalSessionKey: string;
-  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
+  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
   expanded: boolean;

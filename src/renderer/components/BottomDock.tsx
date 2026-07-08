@@ -1,6 +1,6 @@
 import { useCallback, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { X } from "lucide-react";
-import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadHistoryItem, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
+import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadApprovalPolicy, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
 import { SideChat, ToolContent } from "./ToolContent";
@@ -50,7 +50,7 @@ export function BottomDock({
   subagentLabels: Record<string, string>;
   browserSessionKey: string;
   terminalSessionKey: string;
-  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[] };
+  subagentCtx: { runtime: AgentRuntimeId; model: string; provider: ProviderId; accountId?: string; cwd: string; providers: ProviderInfo[]; approvalPolicy?: ThreadApprovalPolicy; sandboxMode?: ThreadSandboxMode };
   subagentHistory: Record<string, ThreadHistoryItem[]>;
   subagentBusy: Record<string, boolean>;
   subagentPick: Record<string, { provider: ProviderId; accountId?: string; model: string; auto?: boolean }>;
