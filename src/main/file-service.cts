@@ -1,5 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" };
 const SKIP_SEARCH = new Set([".git", "node_modules", "dist", "dist-electron"]);
@@ -27,6 +27,21 @@ export async function readWorkspaceEntry(cwd: string, path: string): Promise<{ p
   if (mime) return { path: target.path, kind: "image", content: `data:${mime};base64,${data.toString("base64")}` };
   if (data.includes(0)) return { path: target.path, kind: "binary", content: "바이너리 파일은 미리보기를 표시할 수 없습니다." };
   return { path: target.path, kind: "text", content: data.toString("utf8") };
+}
+
+export async function writeWorkspaceFile(cwd: string, path: string, content: string): Promise<{ path: string }> {
+  const target = inside(cwd, path);
+  if (target.full === target.root) throw new Error("파일 경로가 필요합니다.");
+  try {
+    const info = await stat(target.full);
+    if (!info.isFile()) throw new Error("파일이 아닙니다.");
+  } catch (error) {
+    // Allow creating a brand-new file, but surface other stat errors.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await mkdir(dirname(target.full), { recursive: true });
+  }
+  await writeFile(target.full, content, "utf8");
+  return { path: target.path };
 }
 
 export async function findWorkspaceFile(cwd: string, query: string): Promise<string | null> {

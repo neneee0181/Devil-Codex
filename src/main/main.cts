@@ -11,7 +11,8 @@ import { CodexAppServer, syncStockThreadPermissions } from "./app-server.cjs";
 import { getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
 import { applyWorkspaceHunk, commitWorkspace, createPullRequest, listGitBranches, pushWorkspace, stageWorkspaceFiles, switchGitBranch, unstageWorkspaceFiles } from "./git-workflow.cjs";
 import { undoFileChanges } from "./file-rollback.cjs";
-import { findWorkspaceFile, listWorkspaceDirectory, previewLocalImage, readWorkspaceEntry } from "./file-service.cjs";
+import { findWorkspaceFile, listWorkspaceDirectory, previewLocalImage, readWorkspaceEntry, writeWorkspaceFile } from "./file-service.cjs";
+import { WorkspaceWatcher } from "./workspace-watcher.cjs";
 import { TerminalManager } from "./terminal-manager.cjs";
 import { CodexSettingsStore } from "./codex-settings.cjs";
 import { translateText } from "./translate.cjs";
@@ -325,6 +326,7 @@ const REMOTE_ALLOWED_EVENTS = new Set<string>([
 const FALLBACK_TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAA1ElEQVQ4jcWTsQ2DMBBFXWUF/gCJFGELS5FSQsU4GYANQooMgESfCRAjQOnMQOLQM8BFtgJFoLBJkeJL9ln37mzfZ2EYbgBcAGgA5KgngNzkMrPwSPxWzsbKp92WrnzvC3ixcXOTgu7HAw3DMJPWmuq6piRJZhDmAhjVdR0JIdwBSilqmob6vp9iWZa5A9I0tWdRFE2Qoij8AQCobVsbK8vyDwAp5borKKVs5dWPOCx8I+fcH6C1pqqqKI7jxUEyxlg1ykEQPH4105l97GwgthNfO78BmdECbWW4kcMAAAAASUVORK5CYII=";
 const historyCache = new ThreadHistoryCache();
 const browserView = new BrowserViewManager((channel, payload) => sendToRenderer(channel, payload));
+const workspaceWatcher = new WorkspaceWatcher((cwd) => sendToRenderer("workspace:fs-changed", { cwd }));
 const browserControlSecret = randomBytes(24).toString("hex");
 const desktopControlSecret = randomBytes(24).toString("hex");
 const askControlSecret = randomBytes(24).toString("hex");
@@ -2121,6 +2123,9 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("workspace:diff", (_event, input) => getWorkspaceDiff(input.cwd, input.path));
   ipcMain.handle("workspace:list-directory", (_event, input) => listWorkspaceDirectory(input.cwd, input.path));
   ipcMain.handle("workspace:read-file", (_event, input) => readWorkspaceEntry(input.cwd, input.path));
+  ipcMain.handle("workspace:write-file", (_event, input) => writeWorkspaceFile(input.cwd, input.path, input.content));
+  ipcMain.handle("workspace:watch", (_event, input) => { workspaceWatcher.watch(input.cwd); });
+  ipcMain.handle("workspace:unwatch", (_event, input) => { workspaceWatcher.unwatch(input.cwd); });
   ipcMain.handle("workspace:find-file", (_event, input) => findWorkspaceFile(input.cwd, input.query));
   ipcMain.handle("workspace:list-open-targets", () => listOpenWorkspaceTargets());
   ipcMain.handle("file:preview-image", (_event, input) => previewLocalImage(input.path));
@@ -2923,6 +2928,7 @@ app.on("before-quit", () => {
   desktopControl.stop();
   askControl.stop();
   subagentControl.stop();
+  workspaceWatcher.disposeAll();
   void stopRemoteControl({ saveSettings: false });
   void unregisterDevilBrowserMcp();
   void unregisterDevilAskMcp();

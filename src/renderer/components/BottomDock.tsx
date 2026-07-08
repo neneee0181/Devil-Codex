@@ -12,6 +12,7 @@ export function BottomDock({
   active,
   workspace,
   fileTarget,
+  filesLocked,
   projectName,
   changes,
   selectedDiff,
@@ -43,6 +44,7 @@ export function BottomDock({
   active: string | null;
   workspace: string;
   fileTarget: string | null;
+  filesLocked?: boolean;
   projectName: string;
   changes: WorkspaceChanges;
   selectedDiff: WorkspaceDiff | null;
@@ -91,7 +93,7 @@ export function BottomDock({
       <div className="bottom-dock-content">
         {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="bottom" terminalKey={terminalSessionKey} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
         {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "사이드 채팅" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} lockedModel={active?.startsWith("subagent:")} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
-        {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
+        {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       </div>
     </section>
   );

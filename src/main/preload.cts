@@ -81,6 +81,14 @@ const api: DevilCodexApi = {
   getWorkspaceDiff: (input) => ipcRenderer.invoke("workspace:diff", input),
   listWorkspaceDirectory: (input) => ipcRenderer.invoke("workspace:list-directory", input),
   readWorkspaceFile: (input) => ipcRenderer.invoke("workspace:read-file", input),
+  writeWorkspaceFile: (input) => ipcRenderer.invoke("workspace:write-file", input),
+  watchWorkspaceFiles: (input) => ipcRenderer.invoke("workspace:watch", input),
+  unwatchWorkspaceFiles: (input) => ipcRenderer.invoke("workspace:unwatch", input),
+  onWorkspaceFilesChanged: (listener: (payload: { cwd: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("workspace:fs-changed", handler);
+    return () => ipcRenderer.removeListener("workspace:fs-changed", handler);
+  },
   findWorkspaceFile: (input) => ipcRenderer.invoke("workspace:find-file", input),
   previewLocalImage: (input) => ipcRenderer.invoke("file:preview-image", input),
   listOpenWorkspaceTargets: () => ipcRenderer.invoke("workspace:list-open-targets"),

@@ -432,6 +432,10 @@ export interface DevilCodexApi {
   getWorkspaceDiff: (input: { cwd: string; path: string }) => Promise<WorkspaceDiff>;
   listWorkspaceDirectory: (input: { cwd: string; path?: string }) => Promise<WorkspaceEntry[]>;
   readWorkspaceFile: (input: { cwd: string; path: string }) => Promise<WorkspaceFile>;
+  writeWorkspaceFile: (input: { cwd: string; path: string; content: string }) => Promise<{ path: string }>;
+  watchWorkspaceFiles: (input: { cwd: string }) => Promise<void>;
+  unwatchWorkspaceFiles: (input: { cwd: string }) => Promise<void>;
+  onWorkspaceFilesChanged: (listener: (payload: { cwd: string }) => void) => () => void;
   findWorkspaceFile: (input: { cwd: string; query: string }) => Promise<string | null>;
   previewLocalImage: (input: { path: string }) => Promise<string | null>;
   listOpenWorkspaceTargets: () => Promise<OpenWorkspaceTarget[]>;
