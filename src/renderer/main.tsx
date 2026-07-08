@@ -1008,6 +1008,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       timelineUsageByTurn.set(item.turnId, { ...item, id: `${item.id}:${index}` });
     });
     for (const item of timelineUsageByTurn.values()) {
+      const tokenUsage = item.tokenUsage;
+      if (!tokenUsage) continue;
       const provider = item.provider ?? (item.runtime === "claude-code" ? "claude-code" : input.defaultProvider);
       const runtime = item.runtime ?? input.defaultRuntime;
       const model = item.model ?? input.defaultModel;
@@ -1022,8 +1024,8 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
       if (item.status === "failed") row.failed += 1;
       else row.completed += 1;
       row.durationMs += item.durationMs ?? 0;
-      addUsageToThreadRow(row, item.tokenUsage);
-      const cost = estimateProviderUsageCost(provider, model, item.tokenUsage);
+      addUsageToThreadRow(row, tokenUsage);
+      const cost = estimateProviderUsageCost(provider, model, tokenUsage);
       row.estimatedCost += cost.cost;
       row.pricedTokens += cost.pricedTokens;
       rows.set(key, row);
