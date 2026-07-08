@@ -30,7 +30,7 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     return Number.isFinite(stored) && stored >= 160 ? stored : 260;
   });
   const [menu, setMenu] = useState<{ x: number; y: number; entry: WorkspaceEntry | null } | null>(null);
-  const [dialog, setDialog] = useState<{ action: "rename" | "move" | "new-file" | "new-folder"; base: string; title: string; value: string } | null>(null);
+  const [dialog, setDialog] = useState<{ action: "rename" | "move" | "new-file" | "new-folder" | "delete"; base: string; title: string; value: string; message?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const openWithRef = useRef<HTMLDivElement>(null);
@@ -49,6 +49,15 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
   useOutsideDismiss(openWithRef, () => setOpenWith(false), openWith);
   useOutsideDismiss(fileMenuRef, () => setFileMenu(false), fileMenu);
   useOutsideDismiss(menuRef, () => setMenu(null), Boolean(menu));
+  useEffect(() => {
+    if (!menu) return;
+    const close = (): void => setMenu(null);
+    const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") setMenu(null); };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); window.removeEventListener("keydown", onKey); };
+  }, [menu]);
 
   const load = useCallback(async (path: string): Promise<void> => {
     const entries = await window.devilCodex.listWorkspaceDirectory({ cwd: workspace, path });
@@ -95,7 +104,7 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
 
   // The AI grabbed write access mid-edit: drop edit mode so we never race a
   // model-driven change with a manual save.
-  useEffect(() => { if (locked) setEditing(false); }, [locked]);
+  useEffect(() => { if (locked) { setEditing(false); setMenu(null); setDialog(null); } }, [locked]);
 
   useEffect(() => {
     if (!target) return;
@@ -177,32 +186,35 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     event.preventDefault();
     event.stopPropagation();
     if (locked) return;
-    setMenu({ x: event.clientX, y: event.clientY, entry });
+    // Drop any stray text selection so the native copy menu (main-process
+    // context-menu handler keys off selectionText) does not stack on top of
+    // this tree menu.
+    window.getSelection()?.removeAllRanges();
+    // Clamp so the menu never opens off-screen (approx. size; good enough).
+    const x = Math.min(event.clientX, window.innerWidth - 184);
+    const y = Math.min(event.clientY, window.innerHeight - 200);
+    setMenu({ x: Math.max(8, x), y: Math.max(8, y), entry });
   };
-  const startDialog = (action: "rename" | "move" | "new-file" | "new-folder", entry: WorkspaceEntry | null): void => {
+  const startDialog = (action: "rename" | "move" | "new-file" | "new-folder" | "delete", entry: WorkspaceEntry | null): void => {
     setMenu(null);
     if (action === "rename" && entry) setDialog({ action, base: entry.path, title: "이름 변경", value: entry.name });
     else if (action === "move" && entry) setDialog({ action, base: entry.path, title: "이동 (워크스페이스 기준 경로)", value: entry.path });
+    else if (action === "delete" && entry) setDialog({ action, base: entry.path, title: `'${entry.name}' 삭제`, value: "", message: `${entry.kind === "folder" ? "폴더와 그 안의 모든 항목을" : "이 파일을"} 삭제합니다. 되돌릴 수 없습니다.` });
     else if (action === "new-file") setDialog({ action, base: entry?.path ?? "", title: entry ? `${entry.name}에 새 파일` : "새 파일 (루트)", value: "" });
     else if (action === "new-folder") setDialog({ action, base: entry?.path ?? "", title: entry ? `${entry.name}에 새 폴더` : "새 폴더 (루트)", value: "" });
-  };
-  const removeEntry = async (entry: WorkspaceEntry): Promise<void> => {
-    setMenu(null);
-    if (!window.confirm(`'${entry.name}'을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
-    try {
-      await window.devilCodex.deleteWorkspaceEntry({ cwd: workspace, path: entry.path });
-      if (selectedRef.current && (selectedRef.current.path === entry.path || selectedRef.current.path.startsWith(`${entry.path}/`))) { setSelected(null); setEditing(false); }
-      await load(parentPath(entry.path)).catch(() => undefined);
-      setNotice("삭제했습니다."); window.setTimeout(() => setNotice(""), 2500);
-    } catch (reason) { setError(String(reason)); }
   };
   const submitDialog = async (): Promise<void> => {
     if (!dialog || busy) return;
     const value = dialog.value.trim();
-    if (!value) return;
+    if (dialog.action !== "delete" && !value) return;
     setBusy(true);
     try {
-      if (dialog.action === "rename") {
+      if (dialog.action === "delete") {
+        await window.devilCodex.deleteWorkspaceEntry({ cwd: workspace, path: dialog.base });
+        if (selectedRef.current && (selectedRef.current.path === dialog.base || selectedRef.current.path.startsWith(`${dialog.base}/`))) { setSelected(null); setEditing(false); }
+        await load(parentPath(dialog.base)).catch(() => undefined);
+        setNotice("삭제했습니다."); window.setTimeout(() => setNotice(""), 2500);
+      } else if (dialog.action === "rename") {
         const parent = parentPath(dialog.base);
         const to = parent ? `${parent}/${value}` : value;
         await window.devilCodex.renameWorkspaceEntry({ cwd: workspace, from: dialog.base, to });
@@ -255,20 +267,25 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     {editing && externalChanged && <div className="file-lock-banner">이 파일이 외부에서 변경되었습니다. 저장하면 현재 편집 내용으로 덮어씁니다.</div>}
     <div ref={bodyRef} className={`workspace-file-body${treeOpen ? "" : " tree-closed"}`} style={treeOpen ? { gridTemplateColumns: `minmax(0, 1fr) ${treeWidth}px` } : undefined}>
       <main>{editing && selected
-        ? <textarea className="file-editor" spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} />
+        ? <textarea className="file-editor" spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+          if (event.key === "Tab") { event.preventDefault(); const el = event.currentTarget; const start = el.selectionStart; const end = el.selectionEnd; const next = `${draft.slice(0, start)}  ${draft.slice(end)}`; setDraft(next); requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 2; }); }
+          else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
+        }} />
         : selected?.kind === "image" ? <img src={selected.content} alt={selected.path} /> : selected?.kind === "text" && isMarkdown ? <div className="workspace-markdown"><MarkdownContent text={selected.content} onOpenFile={(path) => void openFile(path)} /></div> : selected?.kind === "text" ? <Suspense fallback={<div className="file-empty">코드 불러오는 중…</div>}><CodePreview path={selected.path} code={selected.content} wrap={wrap} /></Suspense> : selected ? <pre>{selected.content}</pre> : <div className="file-empty"><FolderOpen size={36} /><strong>파일 열기</strong><span>워크스페이스 트리에서 파일을 선택하세요</span></div>}</main>
       <aside>{treeOpen && <div className="tree-resizer" onMouseDown={startTreeResize} role="separator" aria-orientation="vertical" title="트리 너비 조절" />}<label><Search size={15} /><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="파일 필터링…" /></label><div className="workspace-tree" onContextMenu={(event) => openMenu(event, null)}>{rows}<div className="workspace-tree-pad" onContextMenu={(event) => openMenu(event, null)} /></div></aside>
     </div>
     {menu && <div ref={menuRef} className="file-context-menu" style={{ top: menu.y, left: menu.x }}>
       {menu.entry?.kind === "folder" && <><button onClick={() => startDialog("new-file", menu.entry)}><FilePlus size={15} />새 파일</button><button onClick={() => startDialog("new-folder", menu.entry)}><FolderPlus size={15} />새 폴더</button><div className="file-context-sep" /></>}
       {!menu.entry && <><button onClick={() => startDialog("new-file", null)}><FilePlus size={15} />새 파일 (루트)</button><button onClick={() => startDialog("new-folder", null)}><FolderPlus size={15} />새 폴더 (루트)</button></>}
-      {menu.entry && <><button onClick={() => startDialog("rename", menu.entry)}><Pencil size={15} />이름 변경</button><button onClick={() => startDialog("move", menu.entry)}><FolderInput size={15} />위치 이동</button><button className="danger" onClick={() => void removeEntry(menu.entry!)}><Trash2 size={15} />삭제</button></>}
+      {menu.entry && <><button onClick={() => startDialog("rename", menu.entry)}><Pencil size={15} />이름 변경</button><button onClick={() => startDialog("move", menu.entry)}><FolderInput size={15} />위치 이동</button><button className="danger" onClick={() => startDialog("delete", menu.entry)}><Trash2 size={15} />삭제</button></>}
     </div>}
     {dialog && <div className="file-dialog-backdrop" onMouseDown={() => setDialog(null)}>
       <form className="file-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); void submitDialog(); }}>
         <strong>{dialog.title}</strong>
-        <input autoFocus value={dialog.value} onChange={(event) => setDialog((current) => current ? { ...current, value: event.target.value } : current)} onKeyDown={(event) => { if (event.key === "Escape") setDialog(null); }} placeholder={dialog.action === "move" ? "예: src/foo/bar.ts" : "이름 입력"} />
-        <div className="file-dialog-actions"><button type="button" onClick={() => setDialog(null)}>취소</button><button type="submit" className="primary" disabled={busy || !dialog.value.trim()}>{busy ? "처리 중…" : "확인"}</button></div>
+        {dialog.message
+          ? <p className="file-dialog-message">{dialog.message}</p>
+          : <input autoFocus value={dialog.value} onChange={(event) => setDialog((current) => current ? { ...current, value: event.target.value } : current)} onKeyDown={(event) => { if (event.key === "Escape") setDialog(null); }} placeholder={dialog.action === "move" ? "예: src/foo/bar.ts" : "이름 입력"} />}
+        <div className="file-dialog-actions"><button type="button" onClick={() => setDialog(null)}>취소</button><button type="submit" className={dialog.action === "delete" ? "danger" : "primary"} disabled={busy || (dialog.action !== "delete" && !dialog.value.trim())}>{busy ? "처리 중…" : dialog.action === "delete" ? "삭제" : "확인"}</button></div>
       </form>
     </div>}
     {notice && <div className="file-save-notice">{notice}</div>}

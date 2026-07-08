@@ -1196,7 +1196,9 @@ button:active:not(:disabled) { transform: scale(.96); }
 .file-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .file-dialog-actions button { border: 1px solid #454545; border-radius: 8px; background: #2c2c2c; color: #d6d6d6; padding: 7px 14px; font-size: 12px; }
 .file-dialog-actions button.primary { border-color: #3f6ea0; background: #2b5a8c; color: #fff; }
+.file-dialog-actions button.danger { border-color: #7a3330; background: #8c2f2b; color: #fff; }
 .file-dialog-actions button:disabled { opacity: .45; }
+.file-dialog-message { margin: 0; color: #c4c4c4; font-size: 12.5px; line-height: 1.55; }
 .file-code.wrap > div { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-markdown { width: min(100%, 760px); margin: 0 auto; padding: 26px 30px 70px; color: #dfdfdf; overflow-wrap: anywhere; }
 .workspace-markdown > :first-child { margin-top: 0; }
