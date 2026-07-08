@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstruct
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { access, mkdir as fsMkdir, readdir, readFile } from "node:fs/promises";
+import { access, mkdir as fsMkdir, readdir, readFile, stat as fsStat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
@@ -1254,13 +1254,34 @@ async function commandWorks(command: string): Promise<boolean> {
   }
 }
 
+// macOS app-bundle names per target. Availability is decided by whether the
+// bundle actually exists, so uninstalled editors are hidden instead of shown
+// and failing to open. The resolved name is passed to `open -a <name>`.
+const macAppNames: Partial<Record<ExternalTarget, string[]>> = {
+  vscode: ["Visual Studio Code", "VSCodium", "Cursor"],
+  antigravity: ["Antigravity"],
+  "github-desktop": ["GitHub Desktop"],
+  intellij: ["IntelliJ IDEA", "IntelliJ IDEA Ultimate", "IntelliJ IDEA CE", "IntelliJ IDEA Community Edition"],
+  rider: ["Rider", "JetBrains Rider"],
+};
+
+async function macAppName(target: ExternalTarget): Promise<string | undefined> {
+  const dirs = ["/Applications", join(envPath("HOME"), "Applications"), "/System/Applications"];
+  for (const name of macAppNames[target] ?? []) {
+    for (const dir of dirs) {
+      try { await access(join(dir, `${name}.app`)); return name; } catch { /* try next */ }
+    }
+  }
+  return undefined;
+}
+
 async function resolveOpenCommand(target: ExternalTarget): Promise<string | undefined> {
   if (target === "finder") return process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
   if (target === "terminal") {
     if (process.platform === "win32") return await commandWorks("wt") ? "wt" : "cmd";
     return process.platform === "darwin" ? "open" : "x-terminal-emulator";
   }
-  if (process.platform === "darwin") return target === "vscode" ? "Visual Studio Code" : target === "intellij" ? "IntelliJ IDEA" : undefined;
+  if (process.platform === "darwin") return macAppName(target);
   if (process.platform !== "win32") {
     const command = { vscode: "code", visualstudio: "", antigravity: "antigravity", "github-desktop": "github-desktop", "git-bash": "", intellij: "idea", rider: "rider" }[target];
     return command && await commandWorks(command) ? command : undefined;
@@ -1273,16 +1294,25 @@ async function resolveOpenCommand(target: ExternalTarget): Promise<string | unde
 async function listOpenWorkspaceTargets(): Promise<OpenWorkspaceTarget[]> {
   const order: ExternalTarget[] = process.platform === "win32"
     ? ["vscode", "visualstudio", "antigravity", "github-desktop", "finder", "terminal", "git-bash", "intellij", "rider"]
-    : ["vscode", "finder", "terminal", "intellij"];
+    : process.platform === "darwin"
+      ? ["vscode", "antigravity", "github-desktop", "intellij", "rider", "finder", "terminal"]
+      : ["vscode", "finder", "terminal", "intellij"];
   const rows = await Promise.all(order.map(async (id) => ({ id, label: openTargetLabels[id], available: Boolean(await resolveOpenCommand(id)) })));
   return rows.filter((row) => row.available);
 }
 
 async function openWorkspaceExternal(input: { cwd: string; target: ExternalTarget }): Promise<{ ok: boolean; detail?: string }> {
   try {
+    // File manager (Finder/Explorer): reveal a file in place, open a folder
+    // directly. shell handles this natively on every platform.
+    if (input.target === "finder") {
+      const isDirectory = await fsStat(input.cwd).then((info) => info.isDirectory()).catch(() => false);
+      if (isDirectory) { const detail = await shell.openPath(input.cwd); if (detail) throw new Error(detail); }
+      else shell.showItemInFolder(input.cwd);
+      return { ok: true };
+    }
     if (process.platform === "darwin") {
-      if (input.target === "finder") await execFileAsync("open", [input.cwd]);
-      else if (input.target === "terminal") await execFileAsync("open", ["-a", "Terminal", input.cwd]);
+      if (input.target === "terminal") await execFileAsync("open", ["-a", "Terminal", input.cwd]);
       else {
         const appName = await resolveOpenCommand(input.target);
         if (!appName) throw new Error(`${openTargetLabels[input.target]}을 찾을 수 없습니다.`);

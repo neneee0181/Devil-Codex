@@ -14,14 +14,13 @@ Last: 2026-07-08T12:00:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.2.3: workspace file panel — live fs watch, inline edit (Tab/Cmd-S, AI-lock), resizable tree, right-click rename/move/delete/new, Ctrl/Cmd+C copy of read-only selection.
+- v0.2.5: file panel — highlighted editor (CodeEditor overlay), cross-platform open-with (macOS app-bundle detect, shell Finder/Explorer reveal), live watch, inline edit, resizable tree, right-click ops.
 
 ## Changed
-- New `src/main/workspace-watcher.cts`; `file-service.cts` write/rename/delete/create.
-- `WorkspaceFilesPanel.tsx` reworked; contracts/preload/main IPC wired; `main.cts` context-menu + copy handling.
+- New `workspace-watcher.cts`, `CodeEditor.tsx`; `file-service.cts` fs ops; `main.cts` open-with rewrite + context-menu/copy.
 
 ## Open Tasks
-- Push `v0.2.3` (commit+tag done).
+- (none) v0.2.5 pushed.
 
 ## Resume
 - `npm run build` EXIT 0 (PATH=/opt/homebrew/bin). Renderer tsc: 2 pre-existing errors only.

@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ChevronDown, ChevronRight, Code2, Copy, FilePlus, FileText, Folder, FolderOpen, FolderInput, FolderPlus, Lock, MoreHorizontal, Pencil, Save, Search, Trash2, WrapText, X } from "lucide-react";
 import type { ExternalTarget, OpenWorkspaceTarget, WorkspaceEntry, WorkspaceFile } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
+import { CodeEditor } from "./CodeEditor";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { MarkdownContent, normalizeFileLinkPath } from "./MarkdownContent";
 
@@ -267,7 +268,7 @@ export function WorkspaceFilesPanel({ workspace, target, locked = false }: { wor
     {editing && externalChanged && <div className="file-lock-banner">이 파일이 외부에서 변경되었습니다. 저장하면 현재 편집 내용으로 덮어씁니다.</div>}
     <div ref={bodyRef} className={`workspace-file-body${treeOpen ? "" : " tree-closed"}`} style={treeOpen ? { gridTemplateColumns: `minmax(0, 1fr) ${treeWidth}px` } : undefined}>
       <main>{editing && selected
-        ? <textarea className="file-editor" spellCheck={false} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+        ? <CodeEditor path={selected.path} value={draft} onChange={setDraft} onKeyDown={(event) => {
           if (event.key === "Tab") { event.preventDefault(); const el = event.currentTarget; const start = el.selectionStart; const end = el.selectionEnd; const next = `${draft.slice(0, start)}  ${draft.slice(end)}`; setDraft(next); requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 2; }); }
           else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
         }} />

@@ -1168,7 +1168,12 @@ button:active:not(:disabled) { transform: scale(.96); }
 .file-icon-action { width: 30px; padding: 0; }
 .file-open-with:hover, .file-icon-action:hover, .file-icon-action.active { background: #303030; color: #ededed; }
 .file-open-with:disabled, .file-icon-action:disabled { opacity: .4; }
-.file-editor { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0; background: #181818; color: #e2e2e2; padding: 16px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; tab-size: 2; }
+.code-editor { position: relative; width: 100%; height: 100%; overflow: hidden; background: #181818; }
+.code-editor-layer, .code-editor-input { margin: 0; border: 0; box-sizing: border-box; padding: 16px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0; tab-size: 2; white-space: pre; word-wrap: normal; overflow-wrap: normal; }
+.code-editor-layer { position: absolute; inset: 0; overflow: auto; pointer-events: none; background: transparent !important; }
+.code-editor-layer > div { min-height: 1.55em; }
+.code-editor-input { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; outline: 0; overflow: auto; background: transparent; color: transparent; caret-color: #e6e6e6; }
+.code-editor-input::selection { background: #34517d; }
 .file-lock-banner { display: flex; gap: 7px; align-items: center; border-bottom: 1px solid #4a3f2a; background: #2c2617; color: #e6cf95; padding: 7px 14px; font-size: 12px; }
 .file-save-notice { position: absolute; z-index: 4; right: 12px; bottom: 12px; border: 1px solid #3f5a3f; border-radius: 9px; background: #22331f; color: #a9e0a0; padding: 8px 12px; font-size: 12px; }
 .file-popover { position: absolute; z-index: 20; top: 35px; right: 0; display: grid; width: 170px; border: 1px solid #484848; border-radius: 11px; background: #333; box-shadow: 0 14px 36px #0009; padding: 5px; }
