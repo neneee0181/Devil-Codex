@@ -2908,8 +2908,15 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
         updatedAt: Date.now(),
         ...(firstTurn ? { title: titleFromText(request.text) } : {}),
       });
-      const text = await providerRuntime.send(turnInput);
-      await providerTranscripts.append(request.threadId, { id: crypto.randomUUID(), kind: "agent", text, runtime: "codex", provider: request.provider, model: request.model, accountId: request.accountId });
+      const agentItemId = crypto.randomUUID();
+      let agentText = "";
+      try {
+        const text = await providerRuntime.send({ ...turnInput, onDelta: (delta) => { agentText += delta; void providerTranscripts.upsertPartialAgent(request.threadId, agentItemId, { id: agentItemId, kind: "agent", text: agentText, status: "inProgress", runtime: "codex", provider: request.provider, model: request.model, accountId: request.accountId }).catch(() => undefined); } });
+        await providerTranscripts.upsertPartialAgent(request.threadId, agentItemId, { id: agentItemId, kind: "agent", text: text.trim() || agentText, status: "completed", runtime: "codex", provider: request.provider, model: request.model, accountId: request.accountId });
+      } catch (error) {
+        if (agentText.trim()) await providerTranscripts.upsertPartialAgent(request.threadId, agentItemId, { id: agentItemId, kind: "agent", text: agentText, status: "interrupted", runtime: "codex", provider: request.provider, model: request.model, accountId: request.accountId }).catch(() => undefined);
+        throw error;
+      }
       return;
     }
     try {

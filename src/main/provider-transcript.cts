@@ -395,6 +395,20 @@ export class ProviderTranscriptStore {
     await this.mutate((all) => { all.items[threadId] = [...(all.items[threadId] ?? []), item]; });
   }
 
+  async upsertPartialAgent(threadId: string, itemId: string, partial: ThreadHistoryItem): Promise<void> {
+    await this.mutate((all) => {
+      const items = all.items[threadId] ?? [];
+      const index = items.findIndex((item) => item.id === itemId);
+      if (index >= 0) {
+        const next = items.slice();
+        next[index] = { ...items[index], ...partial, id: itemId };
+        all.items[threadId] = next;
+        return;
+      }
+      all.items[threadId] = [...items, partial];
+    });
+  }
+
   async setTurnContextUsage(threadId: string, turnId: string, contextUsage: ContextUsage): Promise<void> {
     await this.mutate((all) => {
       const items = all.items[threadId] ?? [];
