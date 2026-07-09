@@ -636,7 +636,14 @@ function App(): React.JSX.Element {
       if (!meta.id) return;
       const apply = <T extends ThreadSummary | ThreadRef>(item: T): T => item.id === meta.id ? { ...item, ...meta } : item;
       setProjectSummaries((current) => current.map(apply));
-      setThreadSummaries((current) => current.map(apply));
+      setThreadSummaries((current) => {
+        const exists = current.some((item) => item.id === meta.id);
+        if (!exists) {
+          void refreshThreads(meta.cwd ?? selectedProject);
+          return current;
+        }
+        return current.map(apply);
+      });
       setCurrentThread((current) => current?.id === meta.id ? apply(current) : current);
     });
     const unsubApprovalResolved = bridge.subscribe<unknown>("approval:resolved", (payload) => {
@@ -674,7 +681,7 @@ function App(): React.JSX.Element {
       unsubSettings();
       unsubProviders();
     };
-  }, [bridge, currentThread, threadSummaries, projectSummaries]);
+  }, [bridge, currentThread, threadSummaries, projectSummaries, selectedProject]);
 
   async function refreshSlashCommands(cwd: string, model?: string): Promise<void> {
     try {
