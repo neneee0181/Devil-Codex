@@ -320,11 +320,6 @@ function copilotHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...copilotClientHeaders() };
 }
 
-function copilotSupportsResponsesApi(model: string): boolean {
-  const id = model.toLowerCase();
-  return /^gpt-5(?:[.\-_]|$)/.test(id) || /^gpt-4\.1(?:[.\-_]|$)/.test(id) || /^o\d/.test(id) || /^codex(?:[.\-_]|$)/.test(id);
-}
-
 // ---------- Raw credentials for the local Codex Responses proxy ----------
 export async function claudeAuth(accountId?: string): Promise<{ apiKey?: string; accessToken?: string } | null> {
   const stored = await readClaudeToken(accountId);
@@ -380,18 +375,6 @@ export async function copilotChat(model: string, text: string, signal: AbortSign
   const stored = await readToken<CopilotToken>("copilot", accountId);
   if (!stored?.githubToken) throw new Error("GitHub Copilot 로그인이 필요합니다.");
   const session = await getCopilotSession(stored.githubToken);
-  if (copilotSupportsResponsesApi(model)) {
-    return fetch(`${session.apiUrl}/responses`, {
-      method: "POST",
-      signal,
-      headers: copilotHeaders(session.token),
-      body: JSON.stringify({
-        model,
-        stream: true,
-        input: [{ type: "message", role: "user", content: [{ type: "input_text", text }] }],
-      }),
-    });
-  }
   return fetch(`${session.apiUrl}/chat/completions`, { method: "POST", signal, headers: copilotHeaders(session.token), body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: text }] }) });
 }
 

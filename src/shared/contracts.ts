@@ -174,7 +174,7 @@ export interface CodexSettings { model: string; approvalPolicy: string; sandboxM
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
   | "openai" | "anthropic" | "google" | "deepseek"
-  | "xai" | "openrouter" | "openrouter-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks"
+  | "xai" | "openrouter" | "openrouter-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks" | "zai"
   | "moonshot" | "huggingface" | "nvidia" | "ollama" | "vllm" | "lm-studio";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ResponseSpeed = "standard" | "fast";

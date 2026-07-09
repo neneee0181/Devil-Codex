@@ -261,13 +261,19 @@ export class CodexProviderReconciler {
   // the proxy). Returns false when the thread isn't persisted yet (a brand-new
   // thread already created with modelProvider:"devil") — nothing to do. Works
   // the same for every external provider; no per-provider/string handling.
-  async prepareExternalTurn(threadId: string): Promise<boolean> {
-    try {
-      await this.patchThreadProvider(threadId, EXTERNAL_TURN_PROVIDER);
-      return true;
-    } catch (error) {
-      if (error instanceof ThreadNotPersistedError) return false;
-      throw error;
+  async prepareExternalTurn(threadId: string, options: { waitMs?: number } = {}): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, options.waitMs ?? 0);
+    let delay = 50;
+    while (true) {
+      try {
+        await this.patchThreadProvider(threadId, EXTERNAL_TURN_PROVIDER);
+        return true;
+      } catch (error) {
+        if (!(error instanceof ThreadNotPersistedError)) throw error;
+        if (Date.now() >= deadline) return false;
+        await sleep(Math.min(delay, Math.max(0, deadline - Date.now())));
+        delay = Math.min(delay * 2, 500);
+      }
     }
   }
 

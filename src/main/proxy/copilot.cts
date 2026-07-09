@@ -6,11 +6,6 @@ import { copilotChatHeaders } from "../provider-oauth.cjs";
 
 const COPILOT_API = "https://api.githubcopilot.com";
 
-function supportsResponsesApi(model: string): boolean {
-  const id = model.toLowerCase();
-  return /^gpt-5(?:[.\-_]|$)/.test(id) || /^gpt-4\.1(?:[.\-_]|$)/.test(id) || /^o\d/.test(id) || /^codex(?:[.\-_]|$)/.test(id);
-}
-
 function flatten(parts: { type: string; text?: string }[]): string {
   return parts.map((p) => (p.type === "text" ? p.text ?? "" : "")).join("");
 }
@@ -121,9 +116,6 @@ function buildResponsesBody(parsed: OcxParsedRequest): Record<string, unknown> {
 export function buildCopilotRequest(parsed: OcxParsedRequest, auth: string | { bearer: string; apiUrl?: string }): { url: string; headers: Record<string, string>; body: string } {
   const bearer = typeof auth === "string" ? auth : auth.bearer;
   const apiUrl = typeof auth === "string" ? COPILOT_API : auth.apiUrl ?? COPILOT_API;
-  if (supportsResponsesApi(parsed.model)) {
-    return { url: `${apiUrl}/responses`, headers: copilotChatHeaders(bearer), body: JSON.stringify(buildResponsesBody(parsed)) };
-  }
   const body: Record<string, unknown> = { model: parsed.model, messages: toChatMessages(parsed), stream: true };
   const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
   if (selectedTools.length) {

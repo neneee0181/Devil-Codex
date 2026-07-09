@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AdapterEvent, OcxParsedRequest } from "./types.cjs";
 import { buildGoogleGenerateContentBody, streamGoogle } from "./api-key.cjs";
-import { antigravityUserAgent } from "../provider-antigravity.cjs";
+import { antigravityUserAgent, resolveAntigravityWireModelId } from "../provider-antigravity.cjs";
 
 const ANTIGRAVITY_API = "https://daily-cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_GOOG_API_CLIENT_UA = "google-api-nodejs-client/10.3.0";
@@ -24,15 +24,16 @@ function antigravitySessionId(parsed: OcxParsedRequest): string {
 }
 
 function antigravityRequestBody(parsed: OcxParsedRequest, projectId: string): Record<string, unknown> {
-  const body = buildGoogleGenerateContentBody(parsed);
+  const wireModel = resolveAntigravityWireModelId(parsed.model);
+  const body = buildGoogleGenerateContentBody({ ...parsed, model: wireModel });
   const request: Record<string, unknown> = { ...body, sessionId: antigravitySessionId(parsed) };
-  if (/claude/i.test(parsed.model)) {
+  if (/claude/i.test(wireModel)) {
     const existing = (request.toolConfig ?? {}) as Record<string, unknown>;
     const calling = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
     request.toolConfig = { ...existing, functionCallingConfig: { ...calling, mode: "VALIDATED" } };
   }
   return {
-    model: parsed.model,
+    model: wireModel,
     userAgent: "antigravity",
     requestType: "agent",
     project: projectId,

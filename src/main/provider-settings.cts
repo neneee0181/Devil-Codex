@@ -28,6 +28,7 @@ const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
   cerebras: { adapter: "openai-chat", baseUrl: "https://api.cerebras.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   together: { adapter: "openai-chat", baseUrl: "https://api.together.xyz/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   fireworks: { adapter: "openai-chat", baseUrl: "https://api.fireworks.ai/inference/v1", modelPath: "/models", keyRequired: true, allowImages: true },
+  zai: { adapter: "openai-chat", baseUrl: "https://api.z.ai/api/coding/paas/v4", modelPath: "/models", keyRequired: true, allowImages: false },
   moonshot: { adapter: "openai-chat", baseUrl: "https://api.moonshot.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   huggingface: { adapter: "openai-chat", baseUrl: "https://router.huggingface.co/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   nvidia: { adapter: "openai-chat", baseUrl: "https://integrate.api.nvidia.com/v1", modelPath: "/models", keyRequired: true, allowImages: true },
@@ -85,6 +86,13 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     webSearch: "sidecar",
     diagnostics: "experimental",
     notes: ["OpenRouter의 무료 모델만 노출하는 전용 목록입니다.", "무료 모델 availability/rate limit은 OpenRouter 정책과 각 모델 상태에 따라 바뀔 수 있습니다."],
+  };
+  if (provider === "zai") return {
+    tools: "limited",
+    images: "sidecar",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["Z.AI GLM Coding Plan 경로입니다. opencodex registry와 맞춰 OpenAI-compatible chat API를 사용합니다.", "GLM 5.2 계열은 reasoning_effort를 전달하며 이미지는 vision sidecar가 텍스트 설명으로 변환합니다."],
   };
   if (provider === "openrouter" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "moonshot" || provider === "huggingface" || provider === "nvidia" || provider === "xai") return {
     tools: "limited",
@@ -187,6 +195,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
   { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "llama-3.3-70b", label: "Llama 3.3 70B" }] },
   { id: "together", label: "Together", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", label: "Llama 3.3 70B Turbo" }] },
   { id: "fireworks", label: "Fireworks", kind: "apikey", keyRequired: true, models: [{ id: "accounts/fireworks/models/kimi-k2-instruct", label: "Kimi K2 Instruct" }] },
+  { id: "zai", label: "Z.AI GLM Coding Plan", kind: "apikey", keyRequired: true, models: [{ id: "glm-5.2", label: "GLM 5.2" }, { id: "glm-5.2[1m]", label: "GLM 5.2 1M" }, { id: "glm-5.1", label: "GLM 5.1" }, { id: "glm-5", label: "GLM 5" }, { id: "glm-4.6", label: "GLM 4.6" }] },
   { id: "moonshot", label: "Moonshot Kimi", kind: "apikey", keyRequired: true, models: [{ id: "kimi-k2.7-code", label: "Kimi K2.7 Code" }, { id: "kimi-k2.7-code-highspeed", label: "Kimi K2.7 Highspeed" }] },
   { id: "huggingface", label: "Hugging Face", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.1-8B-Instruct", label: "Llama 3.1 8B" }] },
   { id: "nvidia", label: "NVIDIA NIM", kind: "apikey", keyRequired: true, models: [{ id: "meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B" }] },
@@ -208,6 +217,7 @@ const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   cerebras: ["CEREBRAS_API_KEY"],
   together: ["TOGETHER_API_KEY"],
   fireworks: ["FIREWORKS_API_KEY"],
+  zai: ["ZAI_API_KEY", "Z_AI_API_KEY", "GLM_API_KEY"],
   moonshot: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
   huggingface: ["HF_TOKEN", "HUGGINGFACE_API_KEY"],
   nvidia: ["NVIDIA_API_KEY"],

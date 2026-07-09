@@ -2813,10 +2813,11 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await providerReconciler.markPending({ threadId: request.threadId, actualProvider: request.provider, actualModel: request.model });
       let externalInstance: CodexAppServer | undefined;
       try {
-        // Existing thread: provider was flipped to "devil" → restart + resume so
-        // the app-server routes this turn through the proxy. New thread: nothing
-        // to patch (already created with modelProvider:"devil") → just proceed.
-        const switched = await providerReconciler.prepareExternalTurn(request.threadId);
+        // Ensure even a freshly created external-provider thread is persisted as
+        // modelProvider:"devil" before the first turn. Some app-server builds
+        // briefly write the new rollout as "openai"; sending during that window
+        // routes the turn to Codex direct instead of the local proxy.
+        const switched = await providerReconciler.prepareExternalTurn(request.threadId, { waitMs: 2500 });
         if (switched) {
           externalInstance = await restartThreadServer(request.threadId);
           await externalInstance.resumeThread({ id: request.threadId, model: routedModel, modelProvider: "devil", cwd: request.cwd }).then(() => loadedThreads.add(request.threadId)).catch(() => undefined);

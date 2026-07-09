@@ -10,17 +10,19 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-08T18:57:00+09:00
+Last: 2026-07-09T13:55:00+09:00
 Replace, do not append. Keep <800B.
 
 ## Status
-- v0.2.6: Antigravity Gemini tool-call continuity fix on top of v0.2.5 file panel work.
+- v0.2.7 ready: provider routing/parity + steering insertion fix.
 
 ## Changed
-- `src/main/proxy/api-key.cts`, `proxy-server.cts`, `types.cts`: store/replay Antigravity tool signatures so follow-up/restarted turns avoid missing `thought_signature`.
+- Fixed `019f4509...`: external first turns now send `modelProvider` + `model_provider` and wait/retry before proxy routing.
+- Copilot uses `/chat/completions`; Antigravity aliases resolve to wire ids; added `zai` GLM provider.
+- Steering queued turns insert after the interrupted turn.
 
 ## Open Tasks
-- Manual Antigravity E2E: new Gemini tool-using thread should complete a command and continue after tool output.
+- Manual E2E: Copilot `gpt-5.5`, Antigravity alias, Z.AI `glm-5.2`, steering.
 
 ## Resume
-- Root cause session `019f40e3...`: `gpt-oss-120b-medium` had upstream no-capacity; Gemini failed after first response due missing `thought_signature`. Passed `npm run build`.
+- `npm run build` passes under v0.2.7. Commit/tag/push pending.

@@ -178,7 +178,7 @@ function maxToolsForProvider(provider: ApiKeyProvider): number {
   // tools, then a small core set. Full catalog forwarding is too expensive for
   // low-TPM providers and makes fresh chats fail before user text matters.
   if (provider === "groq") return 2;
-  if (provider === "deepseek" || provider === "cerebras" || provider === "moonshot") return 12;
+  if (provider === "deepseek" || provider === "cerebras" || provider === "moonshot" || provider === "zai") return 12;
   if (provider === "openai") return 64;
   return 24;
 }
@@ -220,7 +220,7 @@ function supportsReasoningEffort(provider: ApiKeyProvider, model: string): boole
   if (provider === "moonshot") return false;
   if (provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "huggingface" || provider === "nvidia" || provider === "openrouter" || provider === "openrouter-free" || provider === "ollama" || provider === "vllm" || provider === "lm-studio") return false;
   if (provider === "xai") return !/grok-build|composer/i.test(model);
-  return provider === "openai" || provider === "deepseek";
+  return provider === "openai" || provider === "deepseek" || provider === "zai";
 }
 
 export async function* streamOpenAiCompatible(providerLabel: string, response: Response): AsyncGenerator<AdapterEvent> {

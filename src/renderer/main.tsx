@@ -758,7 +758,7 @@ type RuntimeThreadSnapshot = {
 type UtilityPanelState = { tabs: string[]; active: string | null; open: boolean; expanded: boolean };
 type BottomDockState = { tabs: string[]; active: string | null; open: boolean; height: number };
 
-type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem; steering?: boolean };
+type QueuedTurn = { id: string; pending: PendingTurnState; userItem: ThreadHistoryItem; steering?: boolean; steerAfterTurnId?: string };
 type CompactionRetryState = { pending: PendingTurnState; retrying: boolean; retryTurnId?: string };
 type ThreadUsageModel = {
   key: string;
@@ -2190,6 +2190,41 @@ function App(): React.JSX.Element {
     }
   }
 
+  function insertItemsAfterTurn(threadId: string, turnId: string | undefined, insertItems: ThreadHistoryItem[]): void {
+    const uniqueItems = insertItems.filter((item, index, source) => source.findIndex((candidate) => candidate.id === item.id) === index);
+    if (!threadId || uniqueItems.length === 0) return;
+    const runtimeForThread = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : agentRuntime;
+    const save = (next: ThreadHistoryItem[]): void => { void window.devilCodex.cacheThreadHistory({ id: threadId, items: next, runtime: runtimeForThread }).catch(() => undefined); };
+    const insert = (current: ThreadHistoryItem[]): ThreadHistoryItem[] => {
+      const existing = new Set(current.map((item) => item.id));
+      const missing = uniqueItems.filter((item) => !existing.has(item.id));
+      if (missing.length === 0) return current;
+      const anchorIndex = turnId
+        ? current.reduce((last, item, index) => item.turnId === turnId ? index : last, -1)
+        : -1;
+      const insertIndex = anchorIndex >= 0 ? anchorIndex + 1 : current.length;
+      return [...current.slice(0, insertIndex), ...missing, ...current.slice(insertIndex)];
+    };
+    if (threadRef.current?.id === threadId) {
+      setItems((current) => {
+        const next = insert(current);
+        if (next === current) return current;
+        itemsRef.current = next;
+        itemsOwnerRef.current = threadId;
+        threadHistoryCache.current.set(threadId, next);
+        save(next);
+        return next;
+      });
+      return;
+    }
+    const current = threadHistoryCache.current.get(threadId) ?? [];
+    const next = insert(current);
+    if (next !== current) {
+      threadHistoryCache.current.set(threadId, next);
+      save(next);
+    }
+  }
+
   function persistThreadHistory(threadId: string, items: ThreadHistoryItem[]): void {
     if (!threadId) return;
     threadHistoryCache.current.set(threadId, items);
@@ -2396,14 +2431,14 @@ function App(): React.JSX.Element {
       && (entry.pending.attachmentDetails ?? []).length === 0;
     if (canNativeSteer && activeTurnId) {
       const modelNotice = modelChangeItemForThread(threadId, entry.pending.provider ?? "codex", entry.pending.model, entry.pending.accountId);
-      if (modelNotice) appendItemToThread(threadId, modelNotice);
-      appendItemToThread(threadId, entry.userItem);
+      insertItemsAfterTurn(threadId, activeTurnId, [modelNotice, entry.userItem].filter((item): item is ThreadHistoryItem => Boolean(item)));
       void window.devilCodex.steerTurn({ threadId, text: entry.pending.text, expectedTurnId: activeTurnId, runtime: "codex" }).catch((error) => {
         if (modelNotice) removeItemFromThread(threadId, modelNotice.id);
         removeItemFromThread(threadId, entry.userItem.id);
         appendItemToThread(threadId, { id: crypto.randomUUID(), kind: "system", title: "스티어링 실패", text: `${String(error)}\n대기열 중단 방식으로 다시 시도합니다.` });
         entry.pending = steeringPending(entry.pending);
         entry.steering = true;
+        entry.steerAfterTurnId = activeTurnId;
         enqueueTurn(threadId, entry, true);
         if (runningTurnsRef.current[threadId]) interruptForSteer(threadId);
         else startQueuedTurn(threadId);
@@ -2413,6 +2448,7 @@ function App(): React.JSX.Element {
 
     entry.pending = steeringPending(entry.pending);
     entry.steering = true;
+    entry.steerAfterTurnId = activeTurnId;
     enqueueTurn(threadId, entry, true);
     if (runningTurnsRef.current[threadId]) interruptForSteer(threadId);
     else startQueuedTurn(threadId);
@@ -2429,8 +2465,9 @@ function App(): React.JSX.Element {
     if (queue.length === 0) queuedTurns.current.delete(threadId);
     syncQueuedView(threadId);
     const modelNotice = modelChangeItemForThread(threadId, next.pending.provider ?? "codex", next.pending.model, next.pending.accountId);
-    if (modelNotice) appendItemToThread(threadId, modelNotice);
-    appendItemToThread(threadId, next.userItem);
+    const timelineItems = [modelNotice, next.userItem].filter((item): item is ThreadHistoryItem => Boolean(item));
+    if (next.steering) insertItemsAfterTurn(threadId, next.steerAfterTurnId, timelineItems);
+    else timelineItems.forEach((item) => appendItemToThread(threadId, item));
     updateVisibleThreadProvider(threadId, next.pending.provider ?? "codex", next.pending.model, next.pending.accountId);
     pendingTurn.current = next.pending;
     pendingTurns.current.set(threadId, next.pending);

@@ -205,7 +205,7 @@ export class CodexAppServer extends EventEmitter {
     const baseParams = {
       cwd: input.cwd,
       model: input.model,
-      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+      ...(input.modelProvider ? { modelProvider: input.modelProvider, model_provider: input.modelProvider } : {}),
       // thread/start supports serviceTier (no effort field; effort is sent
       // per-turn via turn/start instead).
       ...(input.responseSpeed ? { serviceTier: serviceTierFor(input.responseSpeed) } : {}),
@@ -300,7 +300,7 @@ export class CodexAppServer extends EventEmitter {
     const result = (await this.request("thread/resume", {
       threadId: input.id,
       model: input.model,
-      ...(input.modelProvider ? { modelProvider: input.modelProvider } : {}),
+      ...(input.modelProvider ? { modelProvider: input.modelProvider, model_provider: input.modelProvider } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
     })) as {
       thread?: { id?: string };

@@ -45,7 +45,7 @@ const SCOPES = [
   "https://www.googleapis.com/auth/experimentsandconfigs",
 ];
 
-export const ANTIGRAVITY_MODELS = [
+const ANTIGRAVITY_WIRE_MODELS = [
   "gemini-3.5-flash-low",
   "gemini-3-flash-agent",
   "gemini-3.5-flash-extra-low",
@@ -56,7 +56,19 @@ export const ANTIGRAVITY_MODELS = [
   "gpt-oss-120b-medium",
 ];
 
-export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+const ANTIGRAVITY_MODEL_ALIASES: Record<string, string> = {
+  "gemini-3.5-flash-mid": "gemini-3.5-flash-low",
+  "gemini-3.5-flash-high": "gemini-3-flash-agent",
+  "gemini-3.1-pro-high": "gemini-pro-agent",
+  "gemini-3.1-pro-preview": "gemini-pro-agent",
+};
+
+export const ANTIGRAVITY_MODELS = [
+  ...ANTIGRAVITY_WIRE_MODELS,
+  ...Object.keys(ANTIGRAVITY_MODEL_ALIASES),
+];
+
+const ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-3.5-flash-low": 1_048_576,
   "gemini-3-flash-agent": 1_048_576,
   "gemini-3.5-flash-extra-low": 1_048_576,
@@ -66,6 +78,18 @@ export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-opus-4-6-thinking": 1_000_000,
   "gpt-oss-120b-medium": 131_072,
 };
+
+export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  ...ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS,
+  ...Object.fromEntries(Object.entries(ANTIGRAVITY_MODEL_ALIASES).map(([alias, wire]) => [
+    alias,
+    ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS[wire]!,
+  ])),
+};
+
+export function resolveAntigravityWireModelId(modelId: string): string {
+  return ANTIGRAVITY_MODEL_ALIASES[modelId] ?? modelId;
+}
 
 const modelCache = new Map<string, { models: ProviderModel[]; fetchedAt: number }>();
 const quotaCache = new Map<string, { windows: ProviderUsageWindow[]; fetchedAt: number }>();

@@ -35,6 +35,7 @@ function providerLabel(provider: ExternalProvider): string {
   if (provider === "cerebras") return "Cerebras";
   if (provider === "together") return "Together";
   if (provider === "fireworks") return "Fireworks";
+  if (provider === "zai") return "Z.AI GLM";
   if (provider === "moonshot") return "Moonshot Kimi";
   if (provider === "huggingface") return "Hugging Face";
   if (provider === "nvidia") return "NVIDIA NIM";
