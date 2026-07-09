@@ -203,7 +203,7 @@ export interface ProviderAccount {
 }
 export interface ProviderInfo { id: ProviderId; label: string; kind: "login" | "apikey"; keyRequired: boolean; models: ProviderModel[]; modelsLoaded: boolean; credentialSource: ProviderCredentialSource; authProvider?: "codex" | "claude" | "copilot" | "antigravity"; accounts: ProviderAccount[]; }
 export interface ProviderSettings { provider: ProviderId; model: string; accountId?: string; providers: ProviderInfo[]; }
-export interface SidecarSettings { webSearch: boolean; vision: boolean; webSearchLimit: number; visionLimit: number; }
+export interface SidecarSettings { webSearch: boolean; vision: boolean; webSearchLimit: number; visionLimit: number; nvidiaRateLimitRpm?: number; }
 export interface ProviderAuthStatus { codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; }
 export interface DeviceCodeInfo { userCode: string; verificationUri: string; expiresIn: number; }
 export interface ProviderUsageWindow { label: string; usedPercent: number; remainingPercent: number; resetsAt?: string | number | null; }

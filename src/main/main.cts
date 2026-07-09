@@ -690,6 +690,7 @@ function sidecarDiagnostics(sidecars?: SidecarSettings, actual?: SidecarDiagnost
   return [
     `sidecar.webSearch: ${config.webSearch ? `enabled; mode tool-loop; toolCalls ${webSearchToolCalls}; requests ${webSearchRequests}/${config.webSearchLimit}; loops ${webSearchLoops}` : "disabled"}`,
     `sidecar.vision: ${config.vision ? `enabled; requests ${visionRequests}/${config.visionLimit}; failures ${visionFailures}` : "disabled"}`,
+    `provider.nvidiaRateLimitRpm: ${config.nvidiaRateLimitRpm ?? 40}`,
     `sidecar.failures: ${failures.length ? failures.join(" | ") : "none"}`,
   ];
 }

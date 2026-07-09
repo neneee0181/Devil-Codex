@@ -257,14 +257,16 @@ function writePersistedRunningTurns(input: Record<string, { turnId?: string; sta
 function readSidecarSettings(): SidecarSettings {
   try {
     const raw = JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") as Record<string, unknown>;
+    const nvidiaRateLimitRpm = raw.nvidiaRateLimitRpm === undefined ? 40 : Math.max(0, Math.floor(Number(raw.nvidiaRateLimitRpm) || 0));
     return {
       webSearch: raw.sidecarWebSearch === true,
       vision: raw.sidecarVision === true,
       webSearchLimit: Number(raw.sidecarWebSearchLimit ?? 3) || 3,
       visionLimit: Number(raw.sidecarVisionLimit ?? 3) || 3,
+      nvidiaRateLimitRpm,
     };
   } catch {
-    return { webSearch: false, vision: false, webSearchLimit: 3, visionLimit: 3 };
+    return { webSearch: false, vision: false, webSearchLimit: 3, visionLimit: 3, nvidiaRateLimitRpm: 40 };
   }
 }
 

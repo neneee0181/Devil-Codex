@@ -53,6 +53,8 @@ const requestLog: ProviderRequestLogEntry[] = [];
 let requestLogLoaded = false;
 let requestLogWrite = Promise.resolve();
 const REQUEST_LOG_LIMIT = 120;
+let nvidiaRateLimitQueue = Promise.resolve();
+let nvidiaLastRequestAt = 0;
 const FORWARDED_OPENAI_HEADERS = [
   "authorization",
   "chatgpt-account-id",
@@ -178,6 +180,31 @@ function requestPartStats(parsed: OcxParsedRequest): { tools: number; images: nu
 function usesNativeImages(provider: ProxyProvider): boolean {
   if (provider === "openai" || provider === "anthropic" || provider === "google" || provider === "antigravity") return true;
   return Boolean(apiProviderConfig(provider)?.allowImages);
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("request aborted while waiting for provider rate limit"));
+    }, { once: true });
+  });
+}
+
+async function waitForNvidiaRateLimit(rpm: number | undefined, signal?: AbortSignal): Promise<void> {
+  const limit = Math.floor(Number(rpm ?? 40));
+  if (!Number.isFinite(limit) || limit <= 0) return;
+  const minIntervalMs = Math.ceil(60_000 / Math.max(1, limit));
+  const previous = nvidiaRateLimitQueue;
+  const task = previous.catch(() => undefined).then(async () => {
+    const waitMs = Math.max(0, nvidiaLastRequestAt + minIntervalMs - Date.now());
+    await sleep(waitMs, signal);
+    nvidiaLastRequestAt = Date.now();
+  });
+  nvidiaRateLimitQueue = task.catch(() => undefined);
+  await task;
 }
 
 function antigravityToolSignaturesPath(): string {
@@ -336,8 +363,10 @@ async function providerEventStream(
   accountId: string | undefined,
   parsed: OcxParsedRequest,
   signal: AbortSignal,
+  nvidiaRateLimitRpm?: number,
 ): Promise<AsyncGenerator<AdapterEvent>> {
   let upstream: Response;
+  if (provider === "nvidia") await waitForNvidiaRateLimit(nvidiaRateLimitRpm, signal);
   if (provider === "claude-code") {
     const auth = await claudeAuth(accountId);
     if (!auth) throw new Error("Claude Code 로그인이 필요합니다.");
@@ -374,7 +403,7 @@ async function streamForProvider(input: {
   signal: AbortSignal;
 }): Promise<AsyncGenerator<AdapterEvent>> {
   const { provider, accountId, parsed, req, sidecars, signal } = input;
-  const invoke = (next: OcxParsedRequest) => providerEventStream(provider, accountId, next, signal);
+  const invoke = (next: OcxParsedRequest) => providerEventStream(provider, accountId, next, signal, sidecars.settings?.nvidiaRateLimitRpm);
   if (sidecars.settings?.vision && (sidecars.settings.visionLimit || 0) > 0 && !usesNativeImages(provider)) {
     await applyVisionSidecar({ parsed, req, sidecars: sidecars.settings, stats: sidecars.stats, signal });
   }
