@@ -666,6 +666,7 @@ function App(): React.JSX.Element {
       setCodexSettings(settings);
       void bridge.call<RemoteScope>("remote:scope").then(setRemoteScope).catch(() => undefined);
       void refreshProjects("");
+      if (selectedProject) void refreshThreads(selectedProject);
     });
     const unsubProviders = bridge.subscribe<ProviderSettings>("providers:changed", (settings) => {
       setProviderSettings(settings);

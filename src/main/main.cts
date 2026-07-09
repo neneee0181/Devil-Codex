@@ -2555,7 +2555,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const local = await providerTranscripts.read(input.id);
     const native = await server().readThread(input).catch(() => []);
     if (native.length > local.length) {
-      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native))));
+      return attachCodexTokenUsage(input.id, stripInternalDirectivesFromHistory(await enrichThreadImages(input.id, await providerTranscripts.mergeHistoryPreservingAttachments(input.id, stripInternalDirectivesFromHistory(native)))));
     }
     return attachCodexTokenUsage(input.id, normalizeCachedDelegateSubagents(stripInternalDirectivesFromHistory(local)));
   });
