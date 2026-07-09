@@ -3625,17 +3625,18 @@ function App(): React.JSX.Element {
     setThreadContextMenu({ summary, left: event.clientX, top: event.clientY });
   }
 
-  async function archiveAllVisibleThreads(): Promise<void> {
-    const all = [...projectGroups.flatMap((group) => group.threads), ...generalChats];
-    setProjectHeaderMenuOpen(false);
-    setProjectHeaderSubmenu(null);
-    try {
-      await Promise.all(all.map((summary) => window.devilCodex.archiveThread({ id: summary.id, accountId: summary.accountId }).catch(() => undefined)));
-      await Promise.all([refreshThreads(), refreshProjects()]);
-    } catch (error) {
-      setExternalError(`모든 채팅 보관 실패: ${String(error)}`);
-    }
-  }
+  // "모든 채팅 보관" 메뉴가 제거되어 미사용 중. 재활용 시 주석 해제 후 props에 onArchiveAll 재연결.
+  // async function archiveAllVisibleThreads(): Promise<void> {
+  //   const all = [...projectGroups.flatMap((group) => group.threads), ...generalChats];
+  //   setProjectHeaderMenuOpen(false);
+  //   setProjectHeaderSubmenu(null);
+  //   try {
+  //     await Promise.all(all.map((summary) => window.devilCodex.archiveThread({ id: summary.id, accountId: summary.accountId }).catch(() => undefined)));
+  //     await Promise.all([refreshThreads(), refreshProjects()]);
+  //   } catch (error) {
+  //     setExternalError(`모든 채팅 보관 실패: ${String(error)}`);
+  //   }
+  // }
 
   function rememberProject(cwd: string): void {
     setHiddenProjects((current) => {
@@ -4160,7 +4161,7 @@ function App(): React.JSX.Element {
               <button type="button" className="project-add-button" aria-label="프로젝트 추가" title="프로젝트 추가" onClick={() => { closePopovers(); setProjectCreateOpen(true); }}><ProjectAddIcon /></button>
             </span>
           </div>
-          <ProjectHeaderMenu anchor={projectHeaderMenuRef} open={projectHeaderMenuOpen} submenu={projectHeaderSubmenu} sortMode={projectSortMode} layoutMode={sidebarLayoutMode} onSubmenu={setProjectHeaderSubmenu} onArchiveAll={() => void archiveAllVisibleThreads()} onSort={setProjectSort} onLayout={setSidebarLayout} />
+          <ProjectHeaderMenu anchor={projectHeaderMenuRef} open={projectHeaderMenuOpen} submenu={projectHeaderSubmenu} sortMode={projectSortMode} layoutMode={sidebarLayoutMode} onSubmenu={setProjectHeaderSubmenu} onSort={setProjectSort} onLayout={setSidebarLayout} />
           <AnimatePresence initial={false}>
             {projectExpanded && (
               <motion.div className="other-projects" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .18, ease: [.4, 0, .2, 1] }}>
@@ -4561,14 +4562,13 @@ function ProjectNotebookIcon({ open }: { open: boolean }): React.JSX.Element {
   return <NotebookText size={18} className={open ? "project-notebook open" : "project-notebook"} aria-hidden="true" />;
 }
 
-function ProjectHeaderMenu({ anchor, open, submenu, sortMode, layoutMode, onSubmenu, onArchiveAll, onSort, onLayout }: {
+function ProjectHeaderMenu({ anchor, open, submenu, sortMode, layoutMode, onSubmenu, onSort, onLayout }: {
   anchor: { current: HTMLButtonElement | null };
   open: boolean;
   submenu: "sort" | "cleanup" | null;
   sortMode: ProjectSortMode;
   layoutMode: SidebarLayoutMode;
   onSubmenu: (next: "sort" | "cleanup" | null) => void;
-  onArchiveAll: () => void;
   onSort: (next: ProjectSortMode) => void;
   onLayout: (next: SidebarLayoutMode) => void;
 }): React.JSX.Element | null {
@@ -4606,8 +4606,6 @@ function ProjectHeaderMenu({ anchor, open, submenu, sortMode, layoutMode, onSubm
   return createPortal(
     <>
       <motion.div className="project-menu project-header-menu" data-shell-popover-root style={{ position: "fixed", left: pos.mainLeft, top: pos.mainTop }} initial={{ opacity: 0, scale: .97, y: -4 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: .98, y: -3 }} transition={{ duration: .13 }}>
-        <button type="button" onClick={onArchiveAll}><Archive />모든 채팅 보관</button>
-        <div className="menu-divider" />
         <button type="button" className={submenu === "cleanup" ? "active" : ""} onClick={() => onSubmenu(submenu === "cleanup" ? null : "cleanup")}><ProjectNotebookIcon open={false} />사이드바 정리<ChevronRight className="chev" /></button>
         <button type="button" className={submenu === "sort" ? "active" : ""} onClick={() => onSubmenu(submenu === "sort" ? null : "sort")}><Clock />정렬 기준<ChevronRight className="chev" /></button>
       </motion.div>
