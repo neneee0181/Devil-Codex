@@ -22,12 +22,12 @@ import { ProviderModelCatalog } from "./provider-model-catalog.cjs";
 import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
-import { stockFeaturedSubagentModels, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
+import { stockFeaturedSubagentModels, syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
-import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
+import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilNativeCatalog, unregisterDevilNativeCatalog, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
@@ -2084,6 +2084,12 @@ async function syncStockCodexCatalogOnly(): Promise<{ path: string; added: numbe
   return syncStockCodexCatalog(providerSettings.providers, undefined, stockFeaturedSubagentModels(providerSettings));
 }
 
+async function activateDevilNativeCatalog(): Promise<void> {
+  const catalog = await syncNativeCodexCatalog();
+  await registerDevilNativeCatalog(catalog.path);
+  console.log(`[devil-codex native catalog] ${catalog.models} native models available to the bundled app-server`);
+}
+
 async function syncStockCodexBridge(): Promise<void> {
   const port = await codexProxy.start();
   await registerDevilProvider(port, codexProxy.secretToken());
@@ -2093,12 +2099,14 @@ async function syncStockCodexBridge(): Promise<void> {
 }
 
 async function activateStockCodexBridge(): Promise<void> {
+  await unregisterDevilNativeCatalog();
   const catalog = await syncStockCodexCatalogOnly();
   await registerDevilStockBridge(DEVIL_PROXY_PORT, await readDevilProxySecret(), catalog.path);
 }
 
 async function deactivateStockCodexBridge(): Promise<void> {
   await unregisterDevilStockBridge();
+  await unregisterDevilNativeCatalog();
   await disableStockProxyAutostart().catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
   if (process.platform === "win32") {
     const command = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--devil-stock-proxy*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
@@ -2117,7 +2125,7 @@ function launchStockProxyService(): void {
 async function startStockProxyService(): Promise<void> {
   const settings = await settingsStore.load().catch(() => null);
   if (settings?.stockBridgeEnabled === false) {
-    await unregisterDevilStockBridge();
+    await deactivateStockCodexBridge();
     console.log("[devil-codex stock bridge] disabled by settings");
     app.exit(0);
     return;
@@ -2143,6 +2151,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // The desktop app preserves its Codex-direct path. The stock bridge belongs
   // to the headless service that starts after this desktop instance exits.
   await unregisterDevilStockBridge();
+  await activateDevilNativeCatalog().catch((error) => console.warn("[devil-codex native catalog] setup failed:", error instanceof Error ? error.message : error));
   const settings = await settingsStore.load().catch(() => null);
   if (settings?.stockBridgeEnabled === false) {
     void disableStockProxyAutostart()

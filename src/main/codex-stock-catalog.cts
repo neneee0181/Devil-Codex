@@ -5,6 +5,7 @@ import { codexHome } from "./codex-home.cjs";
 import type { ProviderId, ProviderInfo, ProviderSettings } from "./contracts.cjs";
 
 const CATALOG_FILE = "devil-codex-catalog.json";
+const NATIVE_CATALOG_FILE = "devil-codex-native-catalog.json";
 const CATALOG_BACKUP_FILE = "devil-codex-native-models-backup.json";
 
 type CatalogEntry = Record<string, unknown>;
@@ -87,8 +88,30 @@ export function buildStockCatalog(native: Catalog, providers: ProviderInfo[], fe
 
 export function stockCatalogPath(home = codexHome()): string { return join(home, CATALOG_FILE); }
 
+export function nativeCatalogPath(home = codexHome()): string { return join(home, NATIVE_CATALOG_FILE); }
+
+function nativeCatalogSourcePath(home: string): string {
+  const backup = join(home, CATALOG_BACKUP_FILE);
+  return existsSync(backup) ? backup : join(home, "models_cache.json");
+}
+
+export async function syncNativeCodexCatalog(home = codexHome()): Promise<{ path: string; models: number }> {
+  const sourcePath = nativeCatalogSourcePath(home);
+  if (!existsSync(sourcePath)) throw new Error(`Codex model cache was not found: ${sourcePath}`);
+  const backup = join(home, CATALOG_BACKUP_FILE);
+  if (!existsSync(backup)) await copyFile(sourcePath, backup);
+  const native = JSON.parse(await readFile(sourcePath, "utf8")) as Catalog;
+  const catalog = {
+    ...native,
+    models: (native.models ?? []).filter((entry) => typeof entry.slug !== "string" || !entry.slug.includes(":")),
+  };
+  const target = nativeCatalogPath(home);
+  await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  return { path: target, models: catalog.models.length };
+}
+
 export async function syncStockCodexCatalog(providers: ProviderInfo[], home = codexHome(), featuredModelIds: string[] = []): Promise<{ path: string; added: number }> {
-  const sourcePath = join(home, "models_cache.json");
+  const sourcePath = nativeCatalogSourcePath(home);
   if (!existsSync(sourcePath)) throw new Error(`Codex model cache was not found: ${sourcePath}`);
   const native = JSON.parse(await readFile(sourcePath, "utf8")) as Catalog;
   const target = stockCatalogPath(home);

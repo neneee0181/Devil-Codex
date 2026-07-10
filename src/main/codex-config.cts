@@ -16,6 +16,8 @@ const BEGIN = "# >>> devil-codex provider (managed) >>>";
 const END = "# <<< devil-codex provider (managed) <<<";
 const STOCK_BEGIN = "# >>> devil-codex stock bridge (managed) >>>";
 const STOCK_END = "# <<< devil-codex stock bridge (managed) <<<";
+const NATIVE_CATALOG_BEGIN = "# >>> devil-codex native catalog (managed) >>>";
+const NATIVE_CATALOG_END = "# <<< devil-codex native catalog (managed) <<<";
 
 function stripCommentLine(source: string, marker: string): string {
   return source.replace(new RegExp(`^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:\\r?\\n)?`, "m"), "");
@@ -149,7 +151,7 @@ function stripManagedRootBlock(source: string, begin: string, end: string): stri
 // by the local Devil proxy.
 export async function registerDevilStockBridge(port: number, secret: string, catalogPath: string): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
-  const cleaned = stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END).trimEnd();
+  const cleaned = stripManagedRootBlock(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END).trimEnd();
   const firstTable = cleaned.search(/^\s*\[/m);
   const root = firstTable >= 0 ? cleaned.slice(0, firstTable) : cleaned;
   if (/^\s*openai_base_url\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
@@ -171,6 +173,32 @@ export async function unregisterDevilStockBridge(): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   if (!source.includes(STOCK_BEGIN)) return;
   await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), source), source);
+}
+
+// This catalog-only mode keeps the normal Codex OpenAI transport intact while
+// exposing native models that a staged bundled app-server has not listed yet.
+export async function registerDevilNativeCatalog(catalogPath: string): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  const cleaned = stripManagedRootBlock(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END).trimEnd();
+  const firstTable = cleaned.search(/^\s*\[/m);
+  const root = firstTable >= 0 ? cleaned.slice(0, firstTable) : cleaned;
+  if (/^\s*model_catalog_json\s*=/m.test(root)) {
+    throw new Error("Devil native catalog cannot replace a user-managed model_catalog_json setting.");
+  }
+  const block = [
+    NATIVE_CATALOG_BEGIN,
+    `model_catalog_json = ${toml(catalogPath)}`,
+    NATIVE_CATALOG_END,
+    "",
+  ].join("\n");
+  const next = preserveDesktopAppearanceTheme(`${block}${cleaned ? "\n" + cleaned : ""}`, source);
+  await writeConfigIfChanged(next, source);
+}
+
+export async function unregisterDevilNativeCatalog(): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  if (!source.includes(NATIVE_CATALOG_BEGIN)) return;
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedRootBlock(source, NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END), source), source);
 }
 
 export async function registerDevilBrowserMcp(input: { execPath: string; script: string; sock: string; secret: string; computerScript?: string; computerSock?: string; computerSecret?: string }): Promise<void> {

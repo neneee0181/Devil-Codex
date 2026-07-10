@@ -44,6 +44,8 @@ Devil Codex는 공식 **Codex app-server**에 직접 붙어 Codex의 thread·tur
 ### 순정 Codex 모델 선택기 연동
 Devil Codex 창을 종료하면 연결된 외부 Provider 모델도 순정 Codex 앱/CLI의 모델 선택기에 `provider:model` 형식으로 나타납니다. 예: `deepseek:deepseek-chat`, `copilot@work:gpt-5-mini`.
 
+Codex 로그인 모델은 순정 Codex의 `~/.codex/models_cache.json`과 함께 동기화합니다. 따라서 GPT-5.6 Preview 권한이 있는 계정에서는 `GPT-5.6 Sol`, `GPT-5.6 Terra`, `GPT-5.6 Luna`도 Devil Codex 모델 선택기에 표시되며, 선택 후 Codex 직통 경로로 실행됩니다. 권한이 없는 계정에서는 선택은 가능해도 OpenAI가 요청을 거절할 수 있습니다.
+
 - Codex 기본 모델은 원래 ChatGPT/Codex Responses 엔드포인트로 요청 내용을 그대로 전달합니다.
 - 외부 모델만 Devil 프록시가 Provider별 API 형식으로 변환합니다.
 - Devil Codex 데스크톱 창이 열려 있을 때는 Codex 모델이 기존처럼 app-server 직통 경로를 사용합니다. 창을 종료하면 창 없는 백그라운드 프록시가 이어받아 순정 Codex에서 외부 모델을 사용할 수 있습니다.

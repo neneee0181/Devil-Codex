@@ -13,12 +13,12 @@ tags:
 Last: 2026-07-10. Replace; keep <800B.
 
 ## Status
-- Stock bridge works; native uses transparent passthrough; first five `spawn_agent` candidates are selected external models.
-- v0.2.11 adds Settings -> 구성 -> 순정 Codex Bridge toggle to restore stock Codex mode.
+- v0.2.12 adds GPT-5.6 Sol/Terra/Luna to Devil Codex's native Codex picker.
+- Desktop startup now registers a catalog-only native model file; native requests remain direct.
 
-## Changed
-- Catalog injection, desktop-to-headless handoff, Windows autostart, stock web/vision sidecars.
-- Toggle off removes managed bridge config, scheduled task, and stale headless bridge process.
+## Verification
+- `npm run build`, `git diff --check`, and isolated bundled app-server smoke pass.
+- Smoke returned all 3 GPT-5.6 IDs with `model_catalog_json` set and no `openai_base_url`.
 
 ## Resume
-- Full build/diff check pass for v0.2.11. Commit/tag/push if not done.
+- Commit/tag/push v0.2.12.
