@@ -44,6 +44,7 @@ const DESC = [
   "- task에는 필요한 파일 경로, 관찰 내용, 원하는 출력 형식을 구체적으로 넣으세요.",
   "- 별도 모델 호출이므로 해당 provider 사용량/비용이 발생할 수 있습니다.",
   "- 결과는 요약 텍스트로 반환됩니다. 사용자가 요청하지 않은 대규모 파일 변경은 직접 수행하지 마세요.",
+  "- 하위 에이전트는 Devil Codex의 현재 승인 정책과 샌드박스를 따릅니다.",
 ].join("\n");
 
 const TOOLS = [
@@ -59,6 +60,7 @@ const TOOLS = [
         accountId: { type: "string", description: "provider 계정 ID. 생략하면 해당 provider 기본 계정." },
         model: { type: "string", description: "예: deepseek-reasoner, deepseek-v4-pro. 생략하면 Devil의 현재 선택 모델." },
         runtime: { type: "string", enum: ["codex", "claude-code"], description: "실행 runtime. 일반 외부 provider는 codex, Claude Code native는 claude-code." },
+        reasoningEffort: { type: "string", enum: ["low", "medium", "high", "xhigh"], description: "추론 강도. 생략하면 Devil Codex 기본 설정을 사용." },
         timeoutMs: { type: "number", description: "최대 대기 시간(ms). 기본 300000, 최대 900000." },
       },
       required: ["task"],
@@ -77,8 +79,8 @@ async function runTool(name, args) {
     r.provider ? `provider: ${r.provider}` : "",
     r.model ? `model: ${r.model}` : "",
   ].filter(Boolean).join("\n");
-  const body = r.status === "failed" ? (r.error || "failed") : (r.result || "(empty result)");
-  return { content: [{ type: "text", text: `${header}\n\n${body}` }], isError: r.status === "failed" };
+  const body = r.status === "completed" ? (r.result || "(empty result)") : (r.error || r.status || "failed");
+  return { content: [{ type: "text", text: `${header}\n\n${body}` }], isError: r.status !== "completed" };
 }
 
 function write(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }

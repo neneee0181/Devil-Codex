@@ -1606,33 +1606,45 @@ function lastAgentText(items: ThreadHistoryItem[]): string {
   return "";
 }
 
-function waitForAppServerTurnTerminal(instance: CodexAppServer, timeoutMs: number): Promise<void> {
+type SubagentTerminalStatus = "completed" | "aborted" | "interrupted" | "timed_out";
+
+function waitForAppServerTurnTerminal(instance: CodexAppServer, timeoutMs: number): Promise<SubagentTerminalStatus> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (): void => {
+    const finish = (status: SubagentTerminalStatus): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       instance.off("event", onEvent);
-      resolve();
+      resolve(status);
     };
     const onEvent = (event: AppServerEvent): void => {
-      if (event.method === "turn/completed" || event.method === "turn/aborted" || event.method === "turn/interrupted") finish();
+      if (event.method === "turn/completed") finish("completed");
+      else if (event.method === "turn/aborted") finish("aborted");
+      else if (event.method === "turn/interrupted") finish("interrupted");
     };
-    const timer = setTimeout(finish, Math.max(5_000, timeoutMs));
+    const timer = setTimeout(() => finish("timed_out"), Math.max(5_000, timeoutMs));
     instance.on("event", onEvent);
   });
 }
 
 async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<SubagentDelegateResult> {
   const taskId = crypto.randomUUID();
-  const settings = await providerSettingsStore.load();
-  const provider = input.provider ?? settings.provider;
-  const accountId = input.accountId ?? settings.accountId;
-  const model = input.model ?? settings.model;
+  const [providerSettings, codexSettings] = await Promise.all([providerSettingsStore.load(), settingsStore.load()]);
+  // MCP calls do not include their parent thread id. Until that protocol carries
+  // per-turn permissions, the persisted Codex settings are the strongest safe
+  // ceiling available here; never silently elevate a delegated task to full access.
+  const approvalPolicy: ThreadApprovalPolicy = codexSettings.approvalPolicy === "never" ? "never" : "on-request";
+  const sandboxMode: ThreadSandboxMode = codexSettings.sandboxMode === "danger-full-access" || codexSettings.sandboxMode === "read-only"
+    ? codexSettings.sandboxMode
+    : "workspace-write";
+  const provider = input.provider ?? providerSettings.provider;
+  const accountId = input.accountId ?? providerSettings.accountId;
+  const model = input.model ?? providerSettings.model;
   const runtime = input.runtime ?? (provider === "claude-code" ? "claude-code" : "codex");
   const cwd = input.cwd || baseServerCwd();
   const timeoutMs = input.timeoutMs ?? 300_000;
+  const reasoningEffort = input.reasoningEffort ?? codexSettings.reasoningEffort;
   const deadline = Date.now() + timeoutMs;
   const delegatedTask = [
     "[Devil subagent execution note]",
@@ -1644,22 +1656,34 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
 
   if (runtime === "claude-code" || provider === "claude-code") {
     const thread = claudeRuntime.createThread({ cwd, model });
+    let timedOut = false;
     try {
       let finalText = "";
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          claudeRuntime.interruptTurn({ threadId: thread.id });
+          reject(new Error(`하위 에이전트가 ${Math.round(timeoutMs / 1000)}초 안에 완료되지 않았습니다.`));
+        }, timeoutMs);
+      });
       // Pin the SDK session id to the Devil thread id so the subagent tab can
       // later resume the same Claude session (mirrors the main-chat path).
-      const result = await claudeRuntime.sendTurn({
-        threadId: thread.id,
-        cwd,
-        text: delegatedTask,
-        model,
-        resume: false,
-        nativeSessionId: thread.id,
-        mcpConfig: await claudeMcpConfig(),
-        approvalPolicy: "never",
-        sandboxMode: "danger-full-access",
-        onCompleted: (text) => { finalText = text.trim(); },
-      });
+      const result = await Promise.race([
+        claudeRuntime.sendTurn({
+          threadId: thread.id,
+          cwd,
+          text: delegatedTask,
+          model,
+          resume: false,
+          nativeSessionId: thread.id,
+          mcpConfig: await claudeMcpConfig(),
+          approvalPolicy,
+          sandboxMode,
+          onCompleted: (text) => { finalText = text.trim(); },
+        }),
+        timeoutPromise,
+      ]).finally(() => { if (timeout) clearTimeout(timeout); });
       // Persist the child conversation so the "subagent:<id>" tab (which reads
       // via providerTranscripts for claude-code threads) shows it. archived:true
       // keeps the hidden child out of the main sidebar, like Codex children.
@@ -1679,7 +1703,7 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
       }).catch(() => undefined);
       return { taskId, threadId: thread.id, status: "completed", result: finalText, provider: "claude-code", accountId, model, runtime };
     } catch (error) {
-      return { taskId, threadId: thread.id, status: "failed", error: error instanceof Error ? error.message : String(error), provider: "claude-code", accountId, model, runtime };
+      return { taskId, threadId: thread.id, status: timedOut ? "timed_out" : "failed", error: error instanceof Error ? error.message : String(error), provider: "claude-code", accountId, model, runtime };
     }
   }
 
@@ -1687,8 +1711,8 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
   let threadId = "";
   try {
     const createInput = usesCodexProxy(provider)
-      ? { cwd, model: routedProviderModel(provider, model, accountId), modelProvider: "devil", approvalPolicy: "never" as ThreadApprovalPolicy, sandboxMode: "danger-full-access" as ThreadSandboxMode }
-      : { cwd, model, approvalPolicy: "never" as ThreadApprovalPolicy, sandboxMode: "danger-full-access" as ThreadSandboxMode };
+      ? { cwd, model: routedProviderModel(provider, model, accountId), modelProvider: "devil", approvalPolicy, sandboxMode, reasoningEffort }
+      : { cwd, model, approvalPolicy, sandboxMode, reasoningEffort };
     const thread = await instance.createThread(createInput);
     threadId = thread.id;
     appServerThreadIds.set(instance, threadId);
@@ -1697,18 +1721,27 @@ async function delegateSubagentFromMcp(input: SubagentDelegatePayload): Promise<
       cwd,
       text: delegatedTask,
       model: createInput.model,
-      approvalPolicy: "never" as ThreadApprovalPolicy,
-      sandboxMode: "danger-full-access" as ThreadSandboxMode,
+      approvalPolicy,
+      sandboxMode,
+      reasoningEffort,
     };
     const terminal = waitForAppServerTurnTerminal(instance, timeoutMs);
     await instance.sendTurn(sendInput);
-    await terminal;
+    const terminalStatus = await terminal;
+    if (terminalStatus !== "completed") {
+      const error = terminalStatus === "timed_out"
+        ? `하위 에이전트가 ${Math.round(timeoutMs / 1000)}초 안에 완료되지 않았습니다.`
+        : `하위 에이전트 작업이 ${terminalStatus} 상태로 끝났습니다.`;
+      return { taskId, threadId, status: terminalStatus === "timed_out" ? "timed_out" : "failed", error, provider, accountId, model, runtime };
+    }
     let history = await instance.readThread({ id: threadId }).catch(() => [] as ThreadHistoryItem[]);
     while (!lastAgentText(history) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       history = await instance.readThread({ id: threadId }).catch(() => history);
     }
-    return { taskId, threadId, status: "completed", result: lastAgentText(history), provider, accountId, model, runtime };
+    const result = lastAgentText(history);
+    if (!result) return { taskId, threadId, status: "failed", error: "하위 에이전트가 완료 신호를 보냈지만 결과 텍스트를 찾지 못했습니다.", provider, accountId, model, runtime };
+    return { taskId, threadId, status: "completed", result, provider, accountId, model, runtime };
   } catch (error) {
     return { taskId, threadId, status: "failed", error: error instanceof Error ? error.message : String(error), provider, accountId, model, runtime };
   } finally {

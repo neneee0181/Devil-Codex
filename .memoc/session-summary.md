@@ -10,15 +10,15 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-10. Replace; keep <800B.
+Last: 2026-07-11. Replace; keep <800B.
 
 ## Status
 - v0.2.12 adds GPT-5.6 Sol/Terra/Luna to Devil Codex's native Codex picker.
 - Desktop startup now registers a catalog-only native model file; native requests remain direct.
+- Delegated subagents now honor the persisted Codex permission ceiling, report terminal timeout/failure honestly, and accept an optional reasoning effort.
 
 ## Verification
-- `npm run build`, `git diff --check`, and isolated bundled app-server smoke pass.
-- Smoke returned all 3 GPT-5.6 IDs with `model_catalog_json` set and no `openai_base_url`.
+- `npm run build`, `git diff --check`, and the subagent MCP tools-list smoke pass.
 
 ## Resume
-- Commit/tag/push v0.2.12.
+- Commit subagent hardening; tag/push only when requested.

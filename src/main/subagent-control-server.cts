@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { chmodSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentRuntimeId, ProviderId } from "./contracts.cjs";
+import type { AgentRuntimeId, ProviderId, ReasoningEffort } from "./contracts.cjs";
 
 export interface SubagentDelegatePayload {
   task: string;
@@ -11,13 +11,14 @@ export interface SubagentDelegatePayload {
   accountId?: string;
   model?: string;
   runtime?: AgentRuntimeId;
+  reasoningEffort?: ReasoningEffort;
   timeoutMs?: number;
 }
 
 export interface SubagentDelegateResult {
   taskId: string;
   threadId: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "timed_out";
   result?: string;
   error?: string;
   provider?: ProviderId;
@@ -92,6 +93,9 @@ function normalizeDelegatePayload(raw: Record<string, unknown>): SubagentDelegat
     accountId: raw.accountId ? String(raw.accountId) : undefined,
     model: raw.model ? String(raw.model) : undefined,
     runtime: raw.runtime === "claude-code" ? "claude-code" : raw.runtime === "codex" ? "codex" : undefined,
+    reasoningEffort: raw.reasoningEffort === "low" || raw.reasoningEffort === "medium" || raw.reasoningEffort === "high" || raw.reasoningEffort === "xhigh"
+      ? raw.reasoningEffort
+      : undefined,
     timeoutMs: typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) ? Math.max(5_000, Math.min(raw.timeoutMs, 900_000)) : undefined,
   };
 }
