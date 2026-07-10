@@ -23,7 +23,7 @@ import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
 import { stockFeaturedSubagentModels, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
-import { ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
+import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
@@ -2097,6 +2097,16 @@ async function activateStockCodexBridge(): Promise<void> {
   await registerDevilStockBridge(DEVIL_PROXY_PORT, await readDevilProxySecret(), catalog.path);
 }
 
+async function deactivateStockCodexBridge(): Promise<void> {
+  await unregisterDevilStockBridge();
+  await disableStockProxyAutostart().catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
+  if (process.platform === "win32") {
+    const command = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--devil-stock-proxy*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+    await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true })
+      .catch((error) => console.warn("[devil-codex stock bridge] stop failed:", error instanceof Error ? error.message : error));
+  }
+}
+
 function launchStockProxyService(): void {
   if (stockProxyServiceMode) return;
   const args = app.isPackaged ? ["--devil-stock-proxy"] : [app.getAppPath(), "--devil-stock-proxy"];
@@ -2105,6 +2115,13 @@ function launchStockProxyService(): void {
 }
 
 async function startStockProxyService(): Promise<void> {
+  const settings = await settingsStore.load().catch(() => null);
+  if (settings?.stockBridgeEnabled === false) {
+    await unregisterDevilStockBridge();
+    console.log("[devil-codex stock bridge] disabled by settings");
+    app.exit(0);
+    return;
+  }
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       await syncStockCodexBridge();
@@ -2126,8 +2143,14 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // The desktop app preserves its Codex-direct path. The stock bridge belongs
   // to the headless service that starts after this desktop instance exits.
   await unregisterDevilStockBridge();
-  void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
-    .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
+  const settings = await settingsStore.load().catch(() => null);
+  if (settings?.stockBridgeEnabled === false) {
+    void disableStockProxyAutostart()
+      .catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
+  } else {
+    void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
+      .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
+  }
   configureMenu();
   // Provider/MCP registration can touch config, sockets, and named pipes. Keep
   // it off the critical startup path so a slow helper never blocks the window
@@ -2263,6 +2286,15 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
     if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
     if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+    if (previous.stockBridgeEnabled !== next.stockBridgeEnabled) {
+      if (next.stockBridgeEnabled) {
+        await syncStockCodexCatalogOnly();
+        void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
+          .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
+      } else {
+        await deactivateStockCodexBridge();
+      }
+    }
     if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
       if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
       else await stopRemoteControl();
@@ -3047,11 +3079,16 @@ app.on("before-quit", (event) => {
     stockBridgeHandoffStarted = true;
     void (async () => {
       try {
-        await activateStockCodexBridge();
+        const settings = await settingsStore.load().catch(() => null);
+        if (settings?.stockBridgeEnabled === false) {
+          await deactivateStockCodexBridge();
+        } else {
+          await activateStockCodexBridge();
+          if (desktopOwnsProxy) launchStockProxyService();
+        }
       } catch (error) {
         console.error("[devil-codex stock bridge] handoff failed:", error instanceof Error ? error.message : error);
       }
-      if (desktopOwnsProxy) launchStockProxyService();
       app.quit();
     })();
     return;

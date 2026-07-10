@@ -15,13 +15,14 @@ const defaults: CodexSettings = {
   askUserMcpEnabled: true,
   subagentMcpEnabled: true,
   englishOutput: false,
+  stockBridgeEnabled: true,
   stockBridgeWebSearch: false,
   stockBridgeVision: false,
   remoteControlEnabled: false,
   remoteControlMode: "funnel",
   remoteAllowedThreadIds: [],
 };
-const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", stockBridgeWebSearch: "devil_stock_bridge_web_search", stockBridgeVision: "devil_stock_bridge_vision", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode", remoteAllowedThreadIds: "remote_allowed_thread_ids" } as const;
+const keys = { model: "model", approvalPolicy: "approval_policy", sandboxMode: "sandbox_mode", reasoningEffort: "model_reasoning_effort", responseSpeed: "service_tier", devilMcpEnabled: "devil_mcp_enabled", askUserMcpEnabled: "ask_user_mcp_enabled", subagentMcpEnabled: "subagent_mcp_enabled", englishOutput: "english_output", stockBridgeEnabled: "devil_stock_bridge_enabled", stockBridgeWebSearch: "devil_stock_bridge_web_search", stockBridgeVision: "devil_stock_bridge_vision", remoteControlEnabled: "remote_control_enabled", remoteControlMode: "remote_control_mode", remoteAllowedThreadIds: "remote_allowed_thread_ids" } as const;
 // NOTE: `model_reasoning_effort` and `service_tier` are shared with stock
 // Codex, which writes them from its own model picker. Devil now reads them in
 // load() and writes them in save() so the two apps stay in sync — the renderer
@@ -113,6 +114,7 @@ export class CodexSettingsStore {
         askUserMcpEnabled: readBoolean(source, keys.askUserMcpEnabled) ?? defaults.askUserMcpEnabled,
         subagentMcpEnabled: readBoolean(source, keys.subagentMcpEnabled) ?? defaults.subagentMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
+        stockBridgeEnabled: readBoolean(source, keys.stockBridgeEnabled) ?? defaults.stockBridgeEnabled,
         stockBridgeWebSearch: readBoolean(source, keys.stockBridgeWebSearch) ?? defaults.stockBridgeWebSearch,
         stockBridgeVision: readBoolean(source, keys.stockBridgeVision) ?? defaults.stockBridgeVision,
         remoteControlEnabled: readBoolean(source, keys.remoteControlEnabled) ?? defaults.remoteControlEnabled,

@@ -48,8 +48,9 @@ Devil Codex 창을 종료하면 연결된 외부 Provider 모델도 순정 Codex
 - 외부 모델만 Devil 프록시가 Provider별 API 형식으로 변환합니다.
 - Devil Codex 데스크톱 창이 열려 있을 때는 Codex 모델이 기존처럼 app-server 직통 경로를 사용합니다. 창을 종료하면 창 없는 백그라운드 프록시가 이어받아 순정 Codex에서 외부 모델을 사용할 수 있습니다.
 - Windows 설치판은 로그인 시 `Devil Codex Stock Bridge` 작업 스케줄러 항목을 갱신해 재부팅 뒤에도 백그라운드 프록시를 자동으로 시작합니다.
+- `설정 > 구성 > 순정 Codex Bridge`의 `순정 Codex에서 외부 모델 사용`을 끄면 관리 config와 자동실행 브릿지를 제거해 순정 Codex 기본 상태로 되돌립니다. 다시 켜면 다음 Devil 종료 후 순정 Codex에서 외부 모델을 사용할 수 있습니다.
 - Devil에서 선택한 외부 Provider의 최대 5개 모델은 순정 Codex의 `spawn_agent` 하위 에이전트 후보 맨 앞에 배치됩니다. Codex가 하위 작업을 위임하면 해당 외부 모델도 같은 Devil 프록시로 호출됩니다.
-- `설정 > 구성 > 순정 Codex Bridge Sidecar`에서 웹 검색과 이미지 설명을 켜면, 순정 Codex의 외부 모델 요청에도 각각 Codex 검색/vision 보조 호출을 적용할 수 있습니다. 두 옵션은 기본적으로 꺼져 있으며 추가 토큰 사용과 이미지·검색 질의 전송이 발생할 수 있습니다.
+- `설정 > 구성 > 순정 Codex Bridge`에서 웹 검색과 이미지 설명을 켜면, 순정 Codex의 외부 모델 요청에도 각각 Codex 검색/vision 보조 호출을 적용할 수 있습니다. 두 옵션은 기본적으로 꺼져 있으며 추가 토큰 사용과 이미지·검색 질의 전송이 발생할 수 있습니다.
 - Provider의 키/로그인/모델 목록이 바뀌면 Devil Codex가 카탈로그를 다시 생성합니다.
 
 > 현재 Codex 모델 선택기는 한 개의 OpenAI transport를 사용하므로, 순정 Codex에서 외부 모델을 같은 드롭다운에 노출하려면 로컬 투명 프록시 홉이 필요합니다. Codex 모델의 요청 본문·인증·응답은 변환하지 않고 원래 Codex 백엔드로 전달됩니다.

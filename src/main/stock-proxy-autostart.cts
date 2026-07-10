@@ -24,3 +24,14 @@ export async function ensureStockProxyAutostart(input: { packaged: boolean; exec
   await execFileAsync("schtasks.exe", stockProxyTaskArgs(input.executable), { windowsHide: true });
   return true;
 }
+
+export async function disableStockProxyAutostart(input: { platform?: NodeJS.Platform } = {}): Promise<boolean> {
+  if ((input.platform ?? process.platform) !== "win32") return false;
+  try {
+    await execFileAsync("schtasks.exe", ["/Delete", "/TN", STOCK_PROXY_TASK_NAME, "/F"], { windowsHide: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/cannot find|not found|지정된 파일|찾을 수/i.test(message)) throw error;
+  }
+  return true;
+}
