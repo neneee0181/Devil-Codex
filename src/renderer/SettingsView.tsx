@@ -14,6 +14,8 @@ type Config = {
   askUserMcpEnabled: boolean;
   subagentMcpEnabled: boolean;
   englishOutput: boolean;
+  stockBridgeWebSearch: boolean;
+  stockBridgeVision: boolean;
   sidecarWebSearch: boolean;
   sidecarVision: boolean;
   sidecarWebSearchLimit: number;
@@ -28,7 +30,7 @@ type Config = {
 };
 
 const defaults: Config = {
-  approval: "요청 시", sandbox: "읽기 전용", devilMcpEnabled: false, askUserMcpEnabled: true, subagentMcpEnabled: true, englishOutput: false, sidecarWebSearch: false, sidecarVision: false, sidecarWebSearchLimit: 3, sidecarVisionLimit: 3, nvidiaRateLimitRpm: 40, notificationsEnabled: true, notifyOnTurnComplete: true, notifyOnApproval: true, notifyOnAsk: true, browserPersistentSession: true, terminalShell: "auto",
+  approval: "요청 시", sandbox: "읽기 전용", devilMcpEnabled: false, askUserMcpEnabled: true, subagentMcpEnabled: true, englishOutput: false, stockBridgeWebSearch: false, stockBridgeVision: false, sidecarWebSearch: false, sidecarVision: false, sidecarWebSearchLimit: 3, sidecarVisionLimit: 3, nvidiaRateLimitRpm: 40, notificationsEnabled: true, notifyOnTurnComplete: true, notifyOnApproval: true, notifyOnAsk: true, browserPersistentSession: true, terminalShell: "auto",
 };
 
 const REMOTE_INSTALL_URL = "https://tailscale.com/download";
@@ -49,7 +51,7 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
   useEffect(() => {
     const settings = codex.settings;
     if (!settings) return;
-    setConfig((current) => ({ ...current, approval: approvalLabel(settings.approvalPolicy), sandbox: sandboxLabel(settings.sandboxMode), devilMcpEnabled: settings.devilMcpEnabled, askUserMcpEnabled: settings.askUserMcpEnabled, subagentMcpEnabled: settings.subagentMcpEnabled, englishOutput: settings.englishOutput }));
+    setConfig((current) => ({ ...current, approval: approvalLabel(settings.approvalPolicy), sandbox: sandboxLabel(settings.sandboxMode), devilMcpEnabled: settings.devilMcpEnabled, askUserMcpEnabled: settings.askUserMcpEnabled, subagentMcpEnabled: settings.subagentMcpEnabled, englishOutput: settings.englishOutput, stockBridgeWebSearch: settings.stockBridgeWebSearch, stockBridgeVision: settings.stockBridgeVision }));
   }, [codex.settings]);
   useEffect(() => {
     let active = true;
@@ -71,6 +73,8 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
     if (key === "askUserMcpEnabled") codex.save({ ...settings, askUserMcpEnabled: Boolean(value) });
     if (key === "subagentMcpEnabled") codex.save({ ...settings, subagentMcpEnabled: Boolean(value) });
     if (key === "englishOutput") codex.save({ ...settings, englishOutput: Boolean(value) });
+    if (key === "stockBridgeWebSearch") codex.save({ ...settings, stockBridgeWebSearch: Boolean(value) });
+    if (key === "stockBridgeVision") codex.save({ ...settings, stockBridgeVision: Boolean(value) });
   };
 
   return <div className="settings-view">
@@ -83,8 +87,13 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
       <AnimatePresence mode="wait"><motion.div key={active} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: .16 }} className="settings-page">
         <SettingsPage active={active} appInfo={appInfo} config={config} update={update} backendState={codex.state} terminalShells={terminalShells} providerSettings={providerSettings} providerState={providerState} onProviderSelect={onProviderSelect} onProviderSaveKey={onProviderSaveKey} onProviderClearKey={onProviderClearKey} onProviderRefreshModels={onProviderRefreshModels} />
       </motion.div></AnimatePresence>
+      {active === "구성" && <StockBridgeSidecars config={config} update={update} />}
     </section>
   </div>;
+}
+
+function StockBridgeSidecars({ config, update }: { config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void }): React.JSX.Element {
+  return <div className="settings-page"><section><h2>순정 Codex Bridge Sidecar</h2><p className="section-help">Devil Codex를 종료한 뒤 순정 Codex에서 외부 모델을 쓸 때만 적용됩니다. 검색과 이미지 설명은 ChatGPT/Codex sidecar를 추가로 호출할 수 있습니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델의 web_search 호출을 Codex 검색으로 실행하고 결과를 다시 전달합니다."><Toggle value={config.stockBridgeWebSearch} onChange={(v) => update("stockBridgeWebSearch", v)} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달합니다."><Toggle value={config.stockBridgeVision} onChange={(v) => update("stockBridgeVision", v)} /></Row></div></section></div>;
 }
 
 function SettingsPage({ active, appInfo, config, update, backendState, terminalShells, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {

@@ -14,6 +14,8 @@ const CONFIG_PATH = join(CODEX_HOME, "config.toml");
 export const DEVIL_PROVIDER = "devil";
 const BEGIN = "# >>> devil-codex provider (managed) >>>";
 const END = "# <<< devil-codex provider (managed) <<<";
+const STOCK_BEGIN = "# >>> devil-codex stock bridge (managed) >>>";
+const STOCK_END = "# <<< devil-codex stock bridge (managed) <<<";
 
 function stripCommentLine(source: string, marker: string): string {
   return source.replace(new RegExp(`^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:\\r?\\n)?`, "m"), "");
@@ -134,6 +136,42 @@ function stripManagedMcpTables(source: string, begin: string, end: string, names
 }
 
 function toml(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`; }
+
+function stripManagedRootBlock(source: string, begin: string, end: string): string {
+  const escapedBegin = begin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return normalizeSpacing(source.replace(new RegExp(`${escapedBegin}[\\s\\S]*?${escapedEnd}\\s*`, "g"), ""));
+}
+
+// The Codex desktop model picker has one active OpenAI transport for its
+// catalog. OpenCodex uses this supported root override for the same reason:
+// native models pass through unchanged; provider:model entries are translated
+// by the local Devil proxy.
+export async function registerDevilStockBridge(port: number, secret: string, catalogPath: string): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  const cleaned = stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END).trimEnd();
+  const firstTable = cleaned.search(/^\s*\[/m);
+  const root = firstTable >= 0 ? cleaned.slice(0, firstTable) : cleaned;
+  if (/^\s*openai_base_url\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
+    throw new Error("Stock Codex bridge cannot replace a user-managed openai_base_url or model_catalog_json setting.");
+  }
+  const baseUrl = `http://127.0.0.1:${port}/${secret}/v1`;
+  const block = [
+    STOCK_BEGIN,
+    `openai_base_url = ${toml(baseUrl)}`,
+    `model_catalog_json = ${toml(catalogPath)}`,
+    STOCK_END,
+    "",
+  ].join("\n");
+  const next = preserveDesktopAppearanceTheme(`${block}${cleaned ? "\n" + cleaned : ""}`, source);
+  await writeConfigIfChanged(next, source);
+}
+
+export async function unregisterDevilStockBridge(): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  if (!source.includes(STOCK_BEGIN)) return;
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), source), source);
+}
 
 export async function registerDevilBrowserMcp(input: { execPath: string; script: string; sock: string; secret: string; computerScript?: string; computerSock?: string; computerSecret?: string }): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);

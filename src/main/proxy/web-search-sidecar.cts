@@ -325,6 +325,10 @@ export async function runWithWebSearchLoop(input: {
       stream: false,
       context: { ...parsed.context, messages },
       tools: forceAnswer ? toolsNoWebSearch : allTools,
+      // A caller may have forced web_search for the first pass. Once the
+      // sidecar has supplied a result, the final-answer pass must not retain
+      // that constraint after the tool has been removed.
+      options: forceAnswer ? { ...parsed.options, toolChoice: "none" } : parsed.options,
     };
     const events = await collectEvents(await invoke(iterParsed));
     const { calls, passthrough, hasRealToolCall } = scanEventsForWebSearch(events);

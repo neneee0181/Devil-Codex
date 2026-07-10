@@ -20,10 +20,12 @@ import { applyVisionSidecar } from "./vision-sidecar.cjs";
 import { claudeAuth, copilotAuth, oauthModels } from "../provider-oauth.cjs";
 import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
 import { apiProviderConfig, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
+import { CodexSettingsStore } from "../codex-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
 import { getStoredAccount } from "../provider-accounts.cjs";
 
 const CHATGPT_CODEX_RESPONSES = "https://chatgpt.com/backend-api/codex/responses";
+export const DEVIL_PROXY_PORT = 49873;
 
 // Per-install secret embedded in the proxy URL path. The proxy only answers
 // requests under /<secret>/v1/... so a local process or web page that doesn't
@@ -42,6 +44,8 @@ async function loadProxySecret(): Promise<string> {
   return secret;
 }
 const providerSettings = new ProviderSettingsStore();
+const stockSettingsStore = new CodexSettingsStore();
+const stockProxyServiceMode = process.argv.includes("--devil-stock-proxy");
 let reportProxyError: ((message: string) => void) | undefined;
 let reportRequestLogChanged: ((event: { provider: ProviderRequestLogEntry["provider"]; completed: boolean }) => void) | undefined;
 const sidecarSettingsByThread = new Map<string, SidecarSettings>();
@@ -149,10 +153,22 @@ function threadIdFromRequest(req: IncomingMessage, body: unknown): string {
   return "";
 }
 
-function sidecarState(threadId: string): { settings?: SidecarSettings; stats: SidecarStats } {
+async function sidecarState(threadId: string): Promise<{ settings?: SidecarSettings; stats: SidecarStats }> {
   const stats = sidecarStatsByThread.get(threadId) ?? { webSearchRequests: 0, webSearchEvents: [], visionRequests: 0, failures: [] };
   if (threadId) sidecarStatsByThread.set(threadId, stats);
-  return { settings: threadId ? sidecarSettingsByThread.get(threadId) : undefined, stats };
+  const explicit = threadId ? sidecarSettingsByThread.get(threadId) : undefined;
+  if (explicit || !stockProxyServiceMode) return { settings: explicit, stats };
+  const settings = await stockSettingsStore.load();
+  return {
+    settings: {
+      webSearch: settings.stockBridgeWebSearch,
+      vision: settings.stockBridgeVision,
+      webSearchLimit: 3,
+      visionLimit: 3,
+      nvidiaRateLimitRpm: 40,
+    },
+    stats,
+  };
 }
 
 function sidecarSnapshot(stats: SidecarStats): ProviderRequestLogEntry["sidecar"] {
@@ -181,6 +197,7 @@ function usesNativeImages(provider: ProxyProvider): boolean {
   if (provider === "openai" || provider === "anthropic" || provider === "google" || provider === "antigravity") return true;
   return Boolean(apiProviderConfig(provider)?.allowImages);
 }
+export async function readDevilProxySecret(): Promise<string> { return loadProxySecret(); }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
@@ -428,7 +445,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     await loadAntigravityToolSignatures();
     applyAntigravityToolSignatures(threadId, parsed);
   }
-  const sidecars = sidecarState(threadId);
+  const sidecars = await sidecarState(threadId);
   const stats = requestPartStats(parsed);
   const startedAt = Date.now();
   const requestId = crypto.randomUUID();
@@ -629,7 +646,7 @@ export class CodexProxyServer {
     // those saved threads after Devil has closed.
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(49873, "127.0.0.1", () => {
+      server.listen(DEVIL_PROXY_PORT, "127.0.0.1", () => {
         server.off("error", reject);
         resolve();
       });

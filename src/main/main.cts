@@ -3,7 +3,7 @@ import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { access, mkdir as fsMkdir, readdir, readFile, stat as fsStat } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import QRCode from "qrcode";
@@ -21,11 +21,13 @@ import { ProviderRuntime } from "./provider-runtime.cjs";
 import { ProviderModelCatalog } from "./provider-model-catalog.cjs";
 import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
-import { CodexProxyServer } from "./proxy/proxy-server.cjs";
+import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
+import { stockFeaturedSubagentModels, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
+import { ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
-import { registerDevilProvider, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
+import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
@@ -258,10 +260,11 @@ function escapeRegExp(value: string): string {
 // and leaves the renderer talking to a different app-server than the one holding
 // a thread's per-thread child → "thread not found". Hand focus to the running
 // window and quit the duplicate before any of that state is touched.
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const stockProxyServiceMode = process.argv.includes("--devil-stock-proxy");
+const hasSingleInstanceLock = stockProxyServiceMode || app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
-} else {
+} else if (!stockProxyServiceMode) {
   app.on("second-instance", () => {
     showMainWindow();
   });
@@ -270,6 +273,8 @@ if (!hasSingleInstanceLock) {
 let windowRef: BrowserWindow | undefined;
 let trayRef: Tray | undefined;
 let isQuitting = false;
+let desktopOwnsProxy = false;
+let stockBridgeHandoffStarted = false;
 let ipcHandlersReady = false;
 type IpcHandler = (input: unknown) => Promise<unknown> | unknown;
 const ipcHandlers = new Map<string, IpcHandler>();
@@ -2052,9 +2057,15 @@ async function claudeMcpConfig(): Promise<string | undefined> {
 async function startCodexProxy(): Promise<void> {
   try {
     const port = await codexProxy.start();
+    desktopOwnsProxy = true;
     await registerDevilProvider(port, codexProxy.secretToken());
+    await syncStockCodexCatalogOnly();
   } catch (error) {
-    console.error("[devil-codex proxy]", error instanceof Error ? error.message : error);
+    if (/EADDRINUSE/i.test(error instanceof Error ? error.message : String(error))) {
+      console.log("[devil-codex proxy] background stock bridge is already running");
+    } else {
+      console.error("[devil-codex proxy]", error instanceof Error ? error.message : error);
+    }
   }
   try {
     const settings = await settingsStore.load();
@@ -2068,7 +2079,55 @@ async function startCodexProxy(): Promise<void> {
   }
 }
 
-if (hasSingleInstanceLock) app.whenReady().then(async () => {
+async function syncStockCodexCatalogOnly(): Promise<{ path: string; added: number }> {
+  const providerSettings = await providerSettingsStore.load();
+  return syncStockCodexCatalog(providerSettings.providers, undefined, stockFeaturedSubagentModels(providerSettings));
+}
+
+async function syncStockCodexBridge(): Promise<void> {
+  const port = await codexProxy.start();
+  await registerDevilProvider(port, codexProxy.secretToken());
+  const catalog = await syncStockCodexCatalogOnly();
+  await registerDevilStockBridge(port, codexProxy.secretToken(), catalog.path);
+  console.log(`[devil-codex stock bridge] ${catalog.added} external models injected into ${catalog.path}`);
+}
+
+async function activateStockCodexBridge(): Promise<void> {
+  const catalog = await syncStockCodexCatalogOnly();
+  await registerDevilStockBridge(DEVIL_PROXY_PORT, await readDevilProxySecret(), catalog.path);
+}
+
+function launchStockProxyService(): void {
+  if (stockProxyServiceMode) return;
+  const args = app.isPackaged ? ["--devil-stock-proxy"] : [app.getAppPath(), "--devil-stock-proxy"];
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });
+  child.unref();
+}
+
+async function startStockProxyService(): Promise<void> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      await syncStockCodexBridge();
+      console.log("[devil-codex stock bridge] background proxy service ready");
+      return;
+    } catch (error) {
+      if (attempt === 59) {
+        console.error("[devil-codex stock bridge] background proxy failed:", error instanceof Error ? error.message : error);
+        app.exit(1);
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+if (stockProxyServiceMode) app.whenReady().then(startStockProxyService);
+else if (hasSingleInstanceLock) app.whenReady().then(async () => {
+  // The desktop app preserves its Codex-direct path. The stock bridge belongs
+  // to the headless service that starts after this desktop instance exits.
+  await unregisterDevilStockBridge();
+  void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
+    .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
   configureMenu();
   // Provider/MCP registration can touch config, sockets, and named pipes. Keep
   // it off the critical startup path so a slow helper never blocks the window
@@ -2237,6 +2296,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
   handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", async (_event, input) => {
     const saved = await providerSettingsStore.select(input);
+    await syncStockCodexCatalogOnly();
     await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
     return saved;
   });
@@ -2249,30 +2309,36 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       const message = error instanceof Error ? error.message : String(error);
       console.warn("[devil-codex providers] model refresh after key save failed:", message);
     }
+    await syncStockCodexCatalogOnly();
     sendToRenderer("providers:changed", result);
     return result;
   });
   ipcMain.handle("providers:clear-key", async (_event, input) => {
     const saved = await providerSettingsStore.clearKey(input.provider, input.accountId);
+    await syncStockCodexCatalogOnly();
     sendToRenderer("providers:changed", saved);
     return saved;
   });
-  ipcMain.handle("providers:refresh-models", (_event, input) => refreshProviderModels(input.provider, input.accountId));
+  ipcMain.handle("providers:refresh-models", async (_event, input) => {
+    const saved = await refreshProviderModels(input.provider, input.accountId);
+    await syncStockCodexCatalogOnly();
+    return saved;
+  });
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
   ipcMain.handle("providers:login", async (_event, input) => {
     if (input.provider === "codex") {
       codexCliLogin("codex");
-      void notifyProviderStateChanged("codex").catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
+      void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged("codex"); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
       return null;
     }
     if (input.provider === "antigravity") {
       return antigravityLogin(() => {
-        void notifyProviderStateChanged("antigravity").catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
+        void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged("antigravity"); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
       });
     }
     const oauthProvider = input.provider === "claude" ? "claude-code" : "copilot";
     return oauthLogin(oauthProvider, () => {
-      void notifyProviderStateChanged(oauthProvider).catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
+      void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged(oauthProvider); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
     });
   });
   ipcMain.handle("providers:logout", async (_event, input) => {
@@ -2290,6 +2356,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await oauthLogout(provider, input.accountId);
       changedProvider = provider;
     }
+    await syncStockCodexCatalogOnly();
     await notifyProviderStateChanged(changedProvider);
     return combinedAuthStatus();
   });
@@ -2971,8 +3038,28 @@ app.on("window-all-closed", () => {
   if (isQuitting && process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  // The bridge config must be fully written before Electron releases the
+  // desktop process. Otherwise stock Codex can see a catalog entry whose
+  // background proxy was never started.
+  if (!stockProxyServiceMode && !stockBridgeHandoffStarted) {
+    event.preventDefault();
+    stockBridgeHandoffStarted = true;
+    void (async () => {
+      try {
+        await activateStockCodexBridge();
+      } catch (error) {
+        console.error("[devil-codex stock bridge] handoff failed:", error instanceof Error ? error.message : error);
+      }
+      if (desktopOwnsProxy) launchStockProxyService();
+      app.quit();
+    })();
+    return;
+  }
   isQuitting = true;
+  // Leave a small headless owner for the stock-Codex bridge before the desktop
+  // instance releases port 49873. The service reuses the same encrypted
+  // Provider settings and managed config/catalog files.
   trayRef?.destroy();
   trayRef = undefined;
   appServer?.dispose();

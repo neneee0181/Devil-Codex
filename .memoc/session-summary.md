@@ -3,26 +3,20 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-07-04T08:44:44
-updated: 2026-07-08T18:57:00
+updated: 2026-07-10T03:15:00
 status: active
-tags:
-  - memoc
-  - memoc/state
+tags: [memoc, memoc/state]
 ---
 # Session Summary
-Last: 2026-07-09T15:20:00+09:00
-Replace, do not append. Keep <800B.
+Last: 2026-07-10. Replace; keep <800B.
 
 ## Status
-- v0.2.8 ready: NVIDIA NIM 429/RPM investigation and client-side throttle.
+- Stock bridge works; native uses transparent passthrough (upstream has no per-model transport field).
+- First five `spawn_agent` candidates are selected external models.
 
 ## Changed
-- `019f4559...`: NVIDIA `z-ai/glm-5.2` repeated 429; thread peak was 6 req/min, likely endpoint/account/model dynamic limit.
-- Added Settings -> 구성 -> NVIDIA NIM RPM 제한: default 40, 0 disables.
-- Proxy paces all NVIDIA upstream calls; diagnostics show `provider.nvidiaRateLimitRpm`.
-
-## Open Tasks
-- Manual E2E: set NVIDIA 10-40 RPM and check 429s.
+- Catalog injection, desktop-to-headless handoff, Windows packaged autostart.
+- Stock web-search/vision sidecars persist separately and default off; both real E2E tests pass.
 
 ## Resume
-- `npm run build` and `git diff --check` pass. Commit/tag/push pending.
+- Full build, diff check, external/native SSE pass. Bridge parity core complete; specialized Provider/OAuth adapters remain separate scope.
