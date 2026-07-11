@@ -19,7 +19,7 @@ created: 2026-07-11T01:36:04
 
 ## Summary
 
-- Replaced the stale README with a current project overview, architecture, feature scope, Bridge behavior, and developer commands.
+- Updated the existing emoji-led README shell with a current project overview, architecture, feature scope, Bridge behavior, and developer commands.
 - Kept historical parity detail in project memory rather than presenting it as current user-facing capability.
 
 ## Changed Files
