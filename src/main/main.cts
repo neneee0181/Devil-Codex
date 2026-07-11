@@ -22,7 +22,7 @@ import { ProviderModelCatalog } from "./provider-model-catalog.cjs";
 import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
-import { stockFeaturedSubagentModels, syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
+import { syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
@@ -2113,8 +2113,8 @@ async function startCodexProxy(): Promise<void> {
 }
 
 async function syncStockCodexCatalogOnly(): Promise<{ path: string; added: number }> {
-  const providerSettings = await providerSettingsStore.load();
-  return syncStockCodexCatalog(providerSettings.providers, undefined, stockFeaturedSubagentModels(providerSettings));
+  const [providerSettings, codexSettings] = await Promise.all([providerSettingsStore.load(), settingsStore.load()]);
+  return syncStockCodexCatalog(providerSettings.providers, undefined, codexSettings.stockBridgeModels);
 }
 
 async function activateDevilNativeCatalog(): Promise<void> {
@@ -2337,6 +2337,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
         await deactivateStockCodexBridge();
       }
     }
+    if (next.stockBridgeEnabled && previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000")) await syncStockCodexCatalogOnly();
     if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
       if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
       else await stopRemoteControl();

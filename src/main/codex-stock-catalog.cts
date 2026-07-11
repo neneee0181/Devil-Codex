@@ -48,41 +48,24 @@ function externalEntry(template: CatalogEntry, model: { id: string; label: strin
   return entry;
 }
 
-export function stockFeaturedSubagentModels(settings: Pick<ProviderSettings, "provider" | "model" | "accountId" | "providers">): string[] {
-  const selected = settings.providers.find((provider) => provider.id === settings.provider && provider.id !== "codex");
-  const fallback = settings.providers.find((provider) => provider.id !== "codex" && provider.accounts.length > 0);
-  const provider = selected ?? fallback;
-  if (!provider) return [];
-  const account = provider.accounts.find((candidate) => candidate.id === settings.accountId) ?? provider.accounts[0];
-  const models = account?.models?.length ? account.models : provider.models;
-  const ordered = [
-    ...(provider.id === settings.provider ? models.filter((model) => model.id === settings.model) : []),
-    ...models,
-  ].filter((model, index, all) => all.findIndex((candidate) => candidate.id === model.id) === index).slice(0, 5);
-  return ordered.map((model) => externalModelId(provider.id, account?.id, model.id));
-}
-
 export function buildStockCatalog(native: Catalog, providers: ProviderInfo[], featuredModelIds: string[] = []): Catalog {
   const template = nativeTemplate(native);
   if (!template) throw new Error("Codex native model catalog does not contain a usable template.");
+  const selected = new Set(featuredModelIds);
   const external = providers.flatMap(providerModels)
+    .filter((model) => selected.has(model.id))
     .filter((model, index, all) => all.findIndex((candidate) => candidate.id === model.id) === index)
-    .sort((left, right) => left.label.localeCompare(right.label));
+    .sort((left, right) => (featuredModelIds.indexOf(left.id) - featuredModelIds.indexOf(right.id)) || left.label.localeCompare(right.label));
   const featured = new Map(featuredModelIds.map((id, index) => [id, index]));
   const nativeModels = (native.models ?? [])
     .filter((entry) => typeof entry.slug !== "string" || !entry.slug.includes(":"))
-    // Codex's spawn_agent presents the five lowest-priority visible models.
-    // Keep native entries available but reserve that compact shortlist for the
-    // explicitly selected external models.
-    .map((entry, index) => ({ ...entry, priority: 20 + index }));
-  const orderedExternal = [...external].sort((left, right) => {
-    const leftRank = featured.get(left.id) ?? Number.MAX_SAFE_INTEGER;
-    const rightRank = featured.get(right.id) ?? Number.MAX_SAFE_INTEGER;
-    return leftRank === rightRank ? left.label.localeCompare(right.label) : leftRank - rightRank;
-  });
+    // Native Codex models must stay before every Devil-routed model in both
+    // the picker and the compact subagent candidate list.
+    .map((entry, index) => ({ ...entry, priority: index }));
+  const orderedExternal = [...external];
   return {
     ...native,
-    models: [...nativeModels, ...orderedExternal.map((model, index) => externalEntry(template, model, featured.get(model.id) ?? 100 + index))],
+    models: [...nativeModels, ...orderedExternal.map((model, index) => externalEntry(template, model, 100 + index))],
   };
 }
 

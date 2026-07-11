@@ -96,7 +96,7 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
 function SettingsPage({ active, appInfo, config, update, backendState, terminalShells, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const usage = useProviderUsage(active === "사용량 및 청구");
   const [configurationTab, setConfigurationTab] = useState<ConfigurationTab>("기본");
-  if (active === "구성") return <ConfigurationSettings tab={configurationTab} onTabChange={setConfigurationTab} appInfo={appInfo} config={config} update={update} backendState={backendState} terminalShells={terminalShells} />;
+  if (active === "구성") return <ConfigurationSettings tab={configurationTab} onTabChange={setConfigurationTab} appInfo={appInfo} config={config} update={update} backendState={backendState} terminalShells={terminalShells} providerSettings={providerSettings} />;
   if (active === "알림") return <><h1>알림</h1><p className="page-lead">Devil Codex 창이 숨겨져 있거나 포커스가 없을 때만 시스템 알림을 표시합니다. 창을 보고 있는 동안에는 기존 화면 표시만 사용합니다.</p><section><h2>데스크톱 알림</h2><div className="setting-card"><Row title="백그라운드 알림" detail="끄면 아래 세부 항목과 무관하게 모든 시스템 알림을 보내지 않습니다."><Toggle value={config.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} /></Row><Row title="작업 완료" detail="AI 작업이 완료되거나 실패했을 때 알려줍니다. 대기열에 다음 메시지가 있으면 마지막 작업이 끝날 때 알려줍니다."><Toggle value={config.notifyOnTurnComplete} onChange={(v) => update("notifyOnTurnComplete", v)} /></Row><Row title="승인 요청" detail="명령 실행 또는 파일 변경 승인이 필요할 때 알려줍니다."><Toggle value={config.notifyOnApproval} onChange={(v) => update("notifyOnApproval", v)} /></Row><Row title="질문 요청" detail="AI가 선택지 질문 모달을 띄워 사용자 입력을 기다릴 때 알려줍니다."><Toggle value={config.notifyOnAsk} onChange={(v) => update("notifyOnAsk", v)} /></Row></div></section></>;
   if (active === "사용량 및 청구") return <ProviderUsagePage report={usage.report} requestLog={usage.requestLog} providerSettings={providerSettings} state={usage.state} onRefresh={() => void usage.refresh()} />;
   if (active === "연결") return <ProviderSettingsPanel settings={providerSettings} state={providerState} onSelect={onProviderSelect} onSaveKey={onProviderSaveKey} onClearKey={onProviderClearKey} onRefreshModels={onProviderRefreshModels} />;
@@ -112,7 +112,12 @@ const configurationTabs: Array<{ id: ConfigurationTab; detail: string }> = [
   { id: "Sidecar", detail: "외부 모델 보조 기능" },
 ];
 
-function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, backendState, terminalShells }: { tab: ConfigurationTab; onTabChange: (tab: ConfigurationTab) => void; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[] }): React.JSX.Element {
+function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, backendState, terminalShells, providerSettings }: { tab: ConfigurationTab; onTabChange: (tab: ConfigurationTab) => void; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null }): React.JSX.Element {
+  const codex = useCodexSettings();
+  const stockBridgeModels = codex.settings?.stockBridgeModels ?? [];
+  const saveStockBridgeModels = (models: string[]): void => {
+    if (codex.settings) codex.save({ ...codex.settings, stockBridgeModels: models });
+  };
   return <>
     <h1>구성</h1>
     <p className="page-lead">설정을 목적별로 나눴습니다. <span className={`settings-save-state ${backendState}`}>{backendState === "loading" ? "저장 중…" : backendState === "saved" ? "config.toml 저장됨" : "저장 실패"}</span></p>
@@ -126,9 +131,46 @@ function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, back
     </>}
     {tab === "도구" && <section><h2>Devil MCP 도구</h2><p className="section-help">작업 중에만 필요한 기능을 켜 두면 모델이 알맞은 MCP 도구를 선택할 수 있습니다.</p><div className="setting-card"><Row title="AI 질문 모달 MCP" detail="모델이 애매한 요구사항이나 중요한 트레이드오프를 객관식으로 물을 때 사용합니다."><Toggle value={config.askUserMcpEnabled} onChange={(v) => update("askUserMcpEnabled", v)} /></Row><Row title="하위 에이전트 MCP" detail="등록된 provider/model에 독립 작업을 위임합니다. 위임된 작업도 현재 Codex 권한 설정을 넘지 않습니다."><Toggle value={config.subagentMcpEnabled} onChange={(v) => update("subagentMcpEnabled", v)} /></Row><Row title="브라우저/컴퓨터 제어 MCP" detail="켜면 브라우저와 컴퓨터 제어 도구를 MCP 목록에 등록합니다."><Toggle value={config.devilMcpEnabled} onChange={(v) => update("devilMcpEnabled", v)} /></Row></div></section>}
     {tab === "원격" && <section><h2>원격 제어</h2><p className="section-help">휴대폰이나 다른 브라우저에서 Devil Codex에 접속할 수 있게 합니다.</p><RemoteControlSection /></section>}
-    {tab === "Bridge" && <section><h2>순정 Codex Bridge</h2><p className="section-help">Devil Codex를 종료한 뒤 순정 Codex 선택기에서 외부 모델을 사용할 때만 적용됩니다.</p><div className="setting-card"><Row title="순정 Codex에서 외부 모델 사용" detail="끄면 관리 config와 자동실행 브릿지를 제거하고 순정 Codex 기본 상태로 되돌립니다."><Toggle value={config.stockBridgeEnabled} onChange={(v) => update("stockBridgeEnabled", v)} /></Row><Row title="웹 검색 sidecar" detail="외부 모델의 web_search 호출을 Codex 검색으로 실행하고 결과를 다시 전달합니다."><Toggle value={config.stockBridgeWebSearch} onChange={(v) => update("stockBridgeWebSearch", v)} disabled={!config.stockBridgeEnabled} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달합니다."><Toggle value={config.stockBridgeVision} onChange={(v) => update("stockBridgeVision", v)} disabled={!config.stockBridgeEnabled} /></Row></div></section>}
+    {tab === "Bridge" && <section><h2>순정 Codex Bridge</h2><p className="section-help">순정 GPT 모델은 항상 먼저 보이고, 아래에서 고른 외부 모델만 그 뒤에 순서대로 표시됩니다. Bridge를 끄면 선택 목록은 보존하지만 순정 Codex에는 외부 모델을 노출하지 않습니다.</p><div className="setting-card"><Row title="순정 Codex에서 외부 모델 사용" detail="끄면 관리 config와 자동실행 브릿지를 제거하고 순정 Codex 기본 상태로 되돌립니다."><Toggle value={config.stockBridgeEnabled} onChange={(v) => update("stockBridgeEnabled", v)} /></Row><Row title="순정 Codex에 표시할 모델" detail="추가한 외부 모델만 순정 Codex 선택기에 표시합니다. 위·아래 버튼으로 표시 순서를 정합니다."><StockBridgeModelPicker providers={providerSettings?.providers ?? []} selected={stockBridgeModels} onChange={saveStockBridgeModels} /></Row><Row title="웹 검색 sidecar" detail="외부 모델의 web_search 호출을 Codex 검색으로 실행하고 결과를 다시 전달합니다."><Toggle value={config.stockBridgeWebSearch} onChange={(v) => update("stockBridgeWebSearch", v)} disabled={!config.stockBridgeEnabled} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달합니다."><Toggle value={config.stockBridgeVision} onChange={(v) => update("stockBridgeVision", v)} disabled={!config.stockBridgeEnabled} /></Row></div></section>}
     {tab === "Sidecar" && <section><h2>외부 모델 Sidecar</h2><p className="section-help">Devil Codex 앱 안에서 외부 모델이 사용하는 보조 기능입니다. Codex 모델은 항상 직접 경로를 유지합니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델이 web_search 도구를 호출하면 실제 검색을 실행하고 결과를 다시 전달합니다."><Toggle value={config.sidecarWebSearch} onChange={(v) => update("sidecarWebSearch", v)} /></Row><Row title="웹 검색 최대 요청 수" detail="한 요청에서 검색이 반복될 때의 폭주를 막습니다."><Select value={String(config.sidecarWebSearchLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarWebSearchLimit", Number(v))} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 볼 수 없는 외부 모델에 텍스트 설명을 전달합니다."><Toggle value={config.sidecarVision} onChange={(v) => update("sidecarVision", v)} /></Row><Row title="이미지 설명 최대 요청 수" detail="여러 이미지나 반복 설명의 비용과 지연을 제한합니다."><Select value={String(config.sidecarVisionLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarVisionLimit", Number(v))} /></Row><Row title="NVIDIA NIM RPM 제한" detail="NVIDIA hosted endpoint의 429를 줄이기 위한 분당 요청 제한입니다. 0은 제한을 끕니다."><NumberInput value={config.nvidiaRateLimitRpm} min={0} max={240} onChange={(v) => update("nvidiaRateLimitRpm", v)} /></Row></div></section>}
   </>;
+}
+
+type StockBridgeModelChoice = { id: string; provider: string; label: string };
+
+function StockBridgeModelPicker({ providers, selected, onChange }: { providers: ProviderSettings["providers"]; selected: string[]; onChange: (models: string[]) => void }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const choices = useMemo(() => providers.filter((provider) => provider.id !== "codex").flatMap((provider) => {
+    const accounts = provider.accounts.length ? provider.accounts : [undefined];
+    return accounts.flatMap((account) => {
+      const models = account?.models?.length ? account.models : provider.models;
+      return models.map((model) => ({
+        id: `${provider.id}${account?.id ? `@${encodeURIComponent(account.id)}` : ""}:${model.id}`,
+        provider: account ? `${provider.label} · ${account.label}` : provider.label,
+        label: model.label,
+      }));
+    });
+  }).filter((choice, index, all) => all.findIndex((candidate) => candidate.id === choice.id) === index), [providers]);
+  const byId = useMemo(() => new Map(choices.map((choice) => [choice.id, choice])), [choices]);
+  const move = (id: string, direction: -1 | 1): void => {
+    const index = selected.indexOf(id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= selected.length) return;
+    const next = [...selected];
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  };
+  return <div className="stock-model-picker">
+    <button type="button" className="stock-model-picker-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}>{selected.length ? `${selected.length}개 모델 선택됨` : "모델 추가"}<span>⌄</span></button>
+    {open && <div className="stock-model-picker-menu">{choices.length ? choices.map((choice) => {
+      const added = selected.includes(choice.id);
+      return <button type="button" key={choice.id} className={added ? "selected" : ""} onClick={() => onChange(added ? selected.filter((id) => id !== choice.id) : [...selected, choice.id])}><span><strong>{choice.label}</strong><small>{choice.provider}</small></span><b>{added ? "추가됨" : "추가"}</b></button>;
+    }) : <p>연결된 외부 provider 모델이 없습니다.</p>}</div>}
+    <div className="stock-model-picker-selected">{selected.length ? selected.map((id, index) => {
+      const choice = byId.get(id);
+      return <div key={id}><span><b>{index + 1}</b><strong>{choice?.label ?? id}</strong><small>{choice?.provider ?? "사용할 수 없는 모델"}</small></span><button type="button" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`${choice?.label ?? id} 위로 이동`}>↑</button><button type="button" onClick={() => move(id, 1)} disabled={index === selected.length - 1} aria-label={`${choice?.label ?? id} 아래로 이동`}>↓</button><button type="button" onClick={() => onChange(selected.filter((item) => item !== id))} aria-label={`${choice?.label ?? id} 제거`}>×</button></div>;
+    }) : <p>외부 모델을 추가하지 않으면 순정 Codex에는 GPT 모델만 표시됩니다.</p>}</div>
+  </div>;
 }
 
 function RemoteControlSection(): React.JSX.Element {
