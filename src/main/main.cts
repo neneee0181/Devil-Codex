@@ -198,11 +198,17 @@ app.setName("devil-codex");
 if (process.platform === "win32") app.setAppUserModelId("dev.devilcodex.app");
 
 const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
-const ASK_USER_MCP_DIRECTIVE = [
-  "[Ask-user MCP directive]",
+const DEVIL_ASK_USER_DIRECTIVE = [
+  "[Question tool routing]",
   "When work can proceed with a reasonable default or the repository context makes the answer clear, do not ask the user; state the assumption briefly and continue.",
+  "This is Default mode: the native `request_user_input` tool is unavailable here. Never call it.",
   "When a decision is genuinely ambiguous and changes the implementation path, data flow, architecture, security posture, cost, dependency choice, UX behavior, or deployment behavior, pause and call the `ask_user` tool from the `devil_ask` MCP server instead of asking in plain text.",
   "Use this only for concrete trade-offs or branch points the user must decide. Keep questions specific, multiple-choice, and limited to the smallest number needed.",
+].join("\n");
+const NATIVE_ASK_USER_DIRECTIVE = [
+  "[Question tool routing]",
+  "This turn is in native Codex Plan mode. For a genuinely ambiguous decision that needs the user's answer, use the native `request_user_input` tool.",
+  "Do not call the `devil_ask` MCP on this turn. Continue with a reasonable default when the repository context makes the answer clear.",
 ].join("\n");
 const MAX_MIRRORED_COMMAND_OUTPUT_CHARS = 20_000;
 const MAX_MIRRORED_FILE_DIFF_CHARS = 40_000;
@@ -222,8 +228,9 @@ function stripInternalDirectives(text: string): string {
     .replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "")
     .replace(/^Base directory for this skill:[\s\S]*?\n\n## User Request\n\n/, "")
     .replace(new RegExp(`\\n*---\\n${escapeRegExp(ENGLISH_OUTPUT_DIRECTIVE)}\\s*$`), "")
-    .replace(new RegExp(`\\n*---\\n${escapeRegExp(ASK_USER_MCP_DIRECTIVE)}\\s*$`), "")
-    .replace(/\n*---\n\[Ask-user MCP directive\][\s\S]*?(?=\n---\n|\n#|\n\d+\. |\n[A-Z][^\n]*:\n|$)/g, "")
+    .replace(new RegExp(`\\n*---\\n${escapeRegExp(DEVIL_ASK_USER_DIRECTIVE)}\\s*$`), "")
+    .replace(new RegExp(`\\n*---\\n${escapeRegExp(NATIVE_ASK_USER_DIRECTIVE)}\\s*$`), "")
+    .replace(/\n*---\n\[Question tool routing\][\s\S]*?(?=\n---\n|\n#|\n\d+\. |\n[A-Z][^\n]*:\n|$)/g, "")
     .trimEnd();
   return withoutDirectiveBlocks;
 }
@@ -2839,12 +2846,17 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     // store the raw input.text, so the visible user message stays untouched.
     const { englishOutput, askUserMcpEnabled } = await settingsStore.load();
     const englishDirective = englishOutput ? `\n\n---\n${ENGLISH_OUTPUT_DIRECTIVE}` : "";
-    // ask_user behavior lives in the MCP tool description. Re-appending the
-    // full directive to every turn makes the model-bound prompt larger and can
-    // disturb provider prompt-cache reuse after model/runtime changes.
+    // Codex exposes request_user_input only in Plan mode. Explicitly route
+    // questions so Default turns never select that unavailable native tool,
+    // while Plan turns keep using the stock Codex question experience.
+    const questionDirective = request.planMode
+      ? `\n\n---\n${NATIVE_ASK_USER_DIRECTIVE}`
+      : askUserMcpEnabled
+        ? `\n\n---\n${DEVIL_ASK_USER_DIRECTIVE}`
+        : "";
     const turnInput = {
       ...request,
-      text: `${request.text}${attachmentEnrichment.context}${englishDirective}`,
+      text: `${request.text}${attachmentEnrichment.context}${englishDirective}${questionDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
     if (!request.subagent && requestedRuntime(request.runtime) !== "claude-code") {
