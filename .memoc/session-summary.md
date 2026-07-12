@@ -10,17 +10,14 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-11. Replace; keep <800B.
+Last: 2026-07-12. Replace; keep <800B.
 
 ## Status
-- v0.2.14 keeps native GPT models first in stock Codex and shows only user-selected Bridge models after them.
-- Desktop startup now registers a catalog-only native model file; native requests remain direct.
-- Delegated subagents now honor the persisted Codex permission ceiling, report terminal timeout/failure honestly, and accept an optional reasoning effort.
-- README now documents only the current project architecture, supported features, Bridge selection behavior, and development commands.
-- Default-mode question routing now directs genuinely blocking questions to Devil Ask MCP; native Plan mode uses only Codex's native question tool.
+- v0.2.15 routes Default-mode blocking questions to Devil Ask MCP and reserves native questioning for Codex Plan mode.
+- README, `README.en.md`, and `README.zh-CN.md` share the supplied main-chat hero and five feature screenshots; each has language navigation.
 
 ## Verification
-- `npm run build` and `git diff --check` pass for the question-routing change.
+- `git diff --check` passes; local links/assets, fenced blocks, and all six 2880 × 1800 PNG assets were verified across the three READMEs.
 
 ## Resume
-- Question-routing fix is uncommitted; restart the desktop app and manually verify fresh Default and Plan-mode turns before committing if requested.
+- Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.

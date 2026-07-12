@@ -2,6 +2,8 @@
 
 # 😈 Devil Codex
 
+**[한국어](README.md) · [English](README.en.md) · [简体中文](README.zh-CN.md)**
+
 **Codex의 데스크톱 경험을 그대로 — 거기에 모든 모델과 진짜 컴퓨터 제어를 얹다.**
 
 Codex app-server를 중심으로 순정 Codex 모델, 외부 모델 provider, Bridge, 원격 제어와 Devil 자체 MCP 도구를 한 곳에 연결한 macOS / Windows 데스크톱 앱.
@@ -17,6 +19,14 @@ Codex app-server를 중심으로 순정 Codex 모델, 외부 모델 provider, Br
 
 ---
 
+<p align="center">
+  <img src="assets/screenshots/main-chat.png" alt="Devil Codex 메인 채팅 화면" width="100%" />
+  <br />
+  <sub>Devil Codex 메인 채팅 — 프로젝트, 모델 선택, 권한 및 계획 흐름을 한 화면에서</sub>
+</p>
+
+---
+
 ## ✨ 한눈에 보기
 
 Devil Codex는 공식 **Codex app-server**의 thread·turn·도구 경험을 기반으로, 아래 기능을 더합니다.
@@ -27,6 +37,25 @@ Devil Codex는 공식 **Codex app-server**의 thread·turn·도구 경험을 기
 - 🌐 **원격·언어 UX** — Tailscale 기반 원격 접속, 영어 응답 강제와 응답 번역, 시스템 알림을 지원합니다.
 
 > Codex 호환을 지향하는 비공식 프로젝트이며 OpenAI와 직접적인 제휴 관계가 없습니다.
+
+---
+
+## 🖼️ 화면 미리보기
+
+| 인앱 브라우저 제어 | 우측 사이드 채팅 + 하단 터미널 |
+| --- | --- |
+| <img src="assets/screenshots/browser-control.png" alt="Devil MCP로 인앱 브라우저를 제어하는 화면" width="100%" /><br /><strong>브라우저 제어</strong><br />Devil MCP가 인앱 브라우저를 열고 조작합니다. | <img src="assets/screenshots/side-chat-terminal.png" alt="우측 사이드 채팅과 하단 터미널을 함께 연 화면" width="100%" /><br /><strong>병렬 작업 공간</strong><br />사이드 채팅과 실제 워크스페이스 터미널을 동시에 사용합니다. |
+
+| 파일 탐색 및 미리보기 | 구조화된 질문 모달 |
+| --- | --- |
+| <img src="assets/screenshots/file-panel.png" alt="우측 파일 탭에서 README를 미리 보는 화면" width="100%" /><br /><strong>파일 탭</strong><br />우측 탭에서 프로젝트 파일을 탐색하고 Markdown을 바로 확인합니다. | <img src="assets/screenshots/ask-user-modal.png" alt="Devil Ask 사용자 질문 모달" width="100%" /><br /><strong>Devil Ask</strong><br />작업 진행에 필요한 선택지를 구조화된 질문 모달로 받습니다. |
+
+<p align="center">
+  <img src="assets/screenshots/stock-codex-model-picker.png" alt="순정 Codex에서 선택한 Devil Codex Bridge 모델이 보이는 선택기" width="72%" />
+  <br />
+  <strong>순정 Codex Bridge</strong><br />
+  <sub>설정에서 선택한 외부 모델만 순정 Codex 모델 선택기에 추가되며, native GPT 모델은 항상 먼저 표시됩니다.</sub>
+</p>
 
 ---
 
