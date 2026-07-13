@@ -22,3 +22,4 @@ Last: 2026-07-13. Replace; keep <800B.
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
 - Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.
+- GPT-5.6 runtime follow-up `codex/gpt56-runtime-upgrade`: package v0.2.16 and release workflow now bundle Codex `rust-v0.144.3`; latest live app-server lists Sol/Terra/Luna. Full build and relay test pass; actual model completion remains a manual account-entitlement check.

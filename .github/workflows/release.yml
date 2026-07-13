@@ -12,7 +12,7 @@ env:
   # Must be >= the codex version stock Codex Desktop uses, or newer rollout/
   # session_meta formats fail to deserialize ("rollout does not start with
   # session metadata") and those threads show empty/desynced in Devil.
-  CODEX_VERSION: rust-v0.142.4
+  CODEX_VERSION: rust-v0.144.3
 
 permissions:
   contents: write
