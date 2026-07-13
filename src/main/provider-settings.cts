@@ -158,7 +158,7 @@ function antigravityCatalogModels(): ProviderModel[] {
 }
 
 const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">> = [
-  { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }, { id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
+  { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
   { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }, { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
   { id: "copilot", label: "GitHub Copilot", kind: "login", authProvider: "copilot", keyRequired: false, models: [
     { id: "gpt-5.5", label: "GPT-5.5" },

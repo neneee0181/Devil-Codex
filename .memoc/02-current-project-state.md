@@ -295,3 +295,7 @@ See `.memoc/worklog/` and generated `.memoc/activity.md`.
 - Added a project-neutral virtual-session relay with default `3001 -> 3000/mcp` and loopback-only environment overrides. Stale upstream sessions are recreated internally; only `tools/list` retries once. `tools/call` returns 503 and is never replayed.
 - Desktop startup and the background Stock Bridge service start the relay. Main TypeScript compile and a live Unreal Editor restart/reconnect check passed.
 - Relay forwarding now consumes aborted/error upstream streams and closes the downstream response safely, preventing an Unreal restart from becoming an unhandled Electron main-process exception. `npm run test:main` covers this interruption path.
+
+### 2026-07-13 GPT-5.6 runtime support
+
+- Bundled Codex app-server release target is `rust-v0.144.3`; its live `model/list` returns `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Devil now exposes only models returned by the active app-server, preventing a stale model cache from showing IDs rejected at `turn/start`.

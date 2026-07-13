@@ -40,25 +40,11 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
-type CodexModelCache = {
-  models?: Array<{
-    slug?: unknown;
-    display_name?: unknown;
-    visibility?: unknown;
-  }>;
-};
-
 const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 const STOCK_ROLLOUT_PERMISSION_SYNC_MAX_BYTES = 50 * 1024 * 1024;
 const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
 const EDITED_CONTINUATION_PREFIX = "아래는 편집 지점 이전 대화입니다.";
 const ASK_USER_DIRECTIVE_MARKER = "[Ask-user MCP directive]";
-const DOCUMENTED_GPT56_MODELS: ProviderModel[] = [
-  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-];
-
 function stripInternalDirectives(value: string): string {
   return value
     .replace(/\r\n/g, "\n")
@@ -372,26 +358,10 @@ export class CodexAppServer extends EventEmitter {
       return [{ id, label }];
     };
     const live = (result.data ?? []).flatMap((row) => add(String(row.model ?? row.id ?? ""), String(row.displayName ?? row.model ?? row.id ?? "")));
-    const cached = await this.readVisibleCachedModels(seen);
-    const documented = DOCUMENTED_GPT56_MODELS.flatMap((model) => add(model.id, model.label));
-    return [...live, ...cached, ...documented];
-  }
-
-  // The bundled app-server can lag the installed Codex catalog during a staged
-  // model rollout. The shared cache is the same source stock Codex exposes in
-  // its picker, so merge visible native entries without altering request routing.
-  private async readVisibleCachedModels(seen: Set<string>): Promise<ProviderModel[]> {
-    try {
-      const source = JSON.parse(await readFile(join(this.options.codexHome ?? codexHome(), "models_cache.json"), "utf8")) as CodexModelCache;
-      return (source.models ?? []).flatMap((entry) => {
-        const id = typeof entry.slug === "string" ? entry.slug : "";
-        if (!id || entry.visibility !== "list" || id.includes(":") || id.includes("/") || seen.has(id)) return [];
-        seen.add(id);
-        return [{ id, label: typeof entry.display_name === "string" ? entry.display_name : id }];
-      });
-    } catch {
-      return [];
-    }
+    // Only advertise models the active app-server itself accepts. Catalog cache
+    // entries can outpace a bundled runtime and otherwise create selectable
+    // models that fail at `turn/start`.
+    return live;
   }
 
   async readThread(input: { id: string }): Promise<ThreadHistoryItem[]> {
