@@ -112,3 +112,8 @@ Durable project decisions live here. Keep entries short, dated, and useful to fu
 
 - Track Codex screen, navigation, settings, shortcuts, and feature parity in `docs/CODEX_PARITY.md`.
 - Every completed work unit must include beginner-friendly run, use, feature, and test instructions.
+
+### 2026-07-13 Unreal MCP lifecycle
+
+- Keep a stable Devil relay at `127.0.0.1:3001` in front of Unreal native MCP at `127.0.0.1:3000`; support only loopback environment overrides for projects using different ports.
+- Never replay `tools/call` after reconnect; return retry-required 503. Replay only idempotent tool discovery once.

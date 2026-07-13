@@ -10,7 +10,7 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-12. Replace; keep <800B.
+Last: 2026-07-13. Replace; keep <800B.
 
 ## Status
 - v0.2.15 routes Default-mode blocking questions to Devil Ask MCP and reserves native questioning for Codex Plan mode.
@@ -21,3 +21,4 @@ Last: 2026-07-12. Replace; keep <800B.
 
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
+- Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.

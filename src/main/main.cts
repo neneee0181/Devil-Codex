@@ -22,6 +22,7 @@ import { ProviderModelCatalog } from "./provider-model-catalog.cjs";
 import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
+import { UnrealMcpRelay, unrealMcpRelayOptionsFromEnv } from "./unreal-mcp-relay.cjs";
 import { syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
@@ -643,6 +644,7 @@ const codexProxy = new CodexProxyServer((message) => {
   if (event.completed && isUsageCacheProvider(event.provider)) clearProviderUsageCache(event.provider);
   sendToRenderer("provider:usage-changed", { provider: event.provider, completed: event.completed, at: Date.now() });
 });
+const unrealMcpRelay = new UnrealMcpRelay(unrealMcpRelayOptionsFromEnv());
 
 function usesCodexProxy(provider?: string): boolean {
   return Boolean(provider && provider !== "codex");
@@ -2107,6 +2109,9 @@ async function startCodexProxy(): Promise<void> {
       console.error("[devil-codex proxy]", error instanceof Error ? error.message : error);
     }
   }
+  await unrealMcpRelay.start().catch((error) => {
+    if (!/EADDRINUSE/i.test(error instanceof Error ? error.message : String(error))) console.error("[devil-codex unreal-mcp]", error);
+  });
   try {
     const settings = await settingsStore.load();
     if (settings.askUserMcpEnabled) await setupDevilAskMcp();
@@ -2173,6 +2178,7 @@ async function startStockProxyService(): Promise<void> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       await syncStockCodexBridge();
+      await unrealMcpRelay.start();
       console.log("[devil-codex stock bridge] background proxy service ready");
       return;
     } catch (error) {
@@ -3174,4 +3180,5 @@ app.on("before-quit", (event) => {
   // Keep the managed provider block in ~/.codex/config.toml. Rollouts created
   // through it must remain recognisable to stock Codex after Devil exits.
   void codexProxy.stop();
+  void unrealMcpRelay.stop();
 });
