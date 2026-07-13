@@ -289,3 +289,8 @@ See `.memoc/worklog/` for full shared activity history.
 ## Change Log
 
 See `.memoc/worklog/` and generated `.memoc/activity.md`.
+
+### 2026-07-13 Unreal MCP reconnect relay
+
+- Added a project-neutral virtual-session relay with default `3001 -> 3000/mcp` and loopback-only environment overrides. Stale upstream sessions are recreated internally; only `tools/list` retries once. `tools/call` returns 503 and is never replayed.
+- Desktop startup and the background Stock Bridge service start the relay. Main TypeScript compile and a live Unreal Editor restart/reconnect check passed.

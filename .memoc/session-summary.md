@@ -10,7 +10,7 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-12. Replace; keep <800B.
+Last: 2026-07-13. Replace; keep <800B.
 
 ## Status
 - v0.2.15 routes Default-mode blocking questions to Devil Ask MCP and reserves native questioning for Codex Plan mode.
@@ -21,3 +21,4 @@ Last: 2026-07-12. Replace; keep <800B.
 
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
+- Relay branch `codex/unreal-mcp-reconnect-relay`: main compile and live Unreal restart/reconnect passed; configure URL `http://127.0.0.1:3001/mcp`.
