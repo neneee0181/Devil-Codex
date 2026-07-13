@@ -294,3 +294,4 @@ See `.memoc/worklog/` and generated `.memoc/activity.md`.
 
 - Added a project-neutral virtual-session relay with default `3001 -> 3000/mcp` and loopback-only environment overrides. Stale upstream sessions are recreated internally; only `tools/list` retries once. `tools/call` returns 503 and is never replayed.
 - Desktop startup and the background Stock Bridge service start the relay. Main TypeScript compile and a live Unreal Editor restart/reconnect check passed.
+- Relay forwarding now consumes aborted/error upstream streams and closes the downstream response safely, preventing an Unreal restart from becoming an unhandled Electron main-process exception. `npm run test:main` covers this interruption path.

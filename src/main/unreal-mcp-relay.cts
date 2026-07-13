@@ -119,6 +119,20 @@ export class UnrealMcpRelay {
     }
     if (virtualSessionId) headers["Mcp-Session-Id"] = virtualSessionId;
     target.writeHead(source.statusCode, headers);
+    const closeUpstream = () => {
+      if (!source.stream.complete && !source.stream.destroyed) source.stream.destroy();
+    };
+    // `pipe` does not forward source errors. Unreal can terminate an active
+    // response while restarting, so consume that failure instead of letting it
+    // become an unhandled Electron main-process exception.
+    source.stream.once("error", (error) => {
+      if (!target.writableEnded) target.destroy(error);
+    });
+    source.stream.once("aborted", () => {
+      if (!target.writableEnded) target.destroy();
+    });
+    target.once("error", closeUpstream);
+    target.once("close", closeUpstream);
     source.stream.pipe(target);
   }
 

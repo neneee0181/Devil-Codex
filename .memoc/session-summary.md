@@ -21,4 +21,4 @@ Last: 2026-07-13. Replace; keep <800B.
 
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
-- Relay branch `codex/unreal-mcp-reconnect-relay`: main compile and live Unreal restart/reconnect passed; configure URL `http://127.0.0.1:3001/mcp`.
+- Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.
