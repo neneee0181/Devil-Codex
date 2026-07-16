@@ -10,16 +10,13 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-13. Replace; keep <800B.
+Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.2.15 routes Default-mode blocking questions to Devil Ask MCP and reserves native questioning for Codex Plan mode.
-- README, `README.en.md`, and `README.zh-CN.md` share the supplied main-chat hero and five feature screenshots; each has language navigation.
+- v0.2.20 Bridge live toggle: desktop reclaims the proxy from the headless handoff, writes/removes bridge config immediately, and restarts only an already-running stock GUI Codex. GPT/Codex requests are raw transparent pass-through; external IDs use adapters. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
 
 ## Verification
-- `git diff --check` passes; local links/assets, fenced blocks, and all six 2880 × 1800 PNG assets were verified across the three READMEs.
+- `npm run test:main`, `npm run build`, and `git diff --check` pass.
 
 ## Resume
-- Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
-- Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.
-- Bridge picker UX (2026-07-16): v0.2.19 replaces the flat Stock Bridge model add-list with a Composer-style Provider → account → model chooser, provider/model search, immediate Bridge add/remove toggles, and retained display-order controls. Full build passes; test, commit/tag/push pending.
+- Manual installed-app test: toggle ON/OFF/model selection with stock Codex open, then repeat closed.

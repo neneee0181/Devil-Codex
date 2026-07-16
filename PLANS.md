@@ -1,6 +1,7 @@
 # devil-codex 구현 계획
 
 세부 UI·UX·기능 격차는 [`docs/CODEX_PARITY.md`](docs/CODEX_PARITY.md)를 기준으로 추적한다.
+순정 Codex에 외부 모델을 노출하는 Bridge의 즉시 전환·투명 GPT 전달·프로세스 handoff 설계는 [`docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`](docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md)를 기준으로 한다.
 
 ## 목표
 

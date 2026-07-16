@@ -1355,7 +1355,7 @@ async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
   const attempts: Array<[string, string[]]> = process.platform === "darwin"
     ? [["open", ["-a", "Codex"]], ["open", ["/Applications/Codex.app"]]]
     : process.platform === "win32"
-      ? [["Codex", []], ["codex", []], ["cmd", ["/c", "start", "", "Codex"]]]
+      ? [["powershell.exe", ["-NoProfile", "-Command", "$app = Get-StartApps | Where-Object { $_.Name -eq 'Codex' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\\' + $app.AppID); exit 0 }; exit 1"]], ["Codex", []], ["cmd", ["/c", "start", "", "Codex"]]]
       : [["codex", []], ["xdg-open", ["codex:"]]];
   const errors: string[] = [];
   for (const [command, args] of attempts) {
@@ -1367,6 +1367,45 @@ async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
     }
   }
   return { ok: false, detail: errors.at(-1) ?? "순정 Codex 앱을 열 수 없습니다." };
+}
+
+async function stockCodexDesktopRunning(): Promise<boolean> {
+  try {
+    if (process.platform === "win32") {
+      const command = "$p = Get-Process | Where-Object { $_.Path -like '*\\WindowsApps\\OpenAI.Codex_*' }; if ($p) { exit 0 }; exit 1";
+      await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true });
+      return true;
+    }
+    // This deliberately does not match the `codex` CLI. It is only safe to
+    // force-close a known desktop application after a Bridge setting change.
+    const name = process.platform === "darwin" ? "Codex" : "codex-desktop";
+    await execFileAsync("pgrep", ["-x", name]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function restartStockCodexIfRunning(): Promise<void> {
+  if (!await stockCodexDesktopRunning()) return;
+  try {
+    if (process.platform === "win32") {
+      const command = "Get-Process | Where-Object { $_.Path -like '*\\WindowsApps\\OpenAI.Codex_*' } | Stop-Process -Force";
+      await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true });
+    } else if (process.platform === "darwin") {
+      await execFileAsync("osascript", ["-e", 'tell application "Codex" to quit']).catch(() => execFileAsync("pkill", ["-x", "Codex"]));
+    } else {
+      await execFileAsync("pkill", ["-x", "codex-desktop"]);
+    }
+    // Give the OS process list a short time to release Codex's config and
+    // singleton resources before re-opening it.
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    const result = await openNativeCodex();
+    if (!result.ok) throw new Error(result.detail);
+    console.log("[devil-codex stock bridge] restarted running stock Codex");
+  } catch (error) {
+    console.warn("[devil-codex stock bridge] stock Codex restart failed:", error instanceof Error ? error.message : error);
+  }
 }
 
 function createWindow(): void {
@@ -2101,7 +2140,6 @@ async function startCodexProxy(): Promise<void> {
     const port = await codexProxy.start();
     desktopOwnsProxy = true;
     await registerDevilProvider(port, codexProxy.secretToken());
-    await syncStockCodexCatalogOnly();
   } catch (error) {
     if (/EADDRINUSE/i.test(error instanceof Error ? error.message : String(error))) {
       console.log("[devil-codex proxy] background stock bridge is already running");
@@ -2153,10 +2191,18 @@ async function deactivateStockCodexBridge(): Promise<void> {
   await unregisterDevilStockBridge();
   await unregisterDevilNativeCatalog();
   await disableStockProxyAutostart().catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
+  if (stockProxyServiceMode) return;
   if (process.platform === "win32") {
     const command = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--devil-stock-proxy*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
     await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true })
       .catch((error) => console.warn("[devil-codex stock bridge] stop failed:", error instanceof Error ? error.message : error));
+  } else {
+    await execFileAsync("pkill", ["-f", "--", "--devil-stock-proxy"])
+      .catch((error) => {
+        // pgrep/pkill uses exit code 1 when there is simply no background
+        // proxy, which is the expected state for most toggle operations.
+        if (!/exit code 1|code: 1/i.test(error instanceof Error ? error.message : String(error))) console.warn("[devil-codex stock bridge] stop failed:", error instanceof Error ? error.message : error);
+      });
   }
 }
 
@@ -2194,15 +2240,14 @@ async function startStockProxyService(): Promise<void> {
 
 if (stockProxyServiceMode) app.whenReady().then(startStockProxyService);
 else if (hasSingleInstanceLock) app.whenReady().then(async () => {
-  // The desktop app preserves its Codex-direct path. The stock bridge belongs
-  // to the headless service that starts after this desktop instance exits.
-  await unregisterDevilStockBridge();
-  await activateDevilNativeCatalog().catch((error) => console.warn("[devil-codex native catalog] setup failed:", error instanceof Error ? error.message : error));
+  // A prior desktop exit leaves a headless owner behind for stock Codex. Take
+  // ownership back now so a Bridge toggle is immediately actionable without
+  // asking the user to fully terminate Devil Codex first.
+  await deactivateStockCodexBridge();
   const settings = await settingsStore.load().catch(() => null);
-  if (settings?.stockBridgeEnabled === false) {
-    void disableStockProxyAutostart()
-      .catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
-  } else {
+  await startCodexProxy();
+  if (settings?.stockBridgeEnabled !== false) {
+    await syncStockCodexBridge();
     void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
       .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
   }
@@ -2210,7 +2255,6 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // Provider/MCP registration can touch config, sockets, and named pipes. Keep
   // it off the critical startup path so a slow helper never blocks the window
   // or the primary Codex app-server connection.
-  void startCodexProxy().catch((error) => console.error("[devil-codex startup]", error instanceof Error ? error.message : error));
   void startRemoteFromSettings().catch((error) => console.error("[devil-codex remote startup]", error instanceof Error ? error.message : error));
   void (async () => {
     const pending = await providerReconciler.reconcilePending();
@@ -2341,16 +2385,20 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
     if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
     if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+    const stockBridgeModelsChanged = previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000");
     if (previous.stockBridgeEnabled !== next.stockBridgeEnabled) {
       if (next.stockBridgeEnabled) {
-        await syncStockCodexCatalogOnly();
+        await syncStockCodexBridge();
         void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
           .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
       } else {
         await deactivateStockCodexBridge();
       }
     }
-    if (next.stockBridgeEnabled && previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000")) await syncStockCodexCatalogOnly();
+    if (next.stockBridgeEnabled && stockBridgeModelsChanged) await syncStockCodexBridge();
+    if (previous.stockBridgeEnabled !== next.stockBridgeEnabled || (next.stockBridgeEnabled && stockBridgeModelsChanged)) {
+      await restartStockCodexIfRunning();
+    }
     if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
       if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
       else await stopRemoteControl();
