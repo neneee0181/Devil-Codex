@@ -1,6 +1,6 @@
 {
   "name": "devil-codex",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "High-fidelity multi-provider Codex desktop client",
   "main": "dist-electron/main.cjs",

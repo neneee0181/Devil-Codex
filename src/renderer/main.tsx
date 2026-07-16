@@ -148,6 +148,10 @@ function claudeRuntimeSkillPrompt(skillNames: string[], skillOptions: CodexSkill
   }
   return lines.length ? `[Devil Claude Code runtime tool instructions]\n${lines.join("\n")}\n\n` : "";
 }
+
+function requestsDevilEmbeddedBrowser(text: string): boolean {
+  return /(?:devil|데빌)\s*(?:codex)?\s*(?:의|내|안의)?\s*(?:내장|우측)?\s*(?:브라우저|browser)|(?:내장|우측)\s*(?:브라우저|browser)/i.test(text);
+}
 type ThreadScrollPosition = { top: number; atBottom: boolean; updatedAt: number };
 
 const defaultStatus: RuntimeStatus = {
@@ -1076,6 +1080,7 @@ function App(): React.JSX.Element {
   const codexSettings = useCodexSettings();
   const englishOutput = Boolean(codexSettings.settings?.englishOutput);
   const bridgeChatLocked = codexSettings.settings?.stockBridgeEnabled === true;
+  const devilBrowserOwnsRouting = codexSettings.settings?.stockBridgeEnabled === false && codexSettings.settings?.devilMcpEnabled === true;
   const model = providers.settings?.model ?? "gpt-5.5";
   const accountId = providers.settings?.accountId;
   const [claudeModel, setClaudeModelState] = useState(() => storedClaudeModel());
@@ -1657,7 +1662,7 @@ function App(): React.JSX.Element {
 
   const composerSkillOptions = composerRuntime === "claude-code"
     ? [...CLAUDE_RUNTIME_SKILLS, ...availableClaudeSkills.filter((skill) => !CLAUDE_RUNTIME_SKILLS.some((builtIn) => builtIn.name === skill.name))]
-    : availableSkills;
+    : devilBrowserOwnsRouting ? availableSkills.filter((skill) => skill.name !== "browser:control-in-app-browser") : availableSkills;
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
   function scheduleThreadScrollPersist(): void {
     if (scrollPersistFrame.current != null) return;
@@ -3366,6 +3371,8 @@ function App(): React.JSX.Element {
       .filter((name) => name.startsWith("mcp:"))
       .map((name) => name.slice("mcp:".length))
       .filter(Boolean);
+    const devilBrowserRequested = composerRuntime === "codex" && devilBrowserOwnsRouting && requestsDevilEmbeddedBrowser(input.prompt);
+    if (devilBrowserRequested && availableMcpServers.some((server) => server.name === "devil_browser") && !selectedMcpServers.includes("devil_browser")) selectedMcpServers.push("devil_browser");
     // Plugin-cache skills are unknown to the app-server registry, so send them
     // as prompt instructions instead of native skill input items.
     const codexPluginSkills = composerRuntime === "codex"
@@ -3386,6 +3393,9 @@ function App(): React.JSX.Element {
     const mcpPrefix = selectedMcpServers.length
       ? `[연결된 플러그인/MCP 언급]\n이번 요청에서는 사용자가 ${selectedMcpServers.map((name) => `/${name}`).join(", ")} 플러그인을 명시했습니다. 관련 정보 조회나 작업이 필요하면 해당 MCP 서버의 사용 가능한 도구를 우선 사용하세요.\n\n`
       : "";
+    const devilBrowserPrefix = devilBrowserRequested
+      ? "[Devil 내장 브라우저 라우팅]\n사용자는 Devil Codex의 내장/우측 브라우저를 명시했습니다. 순정 `browser:control-in-app-browser`, `iab`, 별도 Chrome을 사용하지 말고 반드시 `devil_browser` MCP의 browser_navigate/browser_read 등 도구로 작업하세요.\n\n"
+      : "";
     const promptText = input.prompt.trim() || (imageAttachments.length ? "첨부 이미지를 확인해줘." : "");
     const modePrefix = `${input.planMode ? "[플랜 모드]\n" : ""}${input.acceptEdits ? "[편집 자동승인 모드]\n" : ""}${input.goalMode ? "[목표 모드]\n" : ""}`;
     const visiblePrompt = `${modePrefix}${promptText}`;
@@ -3397,7 +3407,7 @@ function App(): React.JSX.Element {
       ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
       : "";
     const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(input.skills.filter((name) => !name.startsWith("mcp:")), composerSkillOptions) : "";
-    const text = `${runtimeSkillPrefix}${codexPluginSkillPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
+    const text = `${runtimeSkillPrefix}${codexPluginSkillPrefix}${devilBrowserPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${modePrefix}${promptText}`;
     const displayText = `${input.skills.map((skill) => skill.startsWith("mcp:") ? `/${skill.slice("mcp:".length)}` : `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
     const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;

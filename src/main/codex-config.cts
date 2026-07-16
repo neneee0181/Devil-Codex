@@ -125,6 +125,8 @@ export async function unregisterDevilProvider(): Promise<void> {
 // Electron-as-node; it forwards tool calls to the local BrowserControlServer.
 const MCP_BEGIN = "# >>> devil-codex browser mcp (managed) >>>";
 const MCP_END = "# <<< devil-codex browser mcp (managed) <<<";
+const BROWSER_PLUGIN_HEADER = 'plugins."browser@openai-bundled"';
+const BROWSER_PLUGIN_STATE_PATH = join(CODEX_HOME, "devil-browser-plugin-state.json");
 
 function stripManagedMcpTables(source: string, begin: string, end: string, names: string[]): string {
   let next = source;
@@ -286,6 +288,47 @@ export async function devilBrowserMcpRegistration(): Promise<{ browser: boolean;
     browser: /^\[mcp_servers\.devil_browser\]$/m.test(source),
     computer: /^\[mcp_servers\.devil_computer\]$/m.test(source),
   };
+}
+
+function tableBlock(source: string, header: string): string | null {
+  const marker = `[${header}]`;
+  const start = source.indexOf(marker);
+  if (start < 0) return null;
+  const remaining = source.slice(start + marker.length);
+  const nextTable = remaining.search(/^\s*\[/m);
+  return source.slice(start, nextTable < 0 ? source.length : start + marker.length + nextTable).trimEnd();
+}
+
+async function browserPluginState(): Promise<{ table: string | null } | null> {
+  try {
+    const parsed = JSON.parse(await readFile(BROWSER_PLUGIN_STATE_PATH, "utf8")) as { table?: unknown };
+    return { table: typeof parsed.table === "string" ? parsed.table : null };
+  } catch { return null; }
+}
+
+// Codex's bundled Browser skill is hard-wired to its own `iab` runtime and
+// explicitly rejects external browser MCPs. Devil's embedded browser uses a
+// different, local MCP transport, so hide only this conflicting plugin while
+// Devil owns browser control. The original table is restored exactly on exit,
+// Bridge mode, or when the Devil browser MCP is disabled.
+export async function disableStockBrowserPluginForDevil(): Promise<void> {
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  if (!await browserPluginState()) {
+    await writeFile(BROWSER_PLUGIN_STATE_PATH, JSON.stringify({ table: tableBlock(source, BROWSER_PLUGIN_HEADER) }), { mode: 0o600 });
+  }
+  const cleaned = stripTable(source, BROWSER_PLUGIN_HEADER).trimEnd();
+  const override = `[${BROWSER_PLUGIN_HEADER}]\nenabled = false\n`;
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(`${cleaned ? `${cleaned}\n\n` : ""}${override}`, source), source);
+}
+
+export async function restoreStockBrowserPluginForDevil(): Promise<void> {
+  const saved = await browserPluginState();
+  if (!saved) return;
+  const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
+  const cleaned = stripTable(source, BROWSER_PLUGIN_HEADER).trimEnd();
+  const next = saved.table ? `${cleaned ? `${cleaned}\n\n` : ""}${saved.table}\n` : `${cleaned}\n`;
+  await writeConfigIfChanged(preserveDesktopAppearanceTheme(next, source), source);
+  await rm(BROWSER_PLUGIN_STATE_PATH, { force: true });
 }
 
 // Devil subagent MCP — lets a running model delegate a bounded task to one of

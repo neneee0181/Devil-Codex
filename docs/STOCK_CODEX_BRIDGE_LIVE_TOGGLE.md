@@ -69,6 +69,18 @@ model_catalog_json = "/.../devil-stock-catalog.json"
 | Devil Codex 종료 + Bridge ON | 관리 블록을 유지하고 headless proxy로 소유권 handoff | 순정 Codex 단독 실행도 Bridge 유지 |
 | Devil Codex 시작 + Bridge OFF | 관리 블록 제거, headless proxy 정지 | 순정 Codex 기본 상태 |
 
+## 브라우저 스킬 라우팅
+
+Devil Codex의 내장 브라우저는 `devil_browser` MCP로 제어한다. 순정 Codex의 `browser:control-in-app-browser` 스킬은 순정 `iab` 런타임 전용이며 외부 브라우저 MCP를 사용하지 않으므로, 두 경로를 동시에 노출하면 Devil 앱에서 `iab` 연결 실패가 발생한다.
+
+| 상태 | Browser 플러그인 | 브라우저 제어 경로 |
+| --- | --- | --- |
+| Bridge OFF + Devil Browser MCP ON | `browser@openai-bundled`만 일시 비활성화 | `devil_browser` → Devil 우측 내장 브라우저 |
+| Bridge ON | 원래 활성 상태로 복구 | 순정 Codex `browser:control-in-app-browser` → `iab` |
+| Devil Browser MCP OFF 또는 Devil 종료 | 원래 활성 상태로 복구 | 순정 Browser 플러그인 기본 동작 |
+
+다른 순정 MCP와 플러그인은 변경하지 않는다. Devil은 플러그인을 비활성화하기 전의 Browser 플러그인 table을 별도 상태 파일에 보관하고, 종료·Bridge ON·MCP OFF 때 원래 table을 그대로 복구한다. Browser MCP 상태는 config/socket만 확인하지 않고 Codex App Server가 `browser_navigate` 및 `computer_screenshot` 도구를 실제 로드했는지까지 검사한다.
+
 ## 순정 Codex 재시작 정책
 
 Bridge 설정은 순정 Codex가 시작할 때 읽는다. 따라서 설정 파일만 갱신해도 이미 열린 앱의 모델 picker는 즉시 바뀌지 않는다.

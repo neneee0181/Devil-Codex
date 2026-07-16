@@ -28,7 +28,7 @@ import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-p
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
-import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilNativeCatalog, unregisterDevilNativeCatalog, registerDevilBrowserMcp, unregisterDevilBrowserMcp, devilBrowserMcpRegistration, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
+import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilNativeCatalog, unregisterDevilNativeCatalog, registerDevilBrowserMcp, unregisterDevilBrowserMcp, devilBrowserMcpRegistration, disableStockBrowserPluginForDevil, restoreStockBrowserPluginForDevil, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
@@ -2056,10 +2056,12 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
     browserControl.stop();
     desktopControl.stop();
     await unregisterDevilBrowserMcp();
+    await restoreStockBrowserPluginForDevil();
     restartAppServer();
     console.log("[devil-codex mcp] disabled");
     return;
   }
+  await disableStockBrowserPluginForDevil();
   const sock = await browserControl.start();
   const computerSock = await desktopControl.start();
   const { script, computerScript } = mcpScripts();
@@ -2079,10 +2081,22 @@ async function devilMcpStatus(): Promise<DevilMcpStatus> {
   }
   const browserServer = browserControl.isRunning();
   const computerServer = desktopControl.isRunning();
-  if (settings.stockBridgeEnabled) return { state: "bridge", detail: "Bridge가 켜져 있어 Devil 전용 MCP가 의도적으로 비활성화되었습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+  if (settings.stockBridgeEnabled) return { state: "bridge", detail: "Bridge가 켜져 있어 Devil 전용 MCP는 비활성화되고, 순정 Codex의 Browser(iab) 플러그인이 복구됩니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
   if (!settings.devilMcpEnabled) return { state: "disabled", detail: "브라우저/컴퓨터 제어 MCP가 꺼져 있습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
   if (browserServer && computerServer && registration.browser && registration.computer) {
-    return { state: "ready", detail: "브라우저·컴퓨터 제어 서버와 MCP 등록이 모두 확인되었습니다. 다음 메시지부터 모델이 도구를 사용할 수 있습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+    try {
+      const servers = await server().listMcpServers();
+      const browser = servers.find((item) => item.name === "devil_browser");
+      const computer = servers.find((item) => item.name === "devil_computer");
+      const browserLoaded = Boolean(browser?.tools.some((tool) => tool.name === "browser_navigate"));
+      const computerLoaded = Boolean(computer?.tools.some((tool) => tool.name === "computer_screenshot"));
+      if (browserLoaded && computerLoaded) {
+        return { state: "ready", detail: "Codex App Server가 devil_browser와 devil_computer 도구까지 실제로 로드했습니다. 다음 메시지부터 모델이 사용할 수 있습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+      }
+      return { state: "error", detail: "제어 서버와 config 등록은 됐지만 Codex App Server가 Devil MCP 도구를 로드하지 않았습니다. 토글을 껐다 켜 다시 적용하세요.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+    } catch (error) {
+      return { state: "error", detail: `Codex App Server의 MCP 로드 상태를 확인하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+    }
   }
   return { state: "error", detail: "MCP가 켜져 있지만 제어 서버 또는 MCP 등록이 완성되지 않았습니다. 토글을 껐다 켜 다시 적용하세요.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
 }
@@ -2099,6 +2113,7 @@ async function disableDevilExclusiveMcps(): Promise<void> {
   // These all rewrite the same config.toml, so they must be serial. Parallel
   // reads/writes could restore a block removed by a neighboring operation.
   await unregisterDevilBrowserMcp();
+  await restoreStockBrowserPluginForDevil();
   await unregisterDevilAskMcp();
   await unregisterDevilSubagentMcp();
   restartAppServer();
@@ -3284,6 +3299,7 @@ app.on("before-quit", (event) => {
   workspaceWatcher.disposeAll();
   void stopRemoteControl({ saveSettings: false });
   void unregisterDevilBrowserMcp();
+  void restoreStockBrowserPluginForDevil();
   void unregisterDevilAskMcp();
   void unregisterDevilSubagentMcp();
   // Keep the managed provider block in ~/.codex/config.toml. Rollouts created

@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.3.5 MCP readiness: Settings > 구성 > 도구 now verifies browser/computer control server plus both MCP config entries, showing ready/disabled/bridge/error with refresh. Toggle still restarts every per-thread app server; no full app restart required. Current install: Bridge OFF, enabled, both registrations and named pipes present.
+- v0.3.6 browser routing: Bridge OFF + Devil MCP ON temporarily disables only stock `browser@openai-bundled`, preventing its iab-only skill from overriding `devil_browser`; original plugin state restores on Bridge ON, MCP OFF, or exit. Other plugins/MCPs remain. Status also verifies App Server loaded Devil tools.
 
 ## Verification
 - `npm run build`, `npm run test:main`, and `git diff --check` pass.
 
 ## Resume
-- Manual installed-app test: Tools status must show 사용 가능, then request an in-app-browser action in a new message; model should call `devil_browser`, not launch Chrome.
+- Manual: Bridge OFF + MCP ON → request Devil/우측 browser, verify `devil_browser`; Bridge ON → stock Codex Browser skill/iab remains available.
