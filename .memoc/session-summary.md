@@ -13,7 +13,7 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.2.21 Bridge exclusive mode: ON removes all Devil MCP blocks (browser, computer, ask, subagent) and blocks Devil chat UI + create/send/queue/steer IPC. OFF immediately restores saved MCP opt-ins and chat. Bridge design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
+- v0.2.22 Bridge entry UX: ON disables new-chat entry points (sidebar, project rows, Windows menu, shortcuts, command palette) while preserving existing tabs/settings. Server chat/MCP block remains. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
 
 ## Verification
 - `npm run build` and `git diff --check` pass; run `npm run test:main` before release.

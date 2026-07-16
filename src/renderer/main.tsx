@@ -1557,7 +1557,7 @@ function App(): React.JSX.Element {
     if (command === "open-project") void chooseWorkspace();
     if (command === "terminal") { closePopovers(); if (terminalOpen && bottomActive === "terminal") setTerminalOpen(false); else openBottomTool("terminal"); }
     if (command === "environment") { closePopovers(); setEnvironmentOpen((open) => !open); }
-  }), [workspace, runtime.state, model, busy, bottomActive, terminalOpen]);
+  }), [workspace, runtime.state, model, busy, bottomActive, terminalOpen, bridgeChatLocked]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -2876,6 +2876,10 @@ function App(): React.JSX.Element {
   }
 
   function newThread(scopedToProject = false): void {
+    if (bridgeChatLocked) {
+      setExternalError("순정 Codex Bridge 사용 중에는 새 Devil Codex 채팅을 시작할 수 없습니다. Bridge를 끄면 즉시 사용할 수 있습니다.");
+      return;
+    }
     closePopovers();
     if (scopedToProject) { navigate({ view: "thread", thread: null, items: [], projectDraft: true, environmentOpen: false }); return; }
     // Top-level new chat is a standalone (general) chat, not a project thread.
@@ -2886,6 +2890,10 @@ function App(): React.JSX.Element {
   }
 
   async function newThreadInProject(cwd: string): Promise<void> {
+    if (bridgeChatLocked) {
+      setExternalError("순정 Codex Bridge 사용 중에는 새 Devil Codex 채팅을 시작할 수 없습니다. Bridge를 끄면 즉시 사용할 수 있습니다.");
+      return;
+    }
     navigate({ view: "thread", workspace: cwd, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
     if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd)]);
@@ -4028,6 +4036,10 @@ function App(): React.JSX.Element {
 
   // Start a fresh side conversation in the active runtime, removed when closed.
   async function newSideChat(dock: "right" | "bottom" = "right"): Promise<void> {
+    if (bridgeChatLocked) {
+      setExternalError("순정 Codex Bridge 사용 중에는 새 사이드 채팅을 시작할 수 없습니다. Bridge를 끄면 즉시 사용할 수 있습니다.");
+      return;
+    }
     if (sideChatCreatingDock) return;
     setSideChatCreatingDock(dock);
     try {
@@ -4115,6 +4127,7 @@ function App(): React.JSX.Element {
           onBack={goBack}
           onForward={goForward}
           onMenu={(menu) => setShellMenuOpen((current) => current === menu ? null : menu)}
+          chatCreationDisabled={bridgeChatLocked}
           onNewChat={() => void newThread()}
           onQuickChat={() => void newThread()}
           onOpenFolder={() => void chooseWorkspace()}
@@ -4128,7 +4141,7 @@ function App(): React.JSX.Element {
       <aside className="sidebar">
         <div className="window-nav" aria-label="탐색"><button onClick={() => { closePopovers(); setSidebarCollapsed(true); }} aria-label="사이드바 닫기"><PanelLeftClose size={17} /></button><span className="sidebar-spacer" /><button onClick={goBack} disabled={!navigationState.canGoBack} aria-label="뒤로"><ArrowLeft size={18} /></button><button onClick={goForward} disabled={!navigationState.canGoForward} aria-label="앞으로"><ArrowRight size={18} /></button></div>
         <nav className="primary-nav">
-          <button onClick={() => void newThread()} disabled={busy && !thread?.id}><MessageSquarePlus />새 채팅</button>
+          <button onClick={() => void newThread()} disabled={bridgeChatLocked || (busy && !thread?.id)} title={bridgeChatLocked ? "순정 Codex Bridge 사용 중에는 새 채팅을 시작할 수 없습니다" : undefined}><MessageSquarePlus />새 채팅</button>
           <button className={commandPaletteOpen ? "selected" : ""} onClick={() => { closePopovers(); setCommandPaletteOpen(true); }}><Search />검색</button>
           <button className={view === "plugins" ? "selected" : ""} onClick={() => openView("plugins")}><Blocks />플러그인</button>
           <button className={view === "automations" ? "selected" : ""} onClick={() => openView("automations")}><Bot />자동화</button>
@@ -4186,6 +4199,7 @@ function App(): React.JSX.Element {
                   pinned={pinnedProjects.includes(group.cwd)}
                   activeThreadId={thread?.id ?? null}
                   runningThreadIds={runningThreadIds}
+                  chatCreationDisabled={bridgeChatLocked}
                   onToggle={() => toggleProjectExpand(group.cwd)}
                   onMenu={() => toggleProjectMenu(group.cwd)}
                   onNewThread={() => void newThreadInProject(group.cwd)}
@@ -4324,7 +4338,7 @@ function App(): React.JSX.Element {
       {renameThreadTarget && <RenameThreadDialog value={renameThreadDraft} busy={renameThreadBusy} onValue={setRenameThreadDraft} onSubmit={() => void submitRenameThread()} onClose={() => { if (!renameThreadBusy) setRenameThreadTarget(null); }} />}
       {textPrompt && <TextPromptDialog state={textPrompt} onClose={() => setTextPrompt(null)} />}
       {approvalQueue[0] && <ApprovalRequestDialog prompt={approvalQueue[0]} responding={approvalResponding} onDecision={(decision) => void respondToApproval(decision)} />}
-      {commandPaletteOpen && <CommandPalette recentThreads={commandPaletteThreads} activeThreadId={thread?.id ?? null} hasActiveThread={Boolean(activeSummary)} onClose={() => setCommandPaletteOpen(false)} onOpenThread={(summary) => { setCommandPaletteOpen(false); void resumeThread(summary); }} onRun={runPaletteCommand} />}
+      {commandPaletteOpen && <CommandPalette recentThreads={commandPaletteThreads} activeThreadId={thread?.id ?? null} hasActiveThread={Boolean(activeSummary)} chatCreationDisabled={bridgeChatLocked} onClose={() => setCommandPaletteOpen(false)} onOpenThread={(summary) => { setCommandPaletteOpen(false); void resumeThread(summary); }} onRun={runPaletteCommand} />}
       <AskUserModal />
       {petVisible && <button type="button" className="desktop-pet" onClick={togglePet} title="펫 숨기기"><Bot size={18} /><span>Devil</span><small>{activeThreadBusy ? "작업 중" : "대기 중"}</small></button>}
     </main>
@@ -4364,6 +4378,7 @@ function WindowsTitlebar({
   onBack,
   onForward,
   onMenu,
+  chatCreationDisabled,
   onNewChat,
   onQuickChat,
   onOpenFolder,
@@ -4381,6 +4396,7 @@ function WindowsTitlebar({
   onBack: () => void;
   onForward: () => void;
   onMenu: (menu: ShellMenuKey) => void;
+  chatCreationDisabled: boolean;
   onNewChat: () => void;
   onQuickChat: () => void;
   onOpenFolder: () => void;
@@ -4411,9 +4427,9 @@ function WindowsTitlebar({
               <motion.div className="windows-app-menu" initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -2 }} transition={{ duration: .11 }}>
                 {menuOpen === "file" && (
                   <>
-                    <button type="button" onClick={onNewChat}><span>New Window</span><kbd>Ctrl+Shift+N</kbd></button>
-                    <button type="button" onClick={onNewChat}><span>New Chat</span><kbd>Ctrl+N</kbd></button>
-                    <button type="button" onClick={onQuickChat}><span>Quick Chat</span><kbd>Alt+Ctrl+N</kbd></button>
+                    <button type="button" onClick={onNewChat} disabled={chatCreationDisabled}><span>New Window</span><kbd>Ctrl+Shift+N</kbd></button>
+                    <button type="button" onClick={onNewChat} disabled={chatCreationDisabled}><span>New Chat</span><kbd>Ctrl+N</kbd></button>
+                    <button type="button" onClick={onQuickChat} disabled={chatCreationDisabled}><span>Quick Chat</span><kbd>Alt+Ctrl+N</kbd></button>
                     <button type="button" onClick={onOpenFolder}><span>Open Folder...</span><kbd>Ctrl+O</kbd></button>
                     <button type="button" onClick={() => onWindowAction("close")}><span>Close</span><kbd>Ctrl+W</kbd></button>
                     <div className="windows-app-menu-divider" />
@@ -4657,7 +4673,7 @@ function ThreadContextMenu({ state, pinned, onToggleMarker, onRename, onHide }: 
   );
 }
 
-function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runningThreadIds, pinnedThreadIds, onToggle, onMenu, onNewThread, onOpen, onPrefetch, onThreadContextMenu, onPin, onRename, onFinder, onRemove }: {
+function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runningThreadIds, pinnedThreadIds, chatCreationDisabled, onToggle, onMenu, onNewThread, onOpen, onPrefetch, onThreadContextMenu, onPin, onRename, onFinder, onRemove }: {
   group: ProjectGroupData;
   expanded: boolean;
   menuOpen: boolean;
@@ -4665,6 +4681,7 @@ function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runni
   activeThreadId: string | null;
   runningThreadIds: Set<string>;
   pinnedThreadIds: string[];
+  chatCreationDisabled: boolean;
   onToggle: () => void;
   onMenu: () => void;
   onNewThread: () => void;
@@ -4701,7 +4718,7 @@ function ProjectGroup({ group, expanded, menuOpen, pinned, activeThreadId, runni
       <div className={menuOpen ? "project-row menu-open" : "project-row"}>
         <button className="project-toggle" onClick={onToggle} title={group.cwd}><ProjectNotebookIcon open={expanded} /><strong>{group.name}</strong><ChevronRight className="project-caret" size={14} style={{ transform: expanded ? "rotate(90deg)" : "none" }} /></button>
         <button ref={anchor} className="project-action" onClick={onMenu} aria-label="프로젝트 메뉴"><MoreHorizontal size={17} /></button>
-        <button className="project-action" onClick={onNewThread} aria-label={`${group.name}에서 새 채팅`} title={`${group.name}에서 새 채팅`}><SquarePen size={16} /></button>
+        <button className="project-action" onClick={onNewThread} disabled={chatCreationDisabled} aria-label={`${group.name}에서 새 채팅`} title={chatCreationDisabled ? "순정 Codex Bridge 사용 중에는 새 채팅을 시작할 수 없습니다" : `${group.name}에서 새 채팅`}><SquarePen size={16} /></button>
       </div>
       <AnimatePresence initial={false}>
         {expanded && (

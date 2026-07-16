@@ -74,6 +74,7 @@ export function CommandPalette({
   recentThreads,
   activeThreadId,
   hasActiveThread,
+  chatCreationDisabled = false,
   onClose,
   onOpenThread,
   onRun,
@@ -81,6 +82,7 @@ export function CommandPalette({
   recentThreads: ThreadSummary[];
   activeThreadId: string | null;
   hasActiveThread: boolean;
+  chatCreationDisabled?: boolean;
   onClose: () => void;
   onOpenThread: (thread: ThreadSummary) => void;
   onRun: (id: CommandId) => void;
@@ -116,7 +118,8 @@ export function CommandPalette({
     .filter((command) => commandMatches(command, normalized))
     .filter((command) => command.id !== "toggle-pin" || hasActiveThread)
     .filter((command) => command.id !== "side-chat" || hasActiveThread)
-    .filter((command) => command.id !== "thread-find" || hasActiveThread), [hasActiveThread, normalized]);
+    .filter((command) => command.id !== "thread-find" || hasActiveThread)
+    .map((command) => ({ ...command, disabled: command.disabled || (chatCreationDisabled && (command.id === "new-thread" || command.id === "side-chat")) })), [chatCreationDisabled, hasActiveThread, normalized]);
 
   const rows = useMemo<Row[]>(() => [
     ...visibleThreads.map((thread, index) => ({ kind: "thread" as const, id: `thread:${thread.id}`, thread, shortcut: index < 9 ? shortcut(`⌘${index + 1}`) : undefined })),
@@ -169,7 +172,7 @@ export function CommandPalette({
           {visibleCommands.filter((command) => command.section === section).map((command) => {
             const Icon = command.icon;
             const index = rowIndex++;
-            return <button key={`${section}:${command.label}:${command.id}`} className={`palette-row command${index === active ? " active" : ""}`} type="button" onMouseEnter={() => setActive(index)} onClick={() => runRow({ kind: "command", id: command.id, command })}>
+            return <button key={`${section}:${command.label}:${command.id}`} className={`palette-row command${index === active ? " active" : ""}`} type="button" disabled={command.disabled} onMouseEnter={() => setActive(index)} onClick={() => runRow({ kind: "command", id: command.id, command })}>
               <Icon size={18} />
               <span className="palette-row-title">{command.label}</span>
               {command.shortcut && <kbd>{command.shortcut}</kbd>}
