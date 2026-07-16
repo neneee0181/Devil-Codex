@@ -13,7 +13,7 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.3.0 Bridge release: ON disables new-chat entry points (sidebar, project rows, Windows menu, shortcuts, command palette) while preserving existing tabs/settings. Server chat/MCP block remains. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
+- v0.3.1 Bridge restart fix: Windows stock-Codex launcher uses only the `OpenAI.Codex_*` AppsFolder identity. It never falls back to `Codex`/`cmd`, which could start Devil's bundled CLI and show a trust prompt. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
 
 ## Verification
 - `npm run build` and `git diff --check` pass; run `npm run test:main` before release.

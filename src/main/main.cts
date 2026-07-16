@@ -1355,8 +1355,11 @@ async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
   const attempts: Array<[string, string[]]> = process.platform === "darwin"
     ? [["open", ["-a", "Codex"]], ["open", ["/Applications/Codex.app"]]]
     : process.platform === "win32"
-      ? [["powershell.exe", ["-NoProfile", "-Command", "$app = Get-StartApps | Where-Object { $_.Name -eq 'Codex' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\\' + $app.AppID); exit 0 }; exit 1"]], ["Codex", []], ["cmd", ["/c", "start", "", "Codex"]]]
-      : [["codex", []], ["xdg-open", ["codex:"]]];
+      // Do not fall back to `Codex`/`codex`: on Windows that can resolve the
+      // CLI bundled with Devil Codex and open a terminal trust prompt instead
+      // of the stock desktop application.
+      ? [["powershell.exe", ["-NoProfile", "-Command", "$app = Get-StartApps | Where-Object { $_.Name -eq 'Codex' -and $_.AppID -like 'OpenAI.Codex_*' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\\' + $app.AppID); exit 0 }; exit 1"]]]
+      : [["xdg-open", ["codex:"]]];
   const errors: string[] = [];
   for (const [command, args] of attempts) {
     try {
