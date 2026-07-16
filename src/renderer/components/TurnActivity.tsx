@@ -45,31 +45,41 @@ function fileReadLabels(command: string): string[] {
   const skill = skillReadLabel(command);
   if (skill) return [skill];
   const matches = command.match(/(?:^|[\s"'])([./~\w@-][^\s"']*\.(?:ts|tsx|cts|css|md|json|toml|yaml|yml|js|jsx|sh|txt))(?=[\s"']|$)/g) ?? [];
-  const files = matches.map((value) => commandBasename(value.trim().replace(/^["']|["']$/g, ""))).filter((value) => !value.startsWith("-"));
-  return [...new Set(files)].map((file) => `Read ${file}`);
+  const files = matches.map((value) => value.trim().replace(/^["']|["']$/g, "")).filter((value) => !value.startsWith("-"));
+  return [...new Set(files)].map((file) => `파일 읽기: ${file}`);
 }
 
 function searchLabel(command: string): string {
-  const quoted = command.match(/\brg\b(?:\s+-[^\s]+)*\s+["']([^"']+)["']/)?.[1];
+  const quoted = command.match(/\brg\b[\s\S]*?["']([^"']+)["']/)?.[1];
   const bare = command.match(/\brg\b(?:\s+-[^\s]+)*\s+([^\s]+)/)?.[1];
   const query = quoted ?? bare ?? shellCommand(command);
-  return `Searched for ${query}`;
+  const afterQuery = quoted ? command.slice(command.indexOf(quoted) + quoted.length + 1).trim() : "";
+  const target = afterQuery.replace(/^["']|["']$/g, "").split(/\s+/).filter((value) => value && !value.startsWith("-")).slice(0, 3).join(" ");
+  return `코드 검색: ${query}${target ? ` · ${target}` : ""}`;
 }
 
-function CommandEntry({ entry }: { entry: ThreadActivityEntry }): React.JSX.Element {
+function commandEntryLabel(entry: ThreadActivityEntry, kind?: "read" | "search"): string {
+  if (kind === "search") return searchLabel(entry.title);
+  if (kind === "read") return fileReadLabels(entry.title).join(" · ") || "파일 읽기";
+  return shellCommand(entry.title);
+}
+
+function CommandEntry({ entry, kind }: { entry: ThreadActivityEntry; kind?: "read" | "search" }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const command = shellCommand(entry.title);
+  const label = commandEntryLabel(entry, kind);
   const status = commandStatusLabel(entry);
   return <div className="activity-command">
     <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
       <SquareTerminal size={16} />
-      <code title={command}>{command}</code>
+      <code title={command}>{label}</code>
       <small className={entry.status === "failed" ? "failed" : entry.status === "inProgress" ? "running" : "success"}>{status}</small>
       <ChevronRight className={open ? "open" : ""} size={15} />
     </button>
     {open && <div className="activity-command-output">
       <header>Command</header>
       <pre className="activity-command-full">{command}</pre>
+      {entry.detail && <><header>Working directory</header><pre>{entry.detail}</pre></>}
       <header>Output</header>
       <pre>{entry.output || "출력 없음"}</pre>
       <footer className={entry.status === "failed" ? "failed" : "success"}>{entry.status === "failed" ? "실패" : <><Check size={14} /> 성공</>}</footer>
@@ -79,9 +89,8 @@ function CommandEntry({ entry }: { entry: ThreadActivityEntry }): React.JSX.Elem
 
 function CommandGroup({ kind, entries }: { kind: "read" | "search"; entries: ThreadActivityEntry[] }): React.JSX.Element | null {
   const [open, setOpen] = useState(true);
-  const lines = entries.flatMap((entry) => kind === "read" ? fileReadLabels(entry.title) : [searchLabel(entry.title)]).filter(Boolean);
-  if (!lines.length) return null;
-  const title = kind === "read" ? `파일 ${lines.length}개 읽음` : `코드 검색 ${entries.length}개`;
+  const count = entries.reduce((total, entry) => total + (kind === "read" ? Math.max(1, fileReadLabels(entry.title).length) : 1), 0);
+  const title = kind === "read" ? `파일 ${count}개 읽음` : `코드 검색 ${entries.length}개`;
   const Icon = kind === "read" ? FileSearch : Search;
   return <div className="activity-command-group">
     <button type="button" onClick={() => setOpen((value) => !value)}>
@@ -89,7 +98,7 @@ function CommandGroup({ kind, entries }: { kind: "read" | "search"; entries: Thr
       <strong>{title}</strong>
       <ChevronRight className={open ? "open" : ""} size={15} />
     </button>
-    {open && <div className="activity-command-group-lines">{lines.map((line, index) => <span key={`${line}-${index}`}>{line}</span>)}</div>}
+    {open && <div className="activity-command-group-lines">{entries.map((entry) => <CommandEntry key={entry.id} entry={entry} kind={kind} />)}</div>}
   </div>;
 }
 
@@ -132,6 +141,8 @@ function McpEntry({ entry }: { entry: ThreadActivityEntry }): React.JSX.Element 
             return <button type="button" key={index} onClick={() => setViewer({ src, name })}><img src={src} alt={name} loading="lazy" /></button>;
           })}
         </div>}
+        {entry.input && <><header>입력</header><pre className="activity-mcp-output">{entry.input}</pre></>}
+        {entry.detail && <header>결과</header>}
         {showOutput && <pre className="activity-mcp-output">{entry.detail || (running ? "처리 중…" : "출력 없음")}</pre>}
       </motion.div>}
     </AnimatePresence>
@@ -163,7 +174,10 @@ function FileChangeEntry({ entry, onOpenFile }: { entry: ThreadActivityEntry; on
       <strong>{entry.title}</strong>
       <ChevronRight className={open ? "open" : ""} size={15} />
     </button>
-    {open && entry.files?.map((file) => <button type="button" key={file.path} onClick={() => onOpenFile(file.path)}>편집함 <span>{file.path}</span><i>+{file.additions}</i><b>-{file.deletions}</b></button>)}
+    {open && entry.files?.map((file) => <details className="activity-file-detail" key={file.path}>
+      <summary>편집함 <span>{file.path}</span><i>+{file.additions}</i><b>-{file.deletions}</b></summary>
+      <div><button type="button" onClick={() => onOpenFile(file.path)}>파일 열기</button><pre>{file.diff || "상세 diff를 제공하지 않았습니다."}</pre></div>
+    </details>)}
   </div>;
 }
 

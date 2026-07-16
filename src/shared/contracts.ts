@@ -52,6 +52,9 @@ export interface ThreadActivityEntry {
   kind: "message" | "reasoning" | "command" | "fileChange" | "mcp" | "webSearch" | "compaction" | "diagnostic" | "subagent";
   title: string;
   detail?: string;
+  // Human-reviewable tool input. Sensitive keys are redacted before this
+  // reaches the renderer or the persisted timeline cache.
+  input?: string;
   output?: string;
   status?: "inProgress" | "completed" | "failed" | "declined";
   files?: Array<{ path: string; additions: number; deletions: number; diff?: string }>;

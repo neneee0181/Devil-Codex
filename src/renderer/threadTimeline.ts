@@ -2,6 +2,24 @@ import type { AppServerEvent, ContextUsage, ProviderTokenUsage, ThreadActivityEn
 
 type RawItem = Record<string, unknown>;
 
+const SENSITIVE_ACTIVITY_KEY = /(?:api[_-]?key|authorization|token|secret|password|cookie|credential)/i;
+
+function safeActivityJson(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const redact = (current: unknown, depth = 0): unknown => {
+    if (depth > 6) return "[깊이 제한]";
+    if (Array.isArray(current)) return current.slice(0, 100).map((item) => redact(item, depth + 1));
+    if (!current || typeof current !== "object") return current;
+    return Object.fromEntries(Object.entries(current as RawItem).map(([key, item]) => [key, SENSITIVE_ACTIVITY_KEY.test(key) ? "[숨김]" : redact(item, depth + 1)]));
+  };
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(redact(value), null, 2);
+    return text.length > 20_000 ? `${text.slice(0, 20_000)}\n…(표시 제한)` : text;
+  } catch {
+    return String(value);
+  }
+}
+
 
 const completedTurns = new Set<string>();
 function diffCounts(diff: string): { additions: number; deletions: number } {
@@ -218,7 +236,8 @@ function entryFromItem(item: RawItem): ThreadActivityEntry | null {
     const delegateEntry = delegateSubagentEntry(item, id);
     if (delegateEntry) return delegateEntry;
     const { images, text } = mcpResultContent(item);
-    return { id, kind: "mcp", title: `${String(item.tool ?? "도구")} 실행`, detail: text || undefined, images: images.length ? images : undefined, status: String(item.status ?? "inProgress") as ThreadActivityEntry["status"] };
+    const input = safeActivityJson(item.arguments ?? item.input ?? item.toolInput ?? item.tool_input);
+    return { id, kind: "mcp", title: `${String(item.tool ?? "도구")} 실행`, ...(input ? { input } : {}), detail: text || undefined, images: images.length ? images : undefined, status: String(item.status ?? "inProgress") as ThreadActivityEntry["status"] };
   }
   if (type === "webSearch") return {
     id,
