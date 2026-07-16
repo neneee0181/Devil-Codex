@@ -2111,7 +2111,14 @@ function App(): React.JSX.Element {
       const key = cwdKey(workspace);
       const existing = map.get(key);
       const merged = new Map((existing?.threads ?? []).map((summary) => [summary.id, summary]));
-      for (const summary of threads) merged.set(summary.id, summary);
+      // `workspace` changes synchronously when the user opens a thread, but
+      // its fast-refresh `threads` list arrives asynchronously. During that
+      // gap it can still hold the previous project's rows. Only merge rows
+      // that explicitly belong to the active cwd; otherwise Devil-Codex rows
+      // briefly (and after a failed refresh, permanently) appeared in memoc.
+      for (const summary of threads) {
+        if (cwdKey(summary.cwd) === key) merged.set(summary.id, summary);
+      }
       map.set(key, { cwd: existing?.cwd ?? workspace, threads: [...merged.values()] });
     }
     for (const cwd of localProjectCwds) {

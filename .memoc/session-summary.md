@@ -13,7 +13,7 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.3.1 Bridge restart fix: Windows stock-Codex launcher uses only the `OpenAI.Codex_*` AppsFolder identity. It never falls back to `Codex`/`cmd`, which could start Devil's bundled CLI and show a trust prompt. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
+- v0.3.2 project sidebar fix: after opening another project's thread, only `threads` whose actual cwd matches the new workspace merge into that project. Prevents Devil-Codex rows appearing under memoc. The Windows Bridge launcher fix remains included.
 
 ## Verification
 - `npm run build` and `git diff --check` pass; run `npm run test:main` before release.
