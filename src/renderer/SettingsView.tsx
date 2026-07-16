@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Bell, Check, Copy, CreditCard, Globe2, QrCode, Search, TerminalSquare, Wifi } from "lucide-react";
+import { Bell, Check, ChevronDown, ChevronRight, Copy, CreditCard, Globe2, QrCode, Search, TerminalSquare, Wifi, X } from "lucide-react";
 import { useCodexSettings } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
@@ -136,22 +136,30 @@ function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, back
   </>;
 }
 
-type StockBridgeModelChoice = { id: string; provider: string; label: string };
+type StockBridgeModelChoice = { id: string; provider: string; account: string; label: string };
 
 function StockBridgeModelPicker({ providers, selected, onChange }: { providers: ProviderSettings["providers"]; selected: string[]; onChange: (models: string[]) => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const choices = useMemo(() => providers.filter((provider) => provider.id !== "codex").flatMap((provider) => {
+  const [query, setQuery] = useState("");
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set());
+  const externalProviders = useMemo(() => providers.filter((provider) => provider.id !== "codex"), [providers]);
+  const choices = useMemo(() => externalProviders.flatMap((provider) => {
     const accounts = provider.accounts.length ? provider.accounts : [undefined];
     return accounts.flatMap((account) => {
       const models = account?.models?.length ? account.models : provider.models;
       return models.map((model) => ({
         id: `${provider.id}${account?.id ? `@${encodeURIComponent(account.id)}` : ""}:${model.id}`,
-        provider: account ? `${provider.label} · ${account.label}` : provider.label,
+        provider: provider.label,
+        account: account?.email ?? account?.label ?? provider.label,
         label: model.label,
       }));
     });
-  }).filter((choice, index, all) => all.findIndex((candidate) => candidate.id === choice.id) === index), [providers]);
+  }).filter((choice, index, all) => all.findIndex((candidate) => candidate.id === choice.id) === index), [externalProviders]);
   const byId = useMemo(() => new Map(choices.map((choice) => [choice.id, choice])), [choices]);
+  const normalizedQuery = query.trim().toLowerCase();
+  const matches = (choice: StockBridgeModelChoice): boolean => !normalizedQuery || `${choice.label} ${choice.provider} ${choice.account}`.toLowerCase().includes(normalizedQuery);
+  const toggle = (id: string): void => onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
   const move = (id: string, direction: -1 | 1): void => {
     const index = selected.indexOf(id);
     const target = index + direction;
@@ -160,15 +168,37 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
     [next[index], next[target]] = [next[target], next[index]];
     onChange(next);
   };
-  return <div className="stock-model-picker">
-    <button type="button" className="stock-model-picker-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}>{selected.length ? `${selected.length}개 모델 선택됨` : "모델 추가"}<span>⌄</span></button>
-    {open && <div className="stock-model-picker-menu">{choices.length ? choices.map((choice) => {
-      const added = selected.includes(choice.id);
-      return <button type="button" key={choice.id} className={added ? "selected" : ""} onClick={() => onChange(added ? selected.filter((id) => id !== choice.id) : [...selected, choice.id])}><span><strong>{choice.label}</strong><small>{choice.provider}</small></span><b>{added ? "추가됨" : "추가"}</b></button>;
-    }) : <p>연결된 외부 provider 모델이 없습니다.</p>}</div>}
+  const toggleProvider = (id: string): void => setExpandedProviders((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggleAccount = (id: string): void => setExpandedAccounts((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  return <div className="bridge-model-picker">
+    <button type="button" className="bridge-model-picker-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span>{selected.length ? `${selected.length}개 모델을 Bridge에 표시` : "Bridge 모델 추가"}</span><ChevronDown size={15} /></button>
+    {open && <div className="bridge-model-picker-menu">
+      <label className="bridge-model-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="provider 또는 모델 검색" autoFocus /></label>
+      {externalProviders.map((provider) => {
+        const providerChoices = choices.filter((choice) => choice.provider === provider.label && matches(choice));
+        if (normalizedQuery && !providerChoices.length) return null;
+        const providerOpen = expandedProviders.has(provider.id) || Boolean(normalizedQuery);
+        const accounts = provider.accounts.length ? provider.accounts : [undefined];
+        return <div className="bridge-model-provider" key={provider.id}>
+          <button type="button" className="bridge-model-provider-head" onClick={() => toggleProvider(provider.id)}>{providerOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<span><strong>{provider.label}</strong><small>{providerChoices.length}개 모델</small></span></button>
+          {providerOpen && accounts.map((account) => {
+            const accountLabel = account?.email ?? account?.label ?? provider.label;
+            const accountChoices = choices.filter((choice) => choice.provider === provider.label && choice.account === accountLabel && matches(choice));
+            if (!accountChoices.length) return null;
+            const key = `${provider.id}:${account?.id ?? "default"}`;
+            const accountOpen = expandedAccounts.has(key) || Boolean(normalizedQuery);
+            return <div className="bridge-model-account" key={key}>
+              <button type="button" className="bridge-model-account-head" onClick={() => toggleAccount(key)}>{accountOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<span><strong>{accountLabel}</strong><small>{accountChoices.length}개 모델</small></span></button>
+              {accountOpen && accountChoices.map((choice) => <button type="button" className={`bridge-model-option ${selected.includes(choice.id) ? "selected" : ""}`} key={choice.id} onClick={() => toggle(choice.id)}><span><strong>{choice.label}</strong><small>{selected.includes(choice.id) ? "Bridge에 표시 중" : "클릭해서 Bridge에 추가"}</small></span>{selected.includes(choice.id) && <Check size={15} />}</button>)}
+            </div>;
+          })}
+        </div>;
+      })}
+      {!choices.length && <p>연결된 외부 provider 모델이 없습니다.</p>}
+    </div>}
     <div className="stock-model-picker-selected">{selected.length ? selected.map((id, index) => {
       const choice = byId.get(id);
-      return <div key={id}><span><b>{index + 1}</b><strong>{choice?.label ?? id}</strong><small>{choice?.provider ?? "사용할 수 없는 모델"}</small></span><button type="button" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`${choice?.label ?? id} 위로 이동`}>↑</button><button type="button" onClick={() => move(id, 1)} disabled={index === selected.length - 1} aria-label={`${choice?.label ?? id} 아래로 이동`}>↓</button><button type="button" onClick={() => onChange(selected.filter((item) => item !== id))} aria-label={`${choice?.label ?? id} 제거`}>×</button></div>;
+      return <div key={id}><span><b>{index + 1}</b><strong>{choice?.label ?? id}</strong><small>{choice ? `${choice.provider} · ${choice.account}` : "사용할 수 없는 모델"}</small></span><button type="button" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`${choice?.label ?? id} 위로 이동`}>↑</button><button type="button" onClick={() => move(id, 1)} disabled={index === selected.length - 1} aria-label={`${choice?.label ?? id} 아래로 이동`}>↓</button><button type="button" onClick={() => onChange(selected.filter((item) => item !== id))} aria-label={`${choice?.label ?? id} 제거`}><X size={14} /></button></div>;
     }) : <p>외부 모델을 추가하지 않으면 순정 Codex에는 GPT 모델만 표시됩니다.</p>}</div>
   </div>;
 }

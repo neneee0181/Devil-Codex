@@ -22,4 +22,4 @@ Last: 2026-07-13. Replace; keep <800B.
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
 - Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.
-- GPT-5.6 picker recovery (2026-07-16): installed v0.2.17 still showed the static Codex fallback (5.5/5.4/5.4 Mini) despite live/catalog Sol/Terra/Luna. v0.2.18 adds the three IDs to that native fallback, while v0.2.17's cache merge/retry remains. They stay on direct Codex routing; build, test, commit/tag/push still pending.
+- Bridge picker UX (2026-07-16): v0.2.19 replaces the flat Stock Bridge model add-list with a Composer-style Provider → account → model chooser, provider/model search, immediate Bridge add/remove toggles, and retained display-order controls. Full build passes; test, commit/tag/push pending.

@@ -304,3 +304,7 @@ See `.memoc/worklog/` and generated `.memoc/activity.md`.
 
 - User's installed Devil Codex `0.2.16` bundles Codex `0.144.3`; direct authenticated `model/list` and the native cache both contain Sol/Terra/Luna, but the picker could remain on its initial static list when discovery raced startup. v0.2.17 merges only visible native cache entries (no `:`/`/` proxy IDs) with live `model/list`, and the renderer retries one empty/failed startup lookup after two seconds. Native Codex turns remain direct. `npm run build`, `npm run test:main`, and a local `listModels()` smoke all pass; package/release plus installed-app click-through remain pending.
 - Follow-up screenshot from installed v0.2.17 proved the UI still used `provider-settings.cts`'s static Codex fallback, which had only GPT-5.5/5.4/5.4 Mini. v0.2.18 adds `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to that direct-Codex fallback. It is deliberately not applied to OpenAI API-key or external proxy providers.
+
+### 2026-07-16 Bridge model picker UX
+
+- v0.2.19 replaces Settings -> 구성 -> Bridge's flat external-model list with the same hierarchy as the Composer picker: Provider -> account -> model. It adds provider/account/model text search, toggles selected models into or out of `stockBridgeModels` immediately, and retains selected-model ordering/removal below the chooser. This affects only the Stock Bridge selection UI; native Codex models remain direct and selected external rows remain proxy-routed. `npm run build` passes; test, commit/tag/push and installed-app click-through remain pending.
