@@ -22,4 +22,4 @@ Last: 2026-07-13. Replace; keep <800B.
 ## Resume
 - Localized README update is uncommitted; inspect GitHub rendering, then commit if requested.
 - Relay follow-up `codex/unreal-mcp-relay-stream-safety`: upstream abort/error handling and a Node interruption test added; `npm run test:main` and `npm run build` pass.
-- GPT-5.6 picker recovery (2026-07-16): v0.2.17 restores a native-only merge of visible `~/.codex/models_cache.json` entries with live App Server models and retries initial discovery once. This keeps Sol/Terra/Luna direct through Codex, never Devil proxy. Local account's `model/list` includes all three; `npm run build` and `npm run test:main` pass. Package/release and installed-app click-through remain pending.
+- GPT-5.6 picker recovery (2026-07-16): installed v0.2.17 still showed the static Codex fallback (5.5/5.4/5.4 Mini) despite live/catalog Sol/Terra/Luna. v0.2.18 adds the three IDs to that native fallback, while v0.2.17's cache merge/retry remains. They stay on direct Codex routing; build, test, commit/tag/push still pending.
