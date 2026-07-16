@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.2.20 Bridge live toggle: desktop reclaims the proxy from the headless handoff, writes/removes bridge config immediately, and restarts only an already-running stock GUI Codex. GPT/Codex requests are raw transparent pass-through; external IDs use adapters. Design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
+- v0.2.21 Bridge exclusive mode: ON removes all Devil MCP blocks (browser, computer, ask, subagent) and blocks Devil chat UI + create/send/queue/steer IPC. OFF immediately restores saved MCP opt-ins and chat. Bridge design: `docs/STOCK_CODEX_BRIDGE_LIVE_TOGGLE.md`.
 
 ## Verification
-- `npm run test:main`, `npm run build`, and `git diff --check` pass.
+- `npm run build` and `git diff --check` pass; run `npm run test:main` before release.
 
 ## Resume
-- Manual installed-app test: toggle ON/OFF/model selection with stock Codex open, then repeat closed.
+- Manual installed-app test: Bridge ON hides MCP and locks chat; OFF restores both; verify stock picker after restart.

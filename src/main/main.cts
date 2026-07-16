@@ -2066,6 +2066,36 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   console.log(`[devil-codex computer] control server on ${computerSock}, MCP script ${computerScript}`);
 }
 
+async function disableDevilExclusiveMcps(): Promise<void> {
+  // Bridge mode shares ~/.codex/config.toml with stock Codex. Do not leave
+  // Devil-only tools visible there: stock Codex cannot use their in-process
+  // sockets and should never discover Devil's browser/computer/ask/subagent
+  // capabilities in the first place.
+  browserControl.stop();
+  desktopControl.stop();
+  askControl.stop();
+  subagentControl.stop();
+  // These all rewrite the same config.toml, so they must be serial. Parallel
+  // reads/writes could restore a block removed by a neighboring operation.
+  await unregisterDevilBrowserMcp();
+  await unregisterDevilAskMcp();
+  await unregisterDevilSubagentMcp();
+  restartAppServer();
+}
+
+async function restoreDevilExclusiveMcps(settings: CodexSettings): Promise<void> {
+  if (settings.askUserMcpEnabled) await setupDevilAskMcp();
+  else await unregisterDevilAskMcp();
+  if (settings.subagentMcpEnabled) await setupDevilSubagentMcp();
+  else await unregisterDevilSubagentMcp();
+  await setDevilMcpEnabled(settings.devilMcpEnabled);
+}
+
+async function requireDevilChatAvailable(): Promise<void> {
+  const settings = await settingsStore.load();
+  if (settings.stockBridgeEnabled) throw new Error("순정 Codex Bridge가 켜져 있어 Devil Codex 채팅은 잠겨 있습니다. Bridge를 끄면 즉시 다시 사용할 수 있습니다.");
+}
+
 async function claudeMcpConfig(): Promise<string | undefined> {
   const settings = await settingsStore.load().catch(() => null);
   const { script, computerScript, askScript, subagentScript } = mcpScripts();
@@ -2152,11 +2182,8 @@ async function startCodexProxy(): Promise<void> {
   });
   try {
     const settings = await settingsStore.load();
-    if (settings.askUserMcpEnabled) await setupDevilAskMcp();
-    else await unregisterDevilAskMcp();
-    if (settings.subagentMcpEnabled) await setupDevilSubagentMcp();
-    else await unregisterDevilSubagentMcp();
-    await setDevilMcpEnabled(settings.devilMcpEnabled);
+    if (settings.stockBridgeEnabled) await disableDevilExclusiveMcps();
+    else await restoreDevilExclusiveMcps(settings);
   } catch (error) {
     console.error("[devil-codex mcp] FAILED to configure:", error instanceof Error ? error.message : error);
   }
@@ -2382,17 +2409,23 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const previous = await settingsStore.load();
     const next = await settingsStore.save(input);
     applyRemoteAllowlistCache(next);
-    if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
-    if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
-    if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+    // In Bridge mode these preferences remain saved, but are intentionally not
+    // materialized in shared Codex config where stock Codex could see them.
+    if (!next.stockBridgeEnabled) {
+      if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
+      if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
+      if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+    }
     const stockBridgeModelsChanged = previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000");
     if (previous.stockBridgeEnabled !== next.stockBridgeEnabled) {
       if (next.stockBridgeEnabled) {
+        await disableDevilExclusiveMcps();
         await syncStockCodexBridge();
         void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
           .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
       } else {
         await deactivateStockCodexBridge();
+        await restoreDevilExclusiveMcps(next);
       }
     }
     if (next.stockBridgeEnabled && stockBridgeModelsChanged) await syncStockCodexBridge();
@@ -2526,6 +2559,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
   });
   handle("thread:create", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as any;
     if (requestedRuntime(request.runtime) === "claude-code") {
       const model = request.model || "claude-sonnet-5";
@@ -2851,12 +2885,14 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     setThreadQueueSnapshot(threadId, Array.isArray(request?.queue) ? request.queue : []);
   });
   handle("turn:queue:enqueue", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as { threadId?: string; entry?: { id: string; pending: any; userItem: ThreadHistoryItem; steering?: boolean }; front?: boolean };
     const threadId = String(request?.threadId ?? request?.entry?.pending?.threadId ?? "");
     if (!threadId || !request?.entry) return;
     sendThreadQueueCommand({ type: "enqueue", threadId, entry: request.entry as any, ...(request.front ? { front: true } : {}) });
   });
   handle("turn:queue:update", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as { threadId?: string; id?: string; text?: string };
     const threadId = String(request?.threadId ?? "");
     const id = String(request?.id ?? "");
@@ -2871,6 +2907,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     sendThreadQueueCommand({ type: "remove", threadId, id });
   });
   handle("turn:queue:steer", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as { threadId?: string; id?: string };
     const threadId = String(request?.threadId ?? "");
     const id = String(request?.id ?? "");
@@ -2884,6 +2921,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     sendThreadQueueCommand({ type: "clear", threadId });
   });
   handle("turn:steer", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as { threadId?: string; text?: string; expectedTurnId?: string; runtime?: AgentRuntimeId };
     const threadId = String(request.threadId ?? "");
     const text = String(request.text ?? "").trim();
@@ -2893,6 +2931,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     return await threadServer(threadId).steerTurn({ threadId, text, expectedTurnId });
   });
   handle("turn:send", async (input) => {
+    await requireDevilChatAvailable();
     const request = input as any;
     const attachmentEnrichment = await enrichDocumentAttachments(request.attachmentDetails);
     // When the "English output" setting is on, force English responses for every

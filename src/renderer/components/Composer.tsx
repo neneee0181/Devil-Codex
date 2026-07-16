@@ -124,6 +124,7 @@ export function Composer({
   onStop,
   onSlashCommand,
   petVisible,
+  disabled = false,
   agentRuntime = "codex",
   threadId,
   wrapRef,
@@ -155,6 +156,7 @@ export function Composer({
   onStop: () => void;
   onSlashCommand: (command: SlashCommandId) => void;
   petVisible: boolean;
+  disabled?: boolean;
   agentRuntime?: "codex" | "claude-code";
   threadId?: string;
   wrapRef?: Ref<HTMLFormElement>;
@@ -441,7 +443,7 @@ export function Composer({
     const prompt = editor.current ? editorText(editor.current) : draft.trim();
     // No `busy` guard: while a turn runs, submitting queues the message (the
     // parent enqueues it and auto-sends when the current turn finishes).
-    if ((!prompt && attachments.length === 0) || !attachmentsReady || !connected) return;
+    if (disabled || (!prompt && attachments.length === 0) || !attachmentsReady || !connected) return;
     onSubmit({ prompt, approvalMode, goalMode, planMode, acceptEdits: acceptEditsMode, attachments, skills, reasoningEffort, responseSpeed });
     clearDraft();
   };
@@ -462,7 +464,7 @@ export function Composer({
     }
   };
 
-  const canSend = (draft.trim().length > 0 || attachments.length > 0) && attachmentsReady && connected;
+  const canSend = !disabled && (draft.trim().length > 0 || attachments.length > 0) && attachmentsReady && connected;
 
   const onDraftKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.nativeEvent.isComposing) return;
@@ -520,18 +522,19 @@ export function Composer({
   return (
     <form ref={wrapRef} className="composer-wrap" onSubmit={(event) => { event.preventDefault(); submit(); }}>
       {queued.length > 0 && <QueuedMessages items={queued} onEdit={onEditQueued} onRemove={onRemoveQueued} onSteer={onSteerQueued} />}
-      <div className={attachments.length > 0 ? "composer has-attachments" : "composer"} onDragOver={(event) => event.preventDefault()} onDrop={onComposerDrop}>
+      <div className={`${attachments.length > 0 ? "composer has-attachments" : "composer"}${disabled ? " composer-bridge-locked" : ""}`} onDragOver={(event) => { if (!disabled) event.preventDefault(); }} onDrop={(event) => { if (!disabled) onComposerDrop(event); }}>
+        {disabled && <div className="composer-bridge-lock" role="status">순정 Codex Bridge 사용 중 · Devil Codex 채팅과 전용 MCP가 잠겨 있습니다</div>}
         {attachments.length > 0 && (
           <AttachmentGallery attachments={attachments} onRemove={removeAttachment} />
         )}
         <div
           ref={editor}
           className="composer-editor"
-          contentEditable={connected}
+          contentEditable={connected && !disabled}
           role="textbox"
           aria-multiline="true"
           data-empty={composerEmpty ? "true" : "false"}
-          data-placeholder={busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
+          data-placeholder={disabled ? "Bridge를 끄면 Devil Codex 채팅을 다시 사용할 수 있습니다" : busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
           onInput={(event) => {
             const next = editorSnapshot(event.currentTarget);
             setDraft(next.text);
