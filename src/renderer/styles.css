@@ -506,6 +506,8 @@ button:active:not(:disabled) { transform: scale(.96); }
 .side-chat-empty { color: #777; font-size: 13px; }
 .side-chat-bubble { font-size: 13px; color: #c2c2c2; max-width: 90%; }
 .side-chat-bubble.user { justify-self: end; background: #2a2a2a; padding: 8px 12px; border-radius: 12px; }
+.side-chat-activity { width: 100%; min-width: 0; }
+.side-chat-activity .turn-activity { max-width: 100%; }
 .side-chat-bubble.muted { color: #777; }
 .side-chat-compose { flex: 0 0 auto; border-top: 1px solid #242424; }
 .side-chat-compose > .attachment-gallery { padding: 10px 10px 0; }

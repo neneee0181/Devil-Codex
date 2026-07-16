@@ -7,6 +7,7 @@ import type { ToolKind } from "./ToolLauncherMenu";
 import { WorkspaceFilesPanel } from "./WorkspaceFilesPanel";
 import { MarkdownContent } from "./MarkdownContent";
 import { AttachmentGallery } from "./AttachmentCards";
+import { TurnActivity } from "./TurnActivity";
 import { useAttachments } from "../hooks/useAttachments";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { parseUnifiedDiff, toSplitDiffRows, type ParsedDiffLine } from "./unifiedDiff";
@@ -755,7 +756,7 @@ const CHAT_INPUT_FOCUS_SCRIPT = `(function(){
 
 // Conversation state is lifted to the parent (history/onHistory) so it survives
 // tab switches and the optimistic message isn't lost on reload.
-export function SideChat({ target, history, busy, pick, lockedModel = false, onPick, onHistory }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; lockedModel?: boolean; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void }): React.JSX.Element {
+export function SideChat({ target, history, busy, pick, lockedModel = false, onPick, onHistory, onOpenFile }: { target: SideChatTarget; history: ThreadHistoryItem[] | undefined; busy: boolean; pick?: SideChatPick; lockedModel?: boolean; onPick: (pick: SideChatPick) => void; onHistory: (items: ThreadHistoryItem[]) => void; onOpenFile: (path: string) => void }): React.JSX.Element {
   const { thread, cwd, providers, approvalPolicy, sandboxMode } = target;
   // A delegated subagent thread runs on its own provider/runtime (e.g. DeepSeek
   // through the Codex app-server) regardless of the parent chat's runtime. The
@@ -841,7 +842,10 @@ export function SideChat({ target, history, busy, pick, lockedModel = false, onP
     }
   };
 
-  const messages = (history ?? []).filter((item) => item.kind === "user" || item.kind === "agent");
+  // Keep the child thread's work events in the same rich card format as the
+  // main timeline. Previously this panel dropped activities entirely, which
+  // left file diffs to appear only as any raw text an agent happened to write.
+  const messages = (history ?? []).filter((item) => item.kind === "user" || item.kind === "agent" || (item.kind === "activity" && Boolean(item.activities?.length)));
   const working = busy || sending;
   return <div className="side-chat">
     <header className="side-chat-head"><Bot size={15} /><strong>{thread.label}</strong>
@@ -853,10 +857,12 @@ export function SideChat({ target, history, busy, pick, lockedModel = false, onP
     <div className="side-chat-body" ref={bodyRef}>
       {!loaded ? <div className="side-chat-loading"><span className="side-chat-spinner" /><strong>사이드 채팅 불러오는 중</strong><i /><i /><i /></div>
         : messages.length === 0 && !working ? <em className="side-chat-empty">대화 내용이 없습니다.</em>
-        : messages.map((item) => <div key={item.id} className={`side-chat-bubble ${item.kind}`}>
-            {item.attachments?.length ? <AttachmentGallery attachments={item.attachments} align={item.kind === "user" ? "end" : "start"} /> : null}
-            {item.text && <MarkdownContent text={item.text} onOpenFile={() => undefined} />}
-          </div>)}
+        : messages.map((item) => item.kind === "activity"
+          ? <div key={item.id} className="side-chat-activity"><TurnActivity item={item} onOpenFile={onOpenFile} /></div>
+          : <div key={item.id} className={`side-chat-bubble ${item.kind}`}>
+              {item.attachments?.length ? <AttachmentGallery attachments={item.attachments} align={item.kind === "user" ? "end" : "start"} /> : null}
+              {item.text && <MarkdownContent text={item.text} onOpenFile={onOpenFile} />}
+            </div>)}
       {working && <div className="side-chat-working"><span className="side-chat-spinner" />{modelStatus ?? "작업 중…"}</div>}
     </div>
     <div className="side-chat-compose" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const files = Array.from(event.dataTransfer.files ?? []); if (files.length) { event.preventDefault(); attach.addFiles(files); } }}>

@@ -95,7 +95,7 @@ export function UtilityPanel({
         <button type="button" onClick={onClose} aria-label="우측 패널 닫기"><X size={17} /></button>
       </header>
       {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="right" terminalKey={terminalSessionKey} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
-      {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "서브에이전트" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} lockedModel={active?.startsWith("subagent:")} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} />}
+      {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "서브에이전트" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} lockedModel={active?.startsWith("subagent:")} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} onOpenFile={onTerminalOpenPath} />}
       {active && active !== "terminal" && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       {!active && <ToolLauncherMenu onSelect={onAdd} />}
     </aside>

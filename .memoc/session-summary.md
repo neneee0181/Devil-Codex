@@ -13,7 +13,7 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.3.3 activity detail: work cards now show each code search/file read, expandable original command, cwd and output, redacted MCP input/result, and per-file collapsible diffs. v0.3.2 project sidebar isolation and Windows Bridge launcher fix remain included.
+- v0.3.4 subagent activity parity: child tabs now render their own user/agent/activity timeline with the same expandable command, MCP and per-file diff cards as main chat. Child history is keyed by child thread ID; it never shares main history. v0.3.3 detail improvements remain included.
 
 ## Verification
 - `npm run build`, `npm run test:main`, and `git diff --check` pass.
