@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-16. Replace; keep <800B.
 
 ## Status
-- v0.3.4 subagent activity parity: child tabs now render their own user/agent/activity timeline with the same expandable command, MCP and per-file diff cards as main chat. Child history is keyed by child thread ID; it never shares main history. v0.3.3 detail improvements remain included.
+- v0.3.5 MCP readiness: Settings > 구성 > 도구 now verifies browser/computer control server plus both MCP config entries, showing ready/disabled/bridge/error with refresh. Toggle still restarts every per-thread app server; no full app restart required. Current install: Bridge OFF, enabled, both registrations and named pipes present.
 
 ## Verification
 - `npm run build`, `npm run test:main`, and `git diff --check` pass.
 
 ## Resume
-- Manual installed-app test: Bridge ON hides MCP and locks chat; OFF restores both; verify stock picker after restart.
+- Manual installed-app test: Tools status must show 사용 가능, then request an in-app-browser action in a new message; model should call `devil_browser`, not launch Chrome.

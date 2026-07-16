@@ -38,6 +38,10 @@ export class DesktopControlServer {
     if (process.platform !== "win32") { try { unlinkSync(desktopControlPath()); } catch { /* none */ } }
   }
 
+  isRunning(): boolean {
+    return this.server?.listening === true;
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const send = (code: number, body: unknown): void => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
     try {

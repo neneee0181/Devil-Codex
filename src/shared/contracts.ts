@@ -173,6 +173,7 @@ export interface RemoteControlStatus { enabled: boolean; mode: RemoteControlMode
 // filtered server-side; when the allowlist is empty the mobile UI should only
 // ask the user to allow a thread from the desktop app.
 export interface RemoteScope { restricted: boolean; }
+export interface DevilMcpStatus { state: "ready" | "disabled" | "bridge" | "error"; detail: string; browserServer: boolean; computerServer: boolean; browserRegistered: boolean; computerRegistered: boolean; checkedAt: number; }
 export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; stockBridgeEnabled: boolean; stockBridgeModels: string[]; stockBridgeWebSearch: boolean; stockBridgeVision: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; remoteAllowedThreadIds: string[]; }
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
@@ -466,6 +467,7 @@ export interface DevilCodexApi {
   listCodexPluginSkills: () => Promise<CodexSkillInfo[]>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
+  devilMcpStatus: () => Promise<DevilMcpStatus>;
   remoteStatus: () => Promise<RemoteControlStatus>;
   remoteEnable: (input: { mode: RemoteControlMode }) => Promise<RemoteControlStatus>;
   remoteDisable: () => Promise<RemoteControlStatus>;

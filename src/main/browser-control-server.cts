@@ -66,6 +66,10 @@ export class BrowserControlServer {
     }
   }
 
+  isRunning(): boolean {
+    return this.server?.listening === true;
+  }
+
   private authorized(req: IncomingMessage): boolean {
     return Boolean(this.secret && req.headers["x-devil-codex-control-secret"] === this.secret);
   }

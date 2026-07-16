@@ -280,6 +280,14 @@ export async function unregisterDevilAskMcp(): Promise<void> {
   await writeConfigIfChanged(preserveDesktopAppearanceTheme(stripManagedMcpTables(source, ASK_BEGIN, ASK_END, ["devil_ask"]), source), source);
 }
 
+export async function devilBrowserMcpRegistration(): Promise<{ browser: boolean; computer: boolean }> {
+  const source = await read();
+  return {
+    browser: /^\[mcp_servers\.devil_browser\]$/m.test(source),
+    computer: /^\[mcp_servers\.devil_computer\]$/m.test(source),
+  };
+}
+
 // Devil subagent MCP — lets a running model delegate a bounded task to one of
 // Devil Codex's configured providers (for example DeepSeek) through Electron.
 const SUBAGENT_BEGIN = "# >>> devil-codex subagent mcp (managed) >>>";

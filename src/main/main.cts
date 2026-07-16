@@ -28,7 +28,7 @@ import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-p
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
-import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilNativeCatalog, unregisterDevilNativeCatalog, registerDevilBrowserMcp, unregisterDevilBrowserMcp, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
+import { registerDevilProvider, registerDevilStockBridge, unregisterDevilStockBridge, registerDevilNativeCatalog, unregisterDevilNativeCatalog, registerDevilBrowserMcp, unregisterDevilBrowserMcp, devilBrowserMcpRegistration, registerDevilAskMcp, unregisterDevilAskMcp, registerDevilSubagentMcp, unregisterDevilSubagentMcp } from "./codex-config.cjs";
 import { BrowserControlServer } from "./browser-control-server.cjs";
 import { DesktopControlManager } from "./desktop-control.cjs";
 import { DesktopControlServer } from "./desktop-control-server.cjs";
@@ -44,7 +44,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, DevilMcpStatus, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
   const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
@@ -2069,6 +2069,24 @@ async function setDevilMcpEnabled(enabled: boolean): Promise<void> {
   console.log(`[devil-codex computer] control server on ${computerSock}, MCP script ${computerScript}`);
 }
 
+async function devilMcpStatus(): Promise<DevilMcpStatus> {
+  const checkedAt = Date.now();
+  const settings = await settingsStore.load();
+  let registration = { browser: false, computer: false };
+  try { registration = await devilBrowserMcpRegistration(); }
+  catch (error) {
+    return { state: "error", detail: `MCP 설정을 확인하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`, browserServer: browserControl.isRunning(), computerServer: desktopControl.isRunning(), browserRegistered: false, computerRegistered: false, checkedAt };
+  }
+  const browserServer = browserControl.isRunning();
+  const computerServer = desktopControl.isRunning();
+  if (settings.stockBridgeEnabled) return { state: "bridge", detail: "Bridge가 켜져 있어 Devil 전용 MCP가 의도적으로 비활성화되었습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+  if (!settings.devilMcpEnabled) return { state: "disabled", detail: "브라우저/컴퓨터 제어 MCP가 꺼져 있습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+  if (browserServer && computerServer && registration.browser && registration.computer) {
+    return { state: "ready", detail: "브라우저·컴퓨터 제어 서버와 MCP 등록이 모두 확인되었습니다. 다음 메시지부터 모델이 도구를 사용할 수 있습니다.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+  }
+  return { state: "error", detail: "MCP가 켜져 있지만 제어 서버 또는 MCP 등록이 완성되지 않았습니다. 토글을 껐다 켜 다시 적용하세요.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
+}
+
 async function disableDevilExclusiveMcps(): Promise<void> {
   // Bridge mode shares ~/.codex/config.toml with stock Codex. Do not leave
   // Devil-only tools visible there: stock Codex cannot use their in-process
@@ -2408,6 +2426,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("terminal:close", (_event, input) => terminals().close(input.id));
   ipcMain.handle("translate:text", (_event, input: { text: string; to?: string; from?: string }) => translateText(input));
   handle("settings:load", () => settingsStore.load());
+  ipcMain.handle("devil-mcp:status", () => devilMcpStatus());
   ipcMain.handle("settings:save", async (_event, input) => {
     const previous = await settingsStore.load();
     const next = await settingsStore.save(input);

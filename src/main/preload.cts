@@ -119,6 +119,7 @@ const api: DevilCodexApi = {
   },
   loadCodexSettings: () => ipcRenderer.invoke("settings:load"),
   saveCodexSettings: (input) => ipcRenderer.invoke("settings:save", input),
+  devilMcpStatus: () => ipcRenderer.invoke("devil-mcp:status"),
   remoteStatus: () => ipcRenderer.invoke("remote:status"),
   remoteEnable: (input) => ipcRenderer.invoke("remote:enable", input),
   remoteDisable: () => ipcRenderer.invoke("remote:disable"),
