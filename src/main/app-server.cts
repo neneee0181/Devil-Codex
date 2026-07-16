@@ -40,6 +40,14 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+type CodexModelCache = {
+  models?: Array<{
+    slug?: unknown;
+    display_name?: unknown;
+    visibility?: unknown;
+  }>;
+};
+
 const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 const STOCK_ROLLOUT_PERMISSION_SYNC_MAX_BYTES = 50 * 1024 * 1024;
 const EDITED_USER_MESSAGE_MARKER = "[수정된 사용자 메시지]";
@@ -358,10 +366,25 @@ export class CodexAppServer extends EventEmitter {
       return [{ id, label }];
     };
     const live = (result.data ?? []).flatMap((row) => add(String(row.model ?? row.id ?? ""), String(row.displayName ?? row.model ?? row.id ?? "")));
-    // Only advertise models the active app-server itself accepts. Catalog cache
-    // entries can outpace a bundled runtime and otherwise create selectable
-    // models that fail at `turn/start`.
-    return live;
+    // Stock Codex writes rollout models to models_cache.json before every
+    // app-server process necessarily reflects them in model/list. Merge only
+    // visible native entries: these retain the normal Codex provider and are
+    // never routed through Devil's external-provider proxy.
+    return [...live, ...await this.readVisibleCachedModels(seen)];
+  }
+
+  private async readVisibleCachedModels(seen: Set<string>): Promise<ProviderModel[]> {
+    try {
+      const source = JSON.parse(await readFile(join(this.options.codexHome ?? codexHome(), "models_cache.json"), "utf8")) as CodexModelCache;
+      return (source.models ?? []).flatMap((entry) => {
+        const id = typeof entry.slug === "string" ? entry.slug : "";
+        if (!id || entry.visibility !== "list" || id.includes(":") || id.includes("/") || seen.has(id)) return [];
+        seen.add(id);
+        return [{ id, label: typeof entry.display_name === "string" ? entry.display_name : id }];
+      });
+    } catch {
+      return [];
+    }
   }
 
   async readThread(input: { id: string }): Promise<ThreadHistoryItem[]> {

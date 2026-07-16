@@ -49,14 +49,29 @@ export function useProviders(): {
     });
   }, []);
 
+  const refreshCodexModels = useCallback(async (): Promise<boolean> => {
+    const models = await window.devilCodex.listCodexModels();
+    if (!models.length) return false;
+    setCodexModels(models);
+    return true;
+  }, []);
+
   useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     void (async () => {
       setState("loading");
       try {
         const loaded = await window.devilCodex.loadProviderSettings();
         setSettings(hideUnverifiedLocalProviders(loaded));
         setState("saved");
-        window.devilCodex.listCodexModels().then((models) => { if (models.length) setCodexModels(models); }).catch(() => undefined);
+        // The app-server can still be starting while provider settings load.
+        // Retry discovery once so a temporary startup failure cannot leave the
+        // native picker permanently limited to its static fallback list.
+        refreshCodexModels().then((found) => {
+          if (!found) retryTimer = setTimeout(() => { void refreshCodexModels().catch(() => undefined); }, 2_000);
+        }).catch(() => {
+          retryTimer = setTimeout(() => { void refreshCodexModels().catch(() => undefined); }, 2_000);
+        });
         syncOauthModels(loaded);
         for (const provider of loaded.providers) {
           if (provider.kind === "apikey" && (!provider.keyRequired || provider.credentialSource !== "none")) {
@@ -93,8 +108,9 @@ export function useProviders(): {
     return () => {
       dispose();
       window.removeEventListener("devil-codex:provider-auth-changed", reloadProviderSettings);
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [hideUnverifiedLocalProviders, syncOauthModels]);
+  }, [hideUnverifiedLocalProviders, refreshCodexModels, syncOauthModels]);
 
   const merged = useMemo<ProviderSettings | null>(() => {
     if (!settings) return null;

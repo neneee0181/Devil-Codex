@@ -299,3 +299,7 @@ See `.memoc/worklog/` and generated `.memoc/activity.md`.
 ### 2026-07-13 GPT-5.6 runtime support
 
 - Bundled Codex app-server release target is `rust-v0.144.3`; its live `model/list` returns `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Devil now exposes only models returned by the active app-server, preventing a stale model cache from showing IDs rejected at `turn/start`.
+
+### 2026-07-16 GPT-5.6 native picker recovery
+
+- User's installed Devil Codex `0.2.16` bundles Codex `0.144.3`; direct authenticated `model/list` and the native cache both contain Sol/Terra/Luna, but the picker could remain on its initial static list when discovery raced startup. v0.2.17 merges only visible native cache entries (no `:`/`/` proxy IDs) with live `model/list`, and the renderer retries one empty/failed startup lookup after two seconds. Native Codex turns remain direct. `npm run build`, `npm run test:main`, and a local `listModels()` smoke all pass; package/release plus installed-app click-through remain pending.
