@@ -2,6 +2,7 @@
 // app-server routes external-model turns here; this translates to Claude/Copilot
 // and streams Codex Responses SSE back. Codex records the turn natively → syncs.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -31,7 +32,7 @@ export const DEVIL_PROXY_PORT = 49873;
 // requests under /<secret>/v1/... so a local process or web page that doesn't
 // know the token (written into ~/.codex/config.toml's base_url, perms 0600)
 // can't drive the user's provider keys. Persisted so the provider URL stays
-// stable across restarts (saved Codex threads keep resolving model_providers.devil).
+// stable across restarts (stock Codex sessions keep resolving the Bridge URL).
 const PROXY_SECRET_PATH = join(process.env.DEVIL_CODEX_CODEX_HOME ?? join(homedir(), ".codex"), "devil-proxy-secret");
 async function loadProxySecret(): Promise<string> {
   try {
@@ -59,6 +60,19 @@ let requestLogWrite = Promise.resolve();
 const REQUEST_LOG_LIMIT = 120;
 let nvidiaRateLimitQueue = Promise.resolve();
 let nvidiaLastRequestAt = 0;
+
+function rejectWebSocketUpgrade(socket: Duplex, status: number, message: string): void {
+  const body = JSON.stringify({ error: { message } });
+  socket.write([
+    `HTTP/1.1 ${status} ${status === 426 ? "Upgrade Required" : "Forbidden"}`,
+    "Content-Type: application/json",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "Connection: close",
+    "",
+    body,
+  ].join("\r\n"));
+  socket.destroy();
+}
 const FORWARDED_OPENAI_HEADERS = [
   "authorization",
   "chatgpt-account-id",
@@ -640,6 +654,27 @@ export class CodexProxyServer {
           res.end(JSON.stringify({ error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
         }
       })();
+    });
+    // Codex's built-in OpenAI provider probes this exact endpoint over WebSocket
+    // before using HTTP/SSE. A 426 is its documented fallback signal; returning
+    // 404 or dropping the socket makes the turn fail before the HTTP request.
+    server.on("upgrade", (req, socket) => {
+      const prefix = `/${this.secret}`;
+      const rawUrl = req.url ?? "/";
+      const path = rawUrl.slice(prefix.length).split("?", 1)[0];
+      if (!this.secret || !(rawUrl === prefix || rawUrl.startsWith(`${prefix}/`))) {
+        rejectWebSocketUpgrade(socket, 403, "forbidden");
+        return;
+      }
+      if (req.headers.origin || req.headers["sec-fetch-site"]) {
+        rejectWebSocketUpgrade(socket, 403, "forbidden");
+        return;
+      }
+      if (path === "/v1/responses") {
+        rejectWebSocketUpgrade(socket, 426, "Responses WebSocket transport is disabled; use HTTP");
+        return;
+      }
+      rejectWebSocketUpgrade(socket, 403, "forbidden");
     });
     // Keep the provider URL stable across Devil restarts. Codex stores the
     // provider name in a rollout, and a fixed URL lets stock Codex recognise

@@ -44,12 +44,12 @@ function externalEntry(template: CatalogEntry, model: { id: string; label: strin
   entry.supports_parallel_tool_calls = false;
   entry.supports_search_tool = false;
   delete entry.web_search_tool_type;
-  // Stock Codex otherwise opens a WebSocket Responses transport before its
-  // HTTP/SSE fallback. The local Bridge intentionally serves HTTP/SSE only.
-  // Keep this on the external catalog row (instead of switching the whole
-  // thread to a custom model_provider) so stock Codex retains its own thread
-  // identity and sync lifecycle.
-  entry.supports_websockets = false;
+  // The local Bridge intentionally serves HTTP/SSE only. Keep OpenCodex's
+  // default-off catalog shape: Codex's built-in OpenAI provider still probes
+  // WebSocket, and the proxy answers that probe with 426 to request HTTP/SSE
+  // fallback while preserving the stock thread identity.
+  delete entry.supports_websockets;
+  delete entry.prefer_websockets;
   return entry;
 }
 
