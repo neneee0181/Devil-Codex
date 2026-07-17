@@ -17,10 +17,28 @@ function externalModelId(provider: ProviderId, accountId: string | undefined, mo
   return `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
 }
 
+function mergeModels(...groups: Array<Array<{ id: string; label: string }> | undefined>): Array<{ id: string; label: string }> {
+  const seen = new Set<string>();
+  return groups.flatMap((group) => group ?? []).filter((model) => {
+    if (seen.has(model.id)) return false;
+    seen.add(model.id);
+    return true;
+  });
+}
+
+function connectedAccount(provider: ProviderInfo, account: ProviderInfo["accounts"][number]): boolean {
+  if (provider.id === "codex") return false;
+  return account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
+}
+
 function providerModels(provider: ProviderInfo): Array<{ id: string; label: string }> {
   if (provider.id === "codex") return [];
   return provider.accounts.flatMap((account) => {
-    const models = account.models?.length ? account.models : provider.models;
+    if (!connectedAccount(provider, account)) return [];
+    // Account refreshes and provider-wide refreshes can complete at different
+    // times. Keep the union so a newer provider list does not hide models that
+    // are still valid for an already-connected account.
+    const models = mergeModels(account.models, provider.models);
     return models.map((model) => ({
       id: externalModelId(provider.id, account.id, model.id),
       label: provider.accounts.length > 1 ? `${provider.label} (${account.label}) · ${model.label}` : `${provider.label} · ${model.label}`,

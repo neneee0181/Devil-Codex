@@ -95,8 +95,7 @@ function providerUsableForPicker(provider: ProviderInfo, auth: ProviderAuthStatu
     if (provider.id === "codex") return provider.modelsLoaded || provider.models.length > 0;
     return Boolean(provider.authProvider && auth[provider.authProvider] && provider.modelsLoaded);
   }
-  if (provider.keyRequired) return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
-  return provider.modelsLoaded;
+  return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
 }
 
 function accountModels(provider: ProviderInfo, account: ProviderAccount | undefined): ProviderModel[] {
@@ -124,7 +123,7 @@ function pickLabel(providers: ProviderInfo[], pick: SideChatPick): string {
 function hasUsableCredentials(provider: ProviderInfo, account: ProviderAccount | undefined): boolean {
   if (provider.id === "codex") return true;
   if (provider.kind === "login") return Boolean(account && provider.modelsLoaded);
-  if (!provider.keyRequired) return Boolean(account ? (account.models?.length ?? provider.models.length) > 0 : provider.modelsLoaded);
+  if (!provider.keyRequired) return Boolean(account && account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
   return Boolean(account && account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
 }
 

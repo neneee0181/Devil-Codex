@@ -1356,7 +1356,7 @@ async function openWorkspaceExternal(input: { cwd: string; target: ExternalTarge
 
 async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
   const attempts: Array<[string, string[]]> = process.platform === "darwin"
-    ? [["open", ["-a", "Codex"]], ["open", ["/Applications/Codex.app"]]]
+    ? [["open", ["-a", "Codex"]], ["open", ["-a", "ChatGPT"]], ["open", ["/Applications/Codex.app"]], ["open", ["/Applications/ChatGPT.app"]]]
     : process.platform === "win32"
       // Do not fall back to `Codex`/`codex`: on Windows that can resolve the
       // CLI bundled with Devil Codex and open a terminal trust prompt instead
@@ -1424,9 +1424,11 @@ async function stockCodexDesktopRunning(): Promise<boolean> {
     }
     // This deliberately does not match the `codex` CLI. It is only safe to
     // force-close a known desktop application after a Bridge setting change.
-    const name = process.platform === "darwin" ? "Codex" : "codex-desktop";
-    await execFileAsync("pgrep", ["-x", name]);
-    return true;
+    const names = process.platform === "darwin" ? ["Codex", "ChatGPT"] : ["codex-desktop"];
+    for (const name of names) {
+      try { await execFileAsync("pgrep", ["-x", name]); return true; } catch { /* try next app name */ }
+    }
+    return false;
   } catch {
     return false;
   }
@@ -1439,7 +1441,9 @@ async function restartStockCodexIfRunning(): Promise<void> {
       const command = "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*\\WindowsApps\\OpenAI.Codex_*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
       await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true });
     } else if (process.platform === "darwin") {
-      await execFileAsync("osascript", ["-e", 'tell application "Codex" to quit']).catch(() => execFileAsync("pkill", ["-x", "Codex"]));
+      await execFileAsync("osascript", ["-e", 'tell application "Codex" to quit']).catch(async () => {
+        await execFileAsync("osascript", ["-e", 'tell application "ChatGPT" to quit']).catch(() => execFileAsync("pkill", ["-x", "Codex"]));
+      });
     } else {
       await execFileAsync("pkill", ["-x", "codex-desktop"]);
     }

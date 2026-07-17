@@ -459,8 +459,7 @@ function responseSpeedLabel(value: ResponseSpeed): string {
 function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatus["state"]): boolean {
   if (!provider) return false;
   if (provider.id === "codex") return runtimeState === "connected";
-  if (provider.kind === "login") return provider.accounts.length > 0 && provider.modelsLoaded;
-  return provider.keyRequired ? provider.accounts.length > 0 && provider.modelsLoaded : provider.modelsLoaded;
+  return provider.accounts.some((account) => account.credentialSource !== "none") && provider.modelsLoaded;
 }
 
 function readLastSentModels(): Record<string, SentModelState> {

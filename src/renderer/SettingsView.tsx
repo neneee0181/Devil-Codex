@@ -158,6 +158,19 @@ function DevilMcpStatusCard({ status, loading, onRefresh }: { status: DevilMcpSt
 
 type StockBridgeModelChoice = { id: string; provider: string; account: string; label: string };
 
+function hasConnectedCredential(provider: ProviderSettings["providers"][number]): boolean {
+  return provider.accounts.some((account) => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop");
+}
+
+function mergeBridgeModels(...groups: Array<ProviderSettings["providers"][number]["models"] | undefined>): ProviderSettings["providers"][number]["models"] {
+  const seen = new Set<string>();
+  return groups.flatMap((group) => group ?? []).filter((model) => {
+    if (seen.has(model.id)) return false;
+    seen.add(model.id);
+    return true;
+  });
+}
+
 function StockBridgeModelPicker({ providers, selected, onChange }: { providers: ProviderSettings["providers"]; selected: string[]; onChange: (models: string[]) => void }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -165,11 +178,11 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
   const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set());
   const selectedRef = useRef(selected);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
-  const externalProviders = useMemo(() => providers.filter((provider) => provider.id !== "codex"), [providers]);
+  const externalProviders = useMemo(() => providers.filter((provider) => provider.id !== "codex" && hasConnectedCredential(provider)), [providers]);
   const choices = useMemo(() => externalProviders.flatMap((provider) => {
     const accounts = provider.accounts.length ? provider.accounts : [undefined];
     return accounts.flatMap((account) => {
-      const models = account?.models?.length ? account.models : provider.models;
+      const models = mergeBridgeModels(account?.models, provider.models);
       return models.map((model) => ({
         id: `${provider.id}${account?.id ? `@${encodeURIComponent(account.id)}` : ""}:${model.id}`,
         provider: provider.label,

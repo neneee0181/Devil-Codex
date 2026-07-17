@@ -558,18 +558,19 @@ async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: {
 async function handleModels(res: ServerResponse): Promise<void> {
   const settings = await providerSettings.load();
   const routedId = (provider: ProviderId, accountId: string | undefined, model: string): string => `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
+  const connected = (account: { credentialSource?: string }): boolean => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
   const loginRows = (await Promise.all(settings.providers
     .filter((provider) => provider.kind === "login" && provider.id !== "codex")
-    .flatMap((provider) => provider.accounts.map(async (account) => {
+    .flatMap((provider) => provider.accounts.filter(connected).map(async (account) => {
       const models = provider.id === "antigravity"
         ? await antigravityModels(account.id).catch(() => [])
         : await oauthModels(provider.id as "copilot" | "claude-code", account.id).catch(() => []);
       const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : "anthropic";
       return models.map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: owner }));
     })))).flat();
-  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && (provider.keyRequired ? provider.accounts.length > 0 : provider.modelsLoaded));
+  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && provider.accounts.some(connected));
   const apiRows = apiProviders.flatMap((provider) => {
-    const accounts = provider.accounts.length ? provider.accounts : [{ id: undefined, models: provider.models }] as Array<{ id?: string; models?: typeof provider.models }>;
+    const accounts = provider.accounts.filter(connected);
     return accounts.flatMap((account) => (account.models?.length ? account.models : provider.models).map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: provider.id })));
   });
   const data = [...loginRows, ...apiRows];
