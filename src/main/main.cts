@@ -2101,7 +2101,12 @@ async function devilMcpStatus(): Promise<DevilMcpStatus> {
   return { state: "error", detail: "MCP가 켜져 있지만 제어 서버 또는 MCP 등록이 완성되지 않았습니다. 토글을 껐다 켜 다시 적용하세요.", browserServer, computerServer, browserRegistered: registration.browser, computerRegistered: registration.computer, checkedAt };
 }
 
-async function disableDevilExclusiveMcps(): Promise<void> {
+// These MCP servers live in the shared ~/.codex/config.toml.  They must only
+// exist while the Devil desktop process is actively serving their local pipes;
+// otherwise stock Codex can discover an unusable Devil tool after this app has
+// closed.  Keep the config writes serial because each helper rewrites the same
+// file.
+async function unregisterDevilExclusiveMcps(): Promise<void> {
   // Bridge mode shares ~/.codex/config.toml with stock Codex. Do not leave
   // Devil-only tools visible there: stock Codex cannot use their in-process
   // sockets and should never discover Devil's browser/computer/ask/subagent
@@ -2116,6 +2121,10 @@ async function disableDevilExclusiveMcps(): Promise<void> {
   await restoreStockBrowserPluginForDevil();
   await unregisterDevilAskMcp();
   await unregisterDevilSubagentMcp();
+}
+
+async function disableDevilExclusiveMcps(): Promise<void> {
+  await unregisterDevilExclusiveMcps();
   restartAppServer();
 }
 
@@ -2284,6 +2293,10 @@ async function startStockProxyService(): Promise<void> {
     app.exit(0);
     return;
   }
+  // A background Bridge owner must never leave Devil's desktop-only MCPs in
+  // the shared config. This also cleans registrations left by an interrupted
+  // desktop shutdown before stock Codex can discover them.
+  await unregisterDevilExclusiveMcps();
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       await syncStockCodexBridge();
@@ -3275,6 +3288,9 @@ app.on("before-quit", (event) => {
           await activateStockCodexBridge();
           if (desktopOwnsProxy) launchStockProxyService();
         }
+        // Do not fire-and-forget these writes: Electron can otherwise exit
+        // first and leave global Devil MCP entries visible to stock Codex.
+        await unregisterDevilExclusiveMcps();
       } catch (error) {
         console.error("[devil-codex stock bridge] handoff failed:", error instanceof Error ? error.message : error);
       }
@@ -3302,10 +3318,6 @@ app.on("before-quit", (event) => {
   subagentControl.stop();
   workspaceWatcher.disposeAll();
   void stopRemoteControl({ saveSettings: false });
-  void unregisterDevilBrowserMcp();
-  void restoreStockBrowserPluginForDevil();
-  void unregisterDevilAskMcp();
-  void unregisterDevilSubagentMcp();
   // Keep the managed provider block in ~/.codex/config.toml. Rollouts created
   // through it must remain recognisable to stock Codex after Devil exits.
   void codexProxy.stop();

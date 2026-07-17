@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
-- v0.3.8: Fixed per-browser WebContents registration race. Each browser now keeps an independent pending URL and only selected tabs activate the MCP browser target; initial loading state and ChatGPT navigation no longer leak across tabs.
+- v0.3.9: Devil MCP registrations now exist only while Devil desktop is running. Shutdown waits for browser/computer/ask/subagent MCP removal; Bridge owners also clean all Devil MCP entries before serving stock Codex.
 
 ## Verification
 - `npm run build` and `git diff --check` pass.
 
 ## Resume
-- Manual Electron check: add multiple browser/terminal tabs in both docks; Ctrl/Cmd-click a link and verify a new browser tab opens with original page intact.
+- Manual Electron check: quit Devil with Bridge OFF, then open stock Codex and confirm no `devil_*` MCP tool is offered. With Bridge ON, confirm the same while the background Bridge service is running.
