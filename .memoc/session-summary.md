@@ -13,7 +13,7 @@ tags:
 Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
-- Dock tabs now permit multiple independent browser and terminal instances. Browser WebContents are registered per tab, preserved while switching, and MCP stays bound to selected tab. Ctrl/Cmd-click and `window.open` create/focus a new tab in same dock. Files/review remain single-instance.
+- v0.3.8: Fixed per-browser WebContents registration race. Each browser now keeps an independent pending URL and only selected tabs activate the MCP browser target; initial loading state and ChatGPT navigation no longer leak across tabs.
 
 ## Verification
 - `npm run build` and `git diff --check` pass.
