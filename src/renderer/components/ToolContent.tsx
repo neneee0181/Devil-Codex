@@ -416,7 +416,6 @@ export function BrowserPanel({ browserSessionKey, visible = true, workspace, fil
   }, []);
   useEffect(() => { rememberBrowserSessionUrl(browserSessionKey, state.url); }, [browserSessionKey, state.url]);
   useEffect(() => { if (!editing) setDraft(state.url === "about:blank" ? "" : state.url); }, [state.url, editing]);
-  useEffect(() => { if (visible) void window.devilCodex.browserFocus({ key: browserSessionKey }).then(setState); }, [browserSessionKey, visible]);
 
   const go = (): void => { void window.devilCodex.browserNavigate({ key: browserSessionKey, url: draft }); setEditing(false); };
   const setZoomBy = (delta: number): void => { void window.devilCodex.browserZoom({ key: browserSessionKey, delta }).then((f) => setZoom(Math.round(f * 100))); };
@@ -429,8 +428,28 @@ export function BrowserPanel({ browserSessionKey, visible = true, workspace, fil
   };
 
   const webviewRef = useRef<ElectronWebview | null>(null);
+  const browserRegisteredRef = useRef(false);
   const contextFileInputRef = useRef<HTMLInputElement>(null);
   const lastUploadRef = useRef<{ key: string; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!visible || !browserRegisteredRef.current) return;
+    void window.devilCodex.browserFocus({ key: browserSessionKey }).then(setState);
+  }, [browserSessionKey, visible]);
+  useEffect(() => {
+    const webview = webviewRef.current as (ElectronWebview & { getWebContentsId?: () => number }) | null;
+    if (!webview) return;
+    const register = (): void => {
+      const id = webview.getWebContentsId?.();
+      if (!id) return;
+      void window.devilCodex.browserRegister({ key: browserSessionKey, webContentsId: id }).then((next) => {
+        browserRegisteredRef.current = true;
+        if (visible) setState(next);
+      });
+    };
+    webview.addEventListener("dom-ready", register);
+    return () => webview.removeEventListener("dom-ready", register);
+  }, [browserSessionKey]);
 
   // Annotate (DevTools-style): inject a picker into the guest <webview> that
   // hover-highlights elements; click selects one. We then crop a screenshot to
@@ -603,7 +622,7 @@ export function BrowserPanel({ browserSessionKey, visible = true, workspace, fil
     <div className="browser-host">
       {state.loading && <span className="browser-load-bar" aria-label="페이지 불러오는 중" />}
       {/* @ts-expect-error webview is an Electron intrinsic element */}
-      <webview key={browserPartition} ref={webviewRef} src={initialBrowserUrl.current} partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} onDomReady={() => { const id = (webviewRef.current as unknown as { getWebContentsId?: () => number } | null)?.getWebContentsId?.(); if (id) void window.devilCodex.browserRegister({ key: browserSessionKey, webContentsId: id }); }} />
+      <webview key={browserPartition} ref={webviewRef} src={initialBrowserUrl.current} partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} onDomReady={() => { const id = (webviewRef.current as unknown as { getWebContentsId?: () => number } | null)?.getWebContentsId?.(); if (id) void window.devilCodex.browserRegister({ key: browserSessionKey, webContentsId: id }).then((next) => { browserRegisteredRef.current = true; if (visible) setState(next); }); }} />
       {isBrowserEmpty && <div className="browser-host-empty">
         <Globe2 />
         <strong>브라우징 시작</strong>

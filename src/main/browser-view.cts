@@ -16,7 +16,8 @@ export interface BrowserState {
 // run through one path, and so step 2 can attach CDP to it.
 export class BrowserViewManager {
   private wc: WebContents | undefined;
-  private pendingUrl = "";
+  private activeKey: string | undefined;
+  private readonly pendingUrls = new Map<string, string>();
   private readonly guests = new Map<number, WebContents>();
   private readonly tabs = new Map<string, WebContents>();
 
@@ -26,9 +27,8 @@ export class BrowserViewManager {
   requestActivate(): void { this.send("browser:activate", {}); }
 
   attach(wc: WebContents): void {
-    this.wc = wc;
+    if (!this.wc) this.wc = wc;
     this.guests.set(wc.id, wc);
-    if (this.pendingUrl) { const url = this.pendingUrl; this.pendingUrl = ""; void wc.loadURL(url).catch(() => undefined); }
     const emit = (): void => {
       const key = this.keyFor(wc);
       if (key) this.send("browser:state", { key, state: this.stateFor(wc) });
@@ -56,7 +56,15 @@ export class BrowserViewManager {
     const guest = this.guests.get(webContentsId);
     if (!guest) return this.state();
     this.tabs.set(key, guest);
-    this.wc = guest;
+    if (!this.activeKey || this.activeKey === key) {
+      this.activeKey = key;
+      this.wc = guest;
+    }
+    const pendingUrl = this.pendingUrls.get(key);
+    if (pendingUrl) {
+      this.pendingUrls.delete(key);
+      void guest.loadURL(pendingUrl).catch(() => undefined);
+    }
     const state = this.stateFor(guest);
     this.send("browser:state", { key, state });
     return state;
@@ -64,6 +72,7 @@ export class BrowserViewManager {
 
   focus(key?: string): BrowserState {
     if (key) {
+      this.activeKey = key;
       const guest = this.tabs.get(key);
       if (guest) this.wc = guest;
     }
@@ -93,7 +102,10 @@ export class BrowserViewManager {
     const url = normalizeUrl(rawUrl);
     // No webview yet (browser tab not open): queue it; attach() loads it once the
     // renderer mounts the <webview> in response to the activate request.
-    if (!this.wc) { this.pendingUrl = url; return; }
+    if (!this.wc) {
+      if (this.activeKey) this.pendingUrls.set(this.activeKey, url);
+      return;
+    }
     void this.wc.loadURL(url).catch(() => undefined);
   }
 
@@ -103,7 +115,7 @@ export class BrowserViewManager {
     const start = Date.now();
     for (;;) {
       const wc = this.wc;
-      if (wc && !this.pendingUrl && wc.getURL() && !wc.isLoading()) return this.state();
+      if (wc && !this.pendingUrls.has(this.activeKey ?? "") && wc.getURL() && !wc.isLoading()) return this.state();
       if (Date.now() - start > timeoutMs) return this.state();
       await new Promise((r) => setTimeout(r, 150));
     }
