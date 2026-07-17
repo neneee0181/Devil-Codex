@@ -47,7 +47,7 @@ GPT/Codex 요청에는 모델 이름, tool, input, reasoning 설정을 재작성
 
 ```toml
 # devil-codex:stock-bridge:start
-model_provider = "devil"
+openai_base_url = "http://127.0.0.1:49873/<secret>/v1"
 model_catalog_json = "/.../devil-stock-catalog.json"
 # devil-codex:stock-bridge:end
 ```

@@ -44,7 +44,12 @@ function externalEntry(template: CatalogEntry, model: { id: string; label: strin
   entry.supports_parallel_tool_calls = false;
   entry.supports_search_tool = false;
   delete entry.web_search_tool_type;
-  delete entry.supports_websockets;
+  // Stock Codex otherwise opens a WebSocket Responses transport before its
+  // HTTP/SSE fallback. The local Bridge intentionally serves HTTP/SSE only.
+  // Keep this on the external catalog row (instead of switching the whole
+  // thread to a custom model_provider) so stock Codex retains its own thread
+  // identity and sync lifecycle.
+  entry.supports_websockets = false;
   return entry;
 }
 

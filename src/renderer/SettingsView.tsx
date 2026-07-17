@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Bell, Check, ChevronDown, ChevronRight, Copy, CreditCard, Globe2, QrCode, RefreshCw, Search, TerminalSquare, Wifi, X } from "lucide-react";
 import { useCodexSettings } from "./hooks/useCodexSettings";
@@ -163,6 +163,8 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
   const [query, setQuery] = useState("");
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set());
+  const selectedRef = useRef(selected);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
   const externalProviders = useMemo(() => providers.filter((provider) => provider.id !== "codex"), [providers]);
   const choices = useMemo(() => externalProviders.flatMap((provider) => {
     const accounts = provider.accounts.length ? provider.accounts : [undefined];
@@ -179,14 +181,25 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
   const byId = useMemo(() => new Map(choices.map((choice) => [choice.id, choice])), [choices]);
   const normalizedQuery = query.trim().toLowerCase();
   const matches = (choice: StockBridgeModelChoice): boolean => !normalizedQuery || `${choice.label} ${choice.provider} ${choice.account}`.toLowerCase().includes(normalizedQuery);
-  const toggle = (id: string): void => onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
-  const move = (id: string, direction: -1 | 1): void => {
-    const index = selected.indexOf(id);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= selected.length) return;
-    const next = [...selected];
-    [next[index], next[target]] = [next[target], next[index]];
+  // Model buttons can be clicked before React renders the preceding choice.
+  // Keep a committed ref so every click builds on the latest selection instead
+  // of letting concurrent IPC saves overwrite earlier choices.
+  const commitSelection = (next: string[]): void => {
+    selectedRef.current = next;
     onChange(next);
+  };
+  const toggle = (id: string): void => {
+    const current = selectedRef.current;
+    commitSelection(current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
+  const move = (id: string, direction: -1 | 1): void => {
+    const current = selectedRef.current;
+    const index = current.indexOf(id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= current.length) return;
+    const next = [...current];
+    [next[index], next[target]] = [next[target], next[index]];
+    commitSelection(next);
   };
   const toggleProvider = (id: string): void => setExpandedProviders((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const toggleAccount = (id: string): void => setExpandedAccounts((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
@@ -218,7 +231,7 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
     </div>}
     <div className="stock-model-picker-selected">{selected.length ? selected.map((id, index) => {
       const choice = byId.get(id);
-      return <div key={id}><span><b>{index + 1}</b><strong>{choice?.label ?? id}</strong><small>{choice ? `${choice.provider} · ${choice.account}` : "사용할 수 없는 모델"}</small></span><button type="button" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`${choice?.label ?? id} 위로 이동`}>↑</button><button type="button" onClick={() => move(id, 1)} disabled={index === selected.length - 1} aria-label={`${choice?.label ?? id} 아래로 이동`}>↓</button><button type="button" onClick={() => onChange(selected.filter((item) => item !== id))} aria-label={`${choice?.label ?? id} 제거`}><X size={14} /></button></div>;
+      return <div key={id}><span><b>{index + 1}</b><strong>{choice?.label ?? id}</strong><small>{choice ? `${choice.provider} · ${choice.account}` : "사용할 수 없는 모델"}</small></span><button type="button" onClick={() => move(id, -1)} disabled={index === 0} aria-label={`${choice?.label ?? id} 위로 이동`}>↑</button><button type="button" onClick={() => move(id, 1)} disabled={index === selected.length - 1} aria-label={`${choice?.label ?? id} 아래로 이동`}>↓</button><button type="button" onClick={() => commitSelection(selectedRef.current.filter((item) => item !== id))} aria-label={`${choice?.label ?? id} 제거`}><X size={14} /></button></div>;
     }) : <p>외부 모델을 추가하지 않으면 순정 Codex에는 GPT 모델만 표시됩니다.</p>}</div>
   </div>;
 }

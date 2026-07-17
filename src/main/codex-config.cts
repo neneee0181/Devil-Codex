@@ -151,24 +151,20 @@ function stripManagedRootBlock(source: string, begin: string, end: string): stri
 }
 
 // The Codex desktop model picker has one active OpenAI transport for its
-// catalog. OpenCodex uses this supported root override for the same reason:
-// native models pass through unchanged; provider:model entries are translated
-// by the local Devil proxy.
-// The stock desktop first attempts a WebSocket Responses transport when its
-// default OpenAI provider is overridden with openai_base_url. The local Bridge
-// deliberately implements HTTP/SSE only, so make the managed Devil provider
-// the active provider instead. Native models still pass through unchanged.
+// catalog. Native models pass through unchanged; provider:model entries are
+// translated by the local Devil proxy. WebSocket is disabled per external
+// catalog row, preserving stock Codex's OpenAI thread identity and sync flow.
 export async function registerDevilStockBridge(port: number, secret: string, catalogPath: string): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   const cleaned = stripManagedRootBlock(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END).trimEnd();
   const firstTable = cleaned.search(/^\s*\[/m);
   const root = firstTable >= 0 ? cleaned.slice(0, firstTable) : cleaned;
-  if (/^\s*model_provider\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
-    throw new Error("Stock Codex bridge cannot replace a user-managed model_provider or model_catalog_json setting.");
+  if (/^\s*openai_base_url\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
+    throw new Error("Stock Codex bridge cannot replace a user-managed openai_base_url or model_catalog_json setting.");
   }
   const block = [
     STOCK_BEGIN,
-    `model_provider = ${toml(DEVIL_PROVIDER)}`,
+    `openai_base_url = ${toml(`http://127.0.0.1:${port}/${secret}/v1`)}`,
     `model_catalog_json = ${toml(catalogPath)}`,
     STOCK_END,
     "",
