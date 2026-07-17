@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { Blocks, Check, ChevronDown, Copy, FilePlus2, Info, Languages, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Blocks, Check, ChevronDown, Copy, Eye, ExternalLink, FilePlus2, Info, Languages, Lock, RotateCcw, Share2, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { ThreadAttachment, ThreadHistoryItem, WorkspaceChanges } from "../../shared/contracts";
 import { MarkdownContent } from "./MarkdownContent";
 import { splitMessageImages } from "./messageAttachments";
@@ -47,7 +47,24 @@ function StreamingText({ text }: { text: string }): React.JSX.Element {
   return <div className="streaming-text">{text}</div>;
 }
 
-export const TimelineCard = memo(function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, streaming, agentLabel = "Codex", onRollback, onReview, onOpenFile }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; streaming?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void }): React.JSX.Element {
+function deployedSiteFrom(text: string): { name: string; url: string; private: boolean } | null {
+  const url = text.match(/https:\/\/[^\s)`]+\.chatgpt\.site[^\s)`]*/i)?.[0];
+  if (!url) return null;
+  const heading = text.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim();
+  const host = new URL(url).hostname.split(".")[0].replace(/[-_]+/g, " ");
+  return { name: heading || host.replace(/\b\w/g, (letter) => letter.toUpperCase()), url, private: /(?:나만|private|비공개)/i.test(text) };
+}
+
+function SiteDeploymentCard({ site, onOpen }: { site: { name: string; url: string; private: boolean }; onOpen: (url: string) => void }): React.JSX.Element {
+  const [preview, setPreview] = useState(true);
+  const copy = (): void => { void navigator.clipboard?.writeText(site.url); };
+  return <section className="site-deployment-card">
+    <header><span className="site-deployment-icon"><Blocks size={20} /></span><span><strong>{site.name}</strong><small>{site.private && <Lock size={12} />}{site.private ? "나만 볼 수 있음" : "공유 사이트"}</small></span><span className="site-deployment-actions"><button type="button" onClick={() => onOpen(site.url)}><ExternalLink size={14} />Open</button><button type="button" onClick={copy}><Share2 size={14} />공유</button><button type="button" onClick={() => setPreview((value) => !value)}><Eye size={14} />{preview ? "Preview 닫기" : "Preview"}</button></span></header>
+    {preview && <div className="site-deployment-preview"><iframe title={`${site.name} 미리보기`} src={site.url} sandbox="allow-scripts allow-forms allow-popups allow-same-origin" /></div>}
+  </section>;
+}
+
+export const TimelineCard = memo(function TimelineCard({ item, changes, showChanges, canRollback, rollbackBusy, translatable, streaming, agentLabel = "Codex", onRollback, onReview, onOpenFile, onOpenSite }: { item: ThreadHistoryItem; changes: WorkspaceChanges; showChanges: boolean; canRollback: boolean; rollbackBusy: boolean; translatable?: boolean; streaming?: boolean; agentLabel?: string; onRollback: (turnId: string) => void; onReview: () => void; onOpenFile: (path: string) => void; onOpenSite?: (url: string) => void }): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
@@ -90,6 +107,7 @@ export const TimelineCard = memo(function TimelineCard({ item, changes, showChan
   };
 
   const renderedText = item.kind === "agent" && showTranslation && translation ? translation : userMessage.text;
+  const deployedSite = item.kind === "agent" && !showTranslation ? deployedSiteFrom(item.text) : null;
   return <motion.article layout={streaming ? false : "position"} className={`timeline-item ${item.kind}${item.status === "inProgress" ? " pending" : ""}`} initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={reduceMotion ? undefined : { opacity: 1, y: 0 }} transition={reduceMotion ? { duration: 0 } : { duration: .2, ease: [.22, 1, .36, 1] }}>
     <div className="item-label-row">
       <span className="item-label">{label}</span>
@@ -100,6 +118,7 @@ export const TimelineCard = memo(function TimelineCard({ item, changes, showChan
     <div className={item.kind === "user" ? "timeline-user-bubble" : undefined}>
       <SkillTokens skills={userMessage.skills} />
       {streaming && item.kind === "agent" && !showTranslation ? <StreamingText text={renderedText} /> : <MarkdownContent text={renderedText} onOpenFile={onOpenFile} />}
+      {deployedSite && <SiteDeploymentCard site={deployedSite} onOpen={onOpenSite ?? (() => void window.open(deployedSite.url, "_blank", "noopener,noreferrer"))} />}
       {item.kind === "user" && item.status === "inProgress" && <small className="timeline-pending-label">대기 중</small>}
     </div>
     {item.kind === "user" && <div className="timeline-actions user-actions"><button type="button" onClick={() => void copy()} aria-label="메시지 복사">{copied ? <Check size={16} /> : <Copy size={16} />}</button></div>}

@@ -38,6 +38,7 @@ import { isPrimaryModifier, shortcut } from "./shortcuts";
 import "./styles.css";
 
 type AppView = "thread" | "search" | "archive" | "sites" | "plugins" | "automations" | "settings";
+type SiteCard = { id: string; name: string; url: string; access: string; updated: string };
 type NavigationEntry = { view: AppView; runtime: AgentRuntimeId; thread: ThreadRef | null; workspace: string; items: ThreadHistoryItem[]; projectDraft: boolean; environmentOpen: boolean; settingsSection: string; search: string };
 type TextPromptState = { title: string; label: string; initialValue: string; placeholder?: string; confirmLabel: string; resolve: (value: string | null) => void };
 type ProjectSortMode = "manual" | "created" | "updated";
@@ -4360,7 +4361,7 @@ function App(): React.JSX.Element {
                 const showItemChanges = item.kind === "agent" && itemChanges.files.length > 0;
                 const canRollbackTurn = changeMeta?.canRollback ?? false;
                 const streaming = item.kind === "agent" && Boolean(item.turnId && runningTurnIds.has(item.turnId));
-                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={showItemChanges} canRollback={canRollbackTurn} rollbackBusy={showItemChanges && rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={onTimelineRollback} onReview={onTimelineReview} onOpenFile={onTimelineOpenFile} />;
+                return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={showItemChanges} canRollback={canRollbackTurn} rollbackBusy={showItemChanges && rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={onTimelineRollback} onReview={onTimelineReview} onOpenFile={onTimelineOpenFile} onOpenSite={(url) => openBrowserTab("right", url)} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
@@ -4376,7 +4377,7 @@ function App(): React.JSX.Element {
         ) : view === "settings" ? (
           <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} providerSettings={providers.settings} providerState={providers.state} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider, accountId) => providers.clearKey(provider, accountId)} onProviderRefreshModels={(provider, accountId) => providers.refreshModels(provider, accountId)} />
         ) : view === "sites" ? (
-          <SitesView servers={availableMcpServers} threadId={thread?.id ?? null} onCall={(input) => window.devilCodex.callMcpTool(input)} onOpen={(url) => openBrowserTab("right", url)} onCreate={() => { setView("thread"); setComposerInject({ text: "Sites를 사용해 새 웹사이트를 만들고 비공개로 배포해줘. 필요한 초기화, 빌드, 저장, 배포 상태 확인까지 진행해줘.", nonce: Date.now() }); }} />
+          <SitesView servers={availableMcpServers} threadId={thread?.id ?? null} knownSites={siteCardsFromResult(items.filter((item) => item.kind === "agent").map((item) => item.text))} onLoadKnown={window.devilCodex.listKnownSites} onCall={(input) => window.devilCodex.callMcpTool(input)} onOpen={(url) => openBrowserTab("right", url)} onCreate={() => { setView("thread"); setComposerInject({ text: "Sites를 사용해 새 웹사이트를 만들고 비공개로 배포해줘. 필요한 초기화, 빌드, 저장, 배포 상태 확인까지 진행해줘.", nonce: Date.now() }); }} />
         ) : view === "plugins" ? (
           <IntegrationsView skills={availableSkills} threadId={thread?.id ?? null} cwd={workspace} />
         ) : (
@@ -5034,12 +5035,25 @@ function SearchView({ query, onQuery, threads, loading, onOpen }: { query: strin
   return <div className="page-view"><h1>검색</h1><div className="search-box"><Search size={17} /><input autoFocus value={query} onChange={(event) => onQuery(event.target.value)} placeholder="스레드, 대화 내용 또는 브랜치 검색" /></div>{loading ? <div className="feature-empty">검색 중…</div> : query.trim() && threads.length === 0 ? <div className="feature-empty"><Search /><strong>검색 결과 없음</strong></div> : <div className="search-results">{threads.map((thread) => <button key={thread.id} onClick={() => void onOpen(thread)}><strong>{thread.title}</strong><span>{thread.preview}</span><small>{thread.cwd}</small></button>)}</div>}</div>;
 }
 
-type SiteCard = { id: string; name: string; url: string; access: string; updated: string };
-
 function siteCardsFromResult(value: unknown): SiteCard[] {
   const found: SiteCard[] = [];
   const seen = new Set<string>();
   const visit = (entry: unknown): void => {
+    if (typeof entry === "string") {
+      // Connector results are commonly returned as MCP `content[].text` rather
+      // than structured objects. Parse JSON when present, otherwise retain the
+      // human-readable name/URL pairs that Sites returns.
+      try { visit(JSON.parse(entry)); return; } catch { /* Plain connector text. */ }
+      const lines = entry.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      lines.forEach((line, index) => {
+        const url = line.match(/https?:\/\/[^\s)]+\.chatgpt\.site[^\s)]*/i)?.[0];
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        const name = lines.slice(0, index).reverse().find((candidate) => !/^[-•*#]|^(상태|버전|접근|status|version|access)\s*[:：]/i.test(candidate)) ?? new URL(url).hostname.split(".")[0];
+        found.push({ id: url, name: name.replace(/^[-•*#]\s*/, ""), url, access: /(?:나만|private|비공개)/i.test(entry) ? "나만" : "공유", updated: "" });
+      });
+      return;
+    }
     if (Array.isArray(entry)) { entry.forEach(visit); return; }
     if (!entry || typeof entry !== "object") return;
     const row = entry as Record<string, unknown>;
@@ -5061,19 +5075,23 @@ function siteCardsFromResult(value: unknown): SiteCard[] {
   return found;
 }
 
-function SitesView({ servers, threadId, onCall, onOpen, onCreate }: {
+function SitesView({ servers, threadId, knownSites, onLoadKnown, onCall, onOpen, onCreate }: {
   servers: McpServerInfo[];
   threadId: string | null;
+  knownSites: SiteCard[];
+  onLoadKnown: () => Promise<Array<{ name: string; url: string; access?: string }>>;
   onCall: (input: { threadId: string; server: string; tool: string; arguments?: unknown }) => Promise<unknown>;
   onOpen: (url: string) => void;
   onCreate: () => void;
 }): React.JSX.Element {
   const [sites, setSites] = useState<SiteCard[]>([]);
+  const [historySites, setHistorySites] = useState<SiteCard[]>([]);
   const [query, setQuery] = useState("");
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState("");
   const server = servers.find((item) => item.name.toLowerCase() === "sites" || item.name.toLowerCase().includes("sites"));
   const canList = Boolean(threadId && server?.tools.some((tool) => tool.name === "list_sites"));
+  useEffect(() => { void onLoadKnown().then((rows) => setHistorySites(rows.map((site) => ({ id: site.url, name: site.name, url: site.url, access: site.access ?? "나만", updated: "" })))).catch(() => undefined); }, [onLoadKnown]);
   const load = async (): Promise<void> => {
     if (!threadId || !server) { setState("error"); setError(threadId ? "현재 Codex app-server에서 Sites 도구를 찾지 못했습니다." : "Sites 목록을 불러오려면 먼저 채팅을 하나 열어 주세요."); return; }
     setState("loading"); setError("");
@@ -5083,13 +5101,14 @@ function SitesView({ servers, threadId, onCall, onOpen, onCreate }: {
     } catch (cause) { setState("error"); setError(`Sites 목록을 불러오지 못했습니다: ${String(cause)}`); }
   };
   useEffect(() => { if (canList) void load(); }, [threadId, server?.name]);
-  const visible = sites.filter((site) => `${site.name} ${site.url}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const catalog = [...sites, ...knownSites, ...historySites].filter((site, index, all) => all.findIndex((candidate) => candidate.url === site.url) === index);
+  const visible = catalog.filter((site) => `${site.name} ${site.url}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <div className="sites-page">
     <div className="sites-head"><div><h1>사이트</h1><p>아이디어를 실제 웹사이트로 만들고 관리하세요.</p></div><div><button className="sites-refresh" type="button" onClick={() => void load()} disabled={state === "loading"}><Loader2 className={state === "loading" ? "spin" : ""} size={16} />새로고침</button><button className="sites-create" type="button" onClick={onCreate}><Plus size={16} />만들기</button></div></div>
     <label className="sites-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="사이트 검색" /></label>
     {state === "loading" ? <div className="sites-empty"><Loader2 className="spin" /><strong>사이트를 불러오는 중</strong></div>
-      : state === "error" ? <div className="sites-empty error"><Globe2 /><strong>Sites 연결을 확인할 수 없습니다</strong><small>{error}</small><button type="button" onClick={() => void load()}>다시 시도</button></div>
-      : state === "ready" && visible.length === 0 ? <div className="sites-empty"><Globe2 /><strong>{sites.length ? "검색 결과가 없습니다" : "아직 만든 사이트가 없습니다"}</strong><small>만들기를 누르면 Sites 생성과 비공개 배포 작업을 채팅에서 시작합니다.</small></div>
+      : state === "error" && visible.length === 0 ? <div className="sites-empty error"><Globe2 /><strong>Sites 연결을 확인할 수 없습니다</strong><small>{error}</small><button type="button" onClick={() => void load()}>다시 시도</button></div>
+      : visible.length === 0 ? <div className="sites-empty"><Globe2 /><strong>{catalog.length ? "검색 결과가 없습니다" : "아직 만든 사이트가 없습니다"}</strong><small>만들기를 누르면 Sites 생성과 비공개 배포 작업을 채팅에서 시작합니다.</small></div>
       : <section className="sites-list"><div className="sites-list-label"><span>사이트</span><span>공유 대상</span></div>{visible.map((site) => <article className="site-row" key={site.id}><div className="site-thumb"><Globe2 size={22} /></div><div className="site-info"><strong>{site.name}</strong><small>{site.url.replace(/^https?:\/\//, "")}</small></div><div className="site-access"><span>▣</span>{site.access === "private" ? "나만" : site.access}</div><div className="site-actions"><button type="button" onClick={() => onOpen(site.url)}><ExternalLink size={15} />Open</button><button type="button" onClick={() => void navigator.clipboard.writeText(site.url)}><Share2 size={15} />공유</button></div></article>)}</section>}
   </div>;
 }

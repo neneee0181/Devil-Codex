@@ -119,6 +119,7 @@ const api: DevilCodexApi = {
   listClaudeSlashCommands: (input) => ipcRenderer.invoke("claude:slash-commands", input ?? {}),
   listClaudeMcpServers: (input) => ipcRenderer.invoke("claude:mcp-list", input ?? {}),
   listCodexPluginSkills: () => ipcRenderer.invoke("codex:plugin-skills"),
+  listKnownSites: () => ipcRenderer.invoke("sites:known-list"),
   onUpdateState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
     ipcRenderer.on("update:state", handler);

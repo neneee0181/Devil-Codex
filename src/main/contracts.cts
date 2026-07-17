@@ -465,6 +465,7 @@ export interface DevilCodexApi {
   listClaudeSlashCommands: (input?: { cwd?: string; model?: string }) => Promise<ClaudeSlashCommandInfo[]>;
   listClaudeMcpServers: (input?: { cwd?: string }) => Promise<McpServerInfo[]>;
   listCodexPluginSkills: () => Promise<CodexSkillInfo[]>;
+  listKnownSites: () => Promise<Array<{ name: string; url: string; access?: string }>>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
   devilMcpStatus: () => Promise<DevilMcpStatus>;

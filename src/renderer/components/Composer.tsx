@@ -368,14 +368,16 @@ export function Composer({
     const position = getEditorCaretPosition(element);
     if (!position) return;
     const menuWidth = 600;
-    const menuHeight = match[1] === "/" ? 390 : 300;
     const composerRect = element.closest(".composer")?.getBoundingClientRect();
     if (composerRect) {
       position.left = Math.max(8, Math.min(composerRect.left + 12, window.innerWidth - menuWidth - 8));
-      position.top = Math.max(8, composerRect.top - menuHeight - 10);
+      // The popup uses its real rendered height (CSS translate) instead of a
+      // guessed 300/390px height, so @ with a few plugins sits flush above the
+      // composer rather than floating high in the conversation.
+      position.top = composerRect.top;
     } else {
       position.left = Math.max(8, Math.min(position.left, window.innerWidth - menuWidth - 8));
-      position.top = Math.max(8, position.top - menuHeight - 10);
+      position.top = Math.max(8, position.top);
     }
 
     setTrigger({ sigil: match[1] as "$" | "/" | "@", query: match[2], position, tokenLength: token.length });

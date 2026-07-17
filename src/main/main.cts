@@ -1375,6 +1375,42 @@ async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
   return { ok: false, detail: errors.at(-1) ?? "순정 Codex 앱을 열 수 없습니다." };
 }
 
+type KnownSite = { name: string; url: string; access?: string };
+let knownSitesCache: { expiresAt: number; sites: KnownSite[] } | undefined;
+
+async function knownSitesFromCodexHistory(): Promise<KnownSite[]> {
+  if (knownSitesCache && knownSitesCache.expiresAt > Date.now()) return knownSitesCache.sites;
+  const root = join(app.getPath("home"), ".codex", "sessions");
+  const files: string[] = [];
+  const walk = async (path: string): Promise<void> => {
+    if (files.length >= 400) return;
+    const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= 400) break;
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(child);
+    }
+  };
+  await walk(root);
+  const sites = new Map<string, KnownSite>();
+  for (const file of files) {
+    const raw = await readFile(file, "utf8").catch(() => "");
+    for (const match of raw.matchAll(/https:\/\/[^\s"\\]+\.chatgpt\.site[^\s"\\)]*/gi)) {
+      const url = match[0];
+      if (sites.has(url)) continue;
+      const before = raw.slice(Math.max(0, (match.index ?? 0) - 700), match.index ?? 0);
+      const name = before.match(/(?:site_name|title|name)\\?"?\s*[:=]\s*\\?"([^"\\\n]{2,100})/i)?.[1]
+        ?? before.split(/\r?\n/).map((line) => line.trim()).reverse().find((line) => line && !/[{}\[\]"\\]/.test(line) && line.length < 100)
+        ?? new URL(url).hostname.split(".")[0].replace(/[-_]+/g, " ");
+      sites.set(url, { name, url, access: /(?:private|나만|비공개)/i.test(before) ? "나만" : "공유" });
+    }
+  }
+  const result = [...sites.values()];
+  knownSitesCache = { sites: result, expiresAt: Date.now() + 30_000 };
+  return result;
+}
+
 async function stockCodexDesktopRunning(): Promise<boolean> {
   try {
     if (process.platform === "win32") {
@@ -2420,6 +2456,7 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   handle("claude:slash-commands", (input) => listClaudeSlashCommands((input ?? {}) as { cwd?: string; model?: string }));
   ipcMain.handle("claude:mcp-list", (_event, input) => listClaudeMcpServers(input ?? {}));
   ipcMain.handle("codex:plugin-skills", () => listCodexPluginSkills());
+  ipcMain.handle("sites:known-list", () => knownSitesFromCodexHistory());
   ipcMain.handle("workspace:choose", async () => {
     const result = await dialog.showOpenDialog(windowRef!, { properties: ["openDirectory", "createDirectory"] });
     return result.canceled ? null : result.filePaths[0] ?? null;
