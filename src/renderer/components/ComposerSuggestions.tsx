@@ -71,7 +71,7 @@ export type ComposerSuggestion = {
   id: string;
   label: string;
   detail: string;
-  kind: "skill" | "command" | "mcp" | "claude-command";
+  kind: "skill" | "plugin" | "command" | "mcp" | "claude-command";
   command?: SlashCommandId;
   token?: string;
 };
@@ -138,10 +138,31 @@ function commandDetail(command: ClaudeSlashCommandInfo): string {
   return [command.argumentHint, command.description || "Claude Code 명령"].filter(Boolean).join(" · ");
 }
 
-export function suggestionsFor(sigil: "$" | "/", query: string, skills: Array<{ name: string; description: string }>, context: SlashCommandContext, mcpServers: McpServerInfo[] = [], claudeSlashCommands: ClaudeSlashCommandInfo[] = []): ComposerSuggestion[] {
+type SkillOption = { name: string; description: string; scope?: string };
+
+function pluginName(skill: SkillOption): string | null {
+  if (skill.scope !== "plugin") return null;
+  return skill.name.split(":", 1)[0] || skill.name;
+}
+
+export function suggestionsFor(sigil: "$" | "/" | "@", query: string, skills: SkillOption[], context: SlashCommandContext, mcpServers: McpServerInfo[] = [], claudeSlashCommands: ClaudeSlashCommandInfo[] = []): ComposerSuggestion[] {
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
+  if (sigil === "@") {
+    const plugins = new Map<string, SkillOption[]>();
+    for (const skill of skills) {
+      const name = pluginName(skill);
+      if (!name) continue;
+      const entries = plugins.get(name) ?? [];
+      entries.push(skill);
+      plugins.set(name, entries);
+    }
+    return [...plugins.entries()]
+      .filter(([name, entries]) => !normalized || [name, ...entries.flatMap((skill) => [skill.name, skill.description])].some((value) => value.toLowerCase().includes(normalized)))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, entries]) => ({ id: `plugin:${name}`, label: `@${name}`, detail: `${entries.length}개 스킬 · 플러그인 사용`, kind: "plugin" as const }));
+  }
   if (context.runtime === "claude-code") {
     return claudeSlashCommands
       .filter((command) => {
@@ -191,6 +212,7 @@ export function ComposerSuggestions({ items, activeIndex, position, onSelect }: 
 }
 
 function iconFor(item: ComposerSuggestion): React.JSX.Element {
+  if (item.kind === "plugin") return <Package size={16} />;
   if (item.kind === "skill") return <Cuboid size={16} />;
   if (item.kind === "mcp") return <PlugIcon />;
   if (item.kind === "claude-command") return <Command size={16} />;

@@ -10,7 +10,7 @@ import { editorSnapshot, editorText, getEditorCaretPosition, getEditorTextBefore
 import { AttachmentGallery } from "./AttachmentCards";
 
 type SuggestionTrigger = {
-  sigil: "$" | "/";
+  sigil: "$" | "/" | "@";
   query: string;
   position: CaretPosition;
   tokenLength: number;
@@ -145,7 +145,7 @@ export function Composer({
   responseSpeed: ResponseSpeed;
   projectContext?: { name: string; branch: string };
   hasActiveThread: boolean;
-  skillOptions: Array<{ name: string; description: string }>;
+  skillOptions: Array<{ name: string; description: string; scope?: string }>;
   claudeSlashCommands?: ClaudeSlashCommandInfo[];
   mcpServers: McpServerInfo[];
   inject?: { attachments?: ComposerAttachment[]; text?: string; nonce: number } | null;
@@ -359,7 +359,7 @@ export function Composer({
 
   const updateTrigger = (element: HTMLDivElement): void => {
     const textBeforeCaret = getEditorTextBeforeCaret(element);
-    const match = textBeforeCaret?.match(/(?:^|\s)([$/])([^\s$/]*)$/);
+    const match = textBeforeCaret?.match(/(?:^|\s)([$/@])([^\s$/@]*)$/);
     if (!match) {
       setTrigger(null);
       return;
@@ -378,7 +378,7 @@ export function Composer({
       position.top = Math.max(8, position.top - menuHeight - 10);
     }
 
-    setTrigger({ sigil: match[1] as "$" | "/", query: match[2], position, tokenLength: token.length });
+    setTrigger({ sigil: match[1] as "$" | "/" | "@", query: match[2], position, tokenLength: token.length });
     setActiveSuggestion(0);
   };
 
@@ -423,6 +423,10 @@ export function Composer({
     } else if (item.kind === "claude-command" && editor.current) {
       removeEditorTrigger(editor.current, trigger.tokenLength);
       insertPlainTextAtSelection(editor.current, item.token ?? `/${name} `);
+      const next = editorSnapshot(editor.current);
+      setDraft(next.text);
+      setSkills(next.skills);
+    } else if (item.kind === "plugin" && editor.current && insertInlineSkill(editor.current, `plugin:${name}`, trigger.tokenLength, item.label.replace(/^@/, ""))) {
       const next = editorSnapshot(editor.current);
       setDraft(next.text);
       setSkills(next.skills);
