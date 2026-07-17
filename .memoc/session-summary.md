@@ -13,11 +13,11 @@ tags:
 Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
-- v0.3.9: Devil MCP registrations now exist only while Devil desktop is running. Shutdown waits for browser/computer/ask/subagent MCP removal; Bridge owners also clean all Devil MCP entries before serving stock Codex.
-- v0.3.11: `@` popup uses its measured height and anchors directly above the composer. Assistant replies with a `chatgpt.site` URL render as Preview/Open/공유 cards; current-thread deployments also appear in Sites when connector listing is unavailable.
+- Bridge external turns now select managed `model_provider = "devil"` with `supports_websockets = false`; prior `openai_base_url` kept WebSocket prewarm on and produced 404/500 before Antigravity.
+- Windows stock-Codex relaunch now uses stable `OpenAI.Codex_*` AppID, not display name `Codex` (installed app reports `ChatGPT`).
 
 ## Verification
-- `npm run build` and `git diff --check` pass after Sites UI work.
+- `npm run build`, `npm run test:main`, `git diff --check` pass. AppID probe passes.
 
 ## Resume
-- Manual Electron check: open a Codex thread, choose `사이트`, and verify `list_sites` loads actual sites when the runtime exposes `sites`; Open should create a right-side browser tab.
+- Manual installed-app check: enable Bridge, confirm selected models, send a one-line Antigravity turn, then inspect Provider request log for completed/failed route.

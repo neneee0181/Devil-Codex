@@ -1361,7 +1361,11 @@ async function openNativeCodex(): Promise<{ ok: boolean; detail?: string }> {
       // Do not fall back to `Codex`/`codex`: on Windows that can resolve the
       // CLI bundled with Devil Codex and open a terminal trust prompt instead
       // of the stock desktop application.
-      ? [["powershell.exe", ["-NoProfile", "-Command", "$app = Get-StartApps | Where-Object { $_.Name -eq 'Codex' -and $_.AppID -like 'OpenAI.Codex_*' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\\' + $app.AppID); exit 0 }; exit 1"]]]
+      // The Store package currently registers its launchable display name as
+      // "ChatGPT" even though its AppID remains OpenAI.Codex_*. Match the
+      // stable AppID only, otherwise a Bridge toggle can close Codex and fail
+      // to reopen it.
+      ? [["powershell.exe", ["-NoProfile", "-Command", "$app = Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex_*' } | Select-Object -First 1; if ($app) { Start-Process ('shell:AppsFolder\\' + $app.AppID); exit 0 }; exit 1"]]]
       : [["xdg-open", ["codex:"]]];
   const errors: string[] = [];
   for (const [command, args] of attempts) {
@@ -1414,7 +1418,7 @@ async function knownSitesFromCodexHistory(): Promise<KnownSite[]> {
 async function stockCodexDesktopRunning(): Promise<boolean> {
   try {
     if (process.platform === "win32") {
-      const command = "$p = Get-Process | Where-Object { $_.Path -like '*\\WindowsApps\\OpenAI.Codex_*' }; if ($p) { exit 0 }; exit 1";
+      const command = "$p = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*\\WindowsApps\\OpenAI.Codex_*' }; if ($p) { exit 0 }; exit 1";
       await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true });
       return true;
     }
@@ -1432,7 +1436,7 @@ async function restartStockCodexIfRunning(): Promise<void> {
   if (!await stockCodexDesktopRunning()) return;
   try {
     if (process.platform === "win32") {
-      const command = "Get-Process | Where-Object { $_.Path -like '*\\WindowsApps\\OpenAI.Codex_*' } | Stop-Process -Force";
+      const command = "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*\\WindowsApps\\OpenAI.Codex_*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
       await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true });
     } else if (process.platform === "darwin") {
       await execFileAsync("osascript", ["-e", 'tell application "Codex" to quit']).catch(() => execFileAsync("pkill", ["-x", "Codex"]));
@@ -2289,6 +2293,14 @@ async function syncStockCodexBridge(): Promise<void> {
   await registerDevilProvider(port, codexProxy.secretToken());
   const catalog = await syncStockCodexCatalogOnly();
   await registerDevilStockBridge(port, codexProxy.secretToken(), catalog.path);
+  const expectedModels = (await settingsStore.load()).stockBridgeModels;
+  const baseUrl = `http://127.0.0.1:${port}/${codexProxy.secretToken()}/v1`;
+  const response = await fetch(`${baseUrl}/models`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Stock Codex Bridge health check failed (${response.status}).`);
+  const body = await response.json() as { data?: Array<{ id?: unknown }> };
+  const available = new Set((body.data ?? []).flatMap((item) => typeof item.id === "string" ? [item.id] : []));
+  const missing = expectedModels.filter((model) => !available.has(model));
+  if (missing.length) throw new Error(`Stock Codex Bridge did not expose selected models: ${missing.join(", ")}`);
   console.log(`[devil-codex stock bridge] ${catalog.added} external models injected into ${catalog.path}`);
 }
 

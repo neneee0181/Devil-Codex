@@ -59,6 +59,9 @@ function block(port: number, secret: string): string {
     // Native Codex passthrough relays the caller's ChatGPT OAuth headers when
     // compatibility mode makes Devil the active model provider.
     `requires_openai_auth = true`,
+    // The local proxy is HTTP/SSE only. Opt out of Codex's WebSocket prewarm
+    // so an external-model turn never starts with a 404 upgrade attempt.
+    `supports_websockets = false`,
     END,
     "",
   ].join("\n");
@@ -151,18 +154,21 @@ function stripManagedRootBlock(source: string, begin: string, end: string): stri
 // catalog. OpenCodex uses this supported root override for the same reason:
 // native models pass through unchanged; provider:model entries are translated
 // by the local Devil proxy.
+// The stock desktop first attempts a WebSocket Responses transport when its
+// default OpenAI provider is overridden with openai_base_url. The local Bridge
+// deliberately implements HTTP/SSE only, so make the managed Devil provider
+// the active provider instead. Native models still pass through unchanged.
 export async function registerDevilStockBridge(port: number, secret: string, catalogPath: string): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   const cleaned = stripManagedRootBlock(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END).trimEnd();
   const firstTable = cleaned.search(/^\s*\[/m);
   const root = firstTable >= 0 ? cleaned.slice(0, firstTable) : cleaned;
-  if (/^\s*openai_base_url\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
-    throw new Error("Stock Codex bridge cannot replace a user-managed openai_base_url or model_catalog_json setting.");
+  if (/^\s*model_provider\s*=/m.test(root) || /^\s*model_catalog_json\s*=/m.test(root)) {
+    throw new Error("Stock Codex bridge cannot replace a user-managed model_provider or model_catalog_json setting.");
   }
-  const baseUrl = `http://127.0.0.1:${port}/${secret}/v1`;
   const block = [
     STOCK_BEGIN,
-    `openai_base_url = ${toml(baseUrl)}`,
+    `model_provider = ${toml(DEVIL_PROVIDER)}`,
     `model_catalog_json = ${toml(catalogPath)}`,
     STOCK_END,
     "",
