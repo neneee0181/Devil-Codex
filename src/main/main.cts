@@ -2357,30 +2357,34 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
       else target.maximize();
     }
   });
-  ipcMain.handle("browser:navigate", (_event, input: { url: string }) => browserView.navigate(input.url));
-  ipcMain.handle("browser:back", () => browserView.goBack());
-  ipcMain.handle("browser:forward", () => browserView.goForward());
-  ipcMain.handle("browser:reload", () => browserView.reload());
-  ipcMain.handle("browser:hard-reload", () => browserView.hardReload());
-  ipcMain.handle("browser:stop", () => browserView.stop());
-  ipcMain.handle("browser:state", () => browserView.state());
-  ipcMain.handle("browser:screenshot", () => browserView.screenshot());
-  ipcMain.handle("browser:find", (_event, input: { text: string; forward?: boolean; findNext?: boolean }) => browserView.find(input.text, { forward: input.forward, findNext: input.findNext }));
-  ipcMain.handle("browser:stop-find", () => browserView.stopFind());
-  ipcMain.handle("browser:zoom", (_event, input: { factor?: number; delta?: number; reset?: boolean }) => {
+  const selectBrowser = (key?: string) => browserView.focus(key);
+  ipcMain.handle("browser:register", (_event, input: { key: string; webContentsId: number }) => browserView.register(input.key, input.webContentsId));
+  ipcMain.handle("browser:focus", (_event, input: { key: string }) => browserView.focus(input.key));
+  ipcMain.handle("browser:navigate", (_event, input: { key?: string; url: string }) => { selectBrowser(input.key); browserView.navigate(input.url); });
+  ipcMain.handle("browser:back", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.goBack(); });
+  ipcMain.handle("browser:forward", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.goForward(); });
+  ipcMain.handle("browser:reload", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.reload(); });
+  ipcMain.handle("browser:hard-reload", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.hardReload(); });
+  ipcMain.handle("browser:stop", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.stop(); });
+  ipcMain.handle("browser:state", (_event, input?: { key?: string }) => selectBrowser(input?.key));
+  ipcMain.handle("browser:screenshot", async (_event, input?: { key?: string }) => { selectBrowser(input?.key); return browserView.screenshot(); });
+  ipcMain.handle("browser:find", (_event, input: { key?: string; text: string; forward?: boolean; findNext?: boolean }) => { selectBrowser(input.key); browserView.find(input.text, { forward: input.forward, findNext: input.findNext }); });
+  ipcMain.handle("browser:stop-find", (_event, input?: { key?: string }) => { selectBrowser(input?.key); browserView.stopFind(); });
+  ipcMain.handle("browser:zoom", (_event, input: { key?: string; factor?: number; delta?: number; reset?: boolean }) => {
+    selectBrowser(input.key);
     if (input.reset) return browserView.setZoom(1);
     if (typeof input.factor === "number") return browserView.setZoom(input.factor);
     if (typeof input.delta === "number") return browserView.setZoom(browserView.getZoom() + input.delta);
     return browserView.getZoom();
   });
-  ipcMain.handle("browser:clear-cookies", () => browserView.clearCookies());
-  ipcMain.handle("browser:clear-cache", () => browserView.clearCache());
-  ipcMain.handle("browser:capture-rect", (_event, input: { x: number; y: number; width: number; height: number }) => browserView.captureRect(input));
-  ipcMain.handle("browser:ai-click", (_event, input: { x?: number; y?: number; selector?: string }) => browserView.aiClick(input));
-  ipcMain.handle("browser:ai-type", (_event, input: { text: string }) => browserView.aiType(input.text));
-  ipcMain.handle("browser:upload-files", (_event, input: { paths: string[] }) => browserView.uploadFiles(input.paths));
-  ipcMain.handle("browser:ai-key", (_event, input: { key: string }) => browserView.aiKey(input.key));
-  ipcMain.handle("browser:ai-scroll", (_event, input: { dy: number }) => browserView.aiScroll(input.dy));
+  ipcMain.handle("browser:clear-cookies", async (_event, input?: { key?: string }) => { selectBrowser(input?.key); await browserView.clearCookies(); });
+  ipcMain.handle("browser:clear-cache", async (_event, input?: { key?: string }) => { selectBrowser(input?.key); await browserView.clearCache(); });
+  ipcMain.handle("browser:capture-rect", async (_event, input: { key?: string; x: number; y: number; width: number; height: number }) => { selectBrowser(input.key); return browserView.captureRect(input); });
+  ipcMain.handle("browser:ai-click", (_event, input: { key?: string; x?: number; y?: number; selector?: string }) => { selectBrowser(input.key); return browserView.aiClick(input); });
+  ipcMain.handle("browser:ai-type", (_event, input: { key?: string; text: string }) => { selectBrowser(input.key); return browserView.aiType(input.text); });
+  ipcMain.handle("browser:upload-files", (_event, input: { key?: string; paths: string[] }) => { selectBrowser(input.key); return browserView.uploadFiles(input.paths); });
+  ipcMain.handle("browser:ai-key", (_event, input: { key?: string }) => { selectBrowser(input.key); return browserView.aiKey(input.key ?? ""); });
+  ipcMain.handle("browser:ai-scroll", (_event, input: { key?: string; dy: number }) => { selectBrowser(input.key); return browserView.aiScroll(input.dy); });
   ipcMain.handle("browser:ai-read", () => browserView.aiReadText());
   handle("ask:respond", (input) => {
     const payload = input as { id: string; answers: AskAnswerPayload[] | null };

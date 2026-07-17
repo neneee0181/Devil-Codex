@@ -379,7 +379,7 @@ export function ToolContent({ active, workspace, fileTarget, filesLocked = false
 // <webview> (so modals/popovers layer above it via z-index). The guest's
 // WebContents is captured in the main process so user + AI control share one
 // path; this component owns the address bar + nav + page tools.
-function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk }: { browserSessionKey: string; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
+export function BrowserPanel({ browserSessionKey, visible = true, workspace, fileTarget, changes, onAsk }: { browserSessionKey: string; visible?: boolean; workspace: string; fileTarget: string | null; changes: WorkspaceChanges; onAsk?: (attachment: ThreadAttachment, text?: string) => void }): React.JSX.Element {
   const [state, setState] = useState<BrowserState>({ url: "", title: "", loading: false, canGoBack: false, canGoForward: false });
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
@@ -403,9 +403,9 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
   const initialBrowserUrl = useRef(browserInitialUrl(browserSessionKey));
 
   useEffect(() => {
-    const off = window.devilCodex.onBrowserState(setState);
+    const off = window.devilCodex.onBrowserState(({ key, state: next }) => { if (key === browserSessionKey) setState(next); });
     return off;
-  }, []);
+  }, [browserSessionKey]);
   useEffect(() => {
     const onSettingsChanged = (event: Event): void => {
       const detail = (event as CustomEvent<{ key?: string; value?: unknown }>).detail;
@@ -416,14 +416,15 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
   }, []);
   useEffect(() => { rememberBrowserSessionUrl(browserSessionKey, state.url); }, [browserSessionKey, state.url]);
   useEffect(() => { if (!editing) setDraft(state.url === "about:blank" ? "" : state.url); }, [state.url, editing]);
+  useEffect(() => { if (visible) void window.devilCodex.browserFocus({ key: browserSessionKey }).then(setState); }, [browserSessionKey, visible]);
 
-  const go = (): void => { void window.devilCodex.browserNavigate({ url: draft }); setEditing(false); };
-  const setZoomBy = (delta: number): void => { void window.devilCodex.browserZoom({ delta }).then((f) => setZoom(Math.round(f * 100))); };
-  const resetZoom = (): void => { void window.devilCodex.browserZoom({ reset: true }).then((f) => setZoom(Math.round(f * 100))); };
+  const go = (): void => { void window.devilCodex.browserNavigate({ key: browserSessionKey, url: draft }); setEditing(false); };
+  const setZoomBy = (delta: number): void => { void window.devilCodex.browserZoom({ key: browserSessionKey, delta }).then((f) => setZoom(Math.round(f * 100))); };
+  const resetZoom = (): void => { void window.devilCodex.browserZoom({ key: browserSessionKey, reset: true }).then((f) => setZoom(Math.round(f * 100))); };
 
   // Screenshot the page and hand it to the composer to ask about.
   const screenshotToComposer = async (): Promise<void> => {
-    const shot = await window.devilCodex.browserScreenshot();
+    const shot = await window.devilCodex.browserScreenshot({ key: browserSessionKey });
     if (shot) onAsk?.({ name: `browser-${Date.now()}.png`, kind: "image", url: shot, mime: "image/png" });
   };
 
@@ -442,7 +443,7 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
     try {
       const picked = await wv.executeJavaScript(INSPECTOR_SCRIPT) as { rect: { x: number; y: number; width: number; height: number }; selector: string } | null;
       if (picked) {
-        const shot = await window.devilCodex.browserCaptureRect(picked.rect);
+        const shot = await window.devilCodex.browserCaptureRect({ key: browserSessionKey, ...picked.rect });
         if (shot) setAnnotation({ selector: picked.selector, shot });
       }
     } catch { /* navigation/cancel */ } finally {
@@ -457,7 +458,7 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
   };
 
   const openChatGpt = (): void => {
-    void window.devilCodex.browserNavigate({ url: "https://chatgpt.com/" });
+    void window.devilCodex.browserNavigate({ key: browserSessionKey, url: "https://chatgpt.com/" });
     setDraft("https://chatgpt.com/");
     setAssistantOpen(false);
   };
@@ -524,7 +525,7 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
         setContextNotice("ChatGPT/Claude 입력창을 찾지 못했습니다. 입력창을 한 번 클릭한 뒤 다시 눌러주세요.");
         return;
       }
-      await window.devilCodex.browserAiType({ text });
+      await window.devilCodex.browserAiType({ key: browserSessionKey, text });
       if (contextUploadPaths.length) {
         const uploadKey = contextUploadPaths.map((path) => path.toLowerCase()).sort().join("\n");
         const recentDuplicate = lastUploadRef.current?.key === uploadKey && Date.now() - lastUploadRef.current.at < 30_000;
@@ -533,7 +534,7 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
           setContextOpen(false);
           return;
         }
-        const uploaded = await window.devilCodex.browserUploadFiles({ paths: contextUploadPaths });
+        const uploaded = await window.devilCodex.browserUploadFiles({ key: browserSessionKey, paths: contextUploadPaths });
         setContextNotice(uploaded.ok
           ? `컨텍스트를 입력창에 넣고 관련 파일 ${uploaded.count}개를 첨부했습니다. 확인 후 직접 전송하세요.`
           : `컨텍스트는 입력창에 넣었지만 파일 첨부는 실패했습니다: ${uploaded.detail ?? "알 수 없는 오류"}`);
@@ -559,11 +560,11 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
   };
   const isBrowserEmpty = !state.url || state.url === "about:blank";
 
-  return <div className="browser-panel">
+  return <div className="browser-panel" style={{ display: visible ? undefined : "none" }}>
     <div className="browser-toolbar">
-      <button onClick={() => void window.devilCodex.browserBack()} disabled={!state.canGoBack} aria-label="뒤로"><ChevronLeft size={16} /></button>
-      <button onClick={() => void window.devilCodex.browserForward()} disabled={!state.canGoForward} aria-label="앞으로"><ChevronRight size={16} /></button>
-      <button onClick={() => void (state.loading ? window.devilCodex.browserStop() : window.devilCodex.browserReload())} aria-label="새로고침">{state.loading ? <X size={15} /> : <RotateCcw size={15} />}</button>
+      <button onClick={() => void window.devilCodex.browserBack({ key: browserSessionKey })} disabled={!state.canGoBack} aria-label="뒤로"><ChevronLeft size={16} /></button>
+      <button onClick={() => void window.devilCodex.browserForward({ key: browserSessionKey })} disabled={!state.canGoForward} aria-label="앞으로"><ChevronRight size={16} /></button>
+      <button onClick={() => void (state.loading ? window.devilCodex.browserStop({ key: browserSessionKey }) : window.devilCodex.browserReload({ key: browserSessionKey }))} aria-label="새로고침">{state.loading ? <X size={15} /> : <RotateCcw size={15} />}</button>
       <button className={assistantOpen ? "active" : ""} onClick={() => setAssistantOpen((open) => !open)} aria-label="웹 AI 도우미" title="웹 AI 도우미"><Bot size={16} /></button>
       <input
         className="browser-url"
@@ -579,7 +580,7 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
       <div className="browser-menu-wrap">
         <button className={menuOpen ? "active" : ""} onClick={() => setMenuOpen((v) => !v)} aria-label="더보기"><MoreVertical size={16} /></button>
         {menuOpen && <div className="browser-menu" onMouseLeave={() => setMenuOpen(false)}>
-          <button onClick={() => { void window.devilCodex.browserHardReload(); setMenuOpen(false); }}>강제 새로고침</button>
+          <button onClick={() => { void window.devilCodex.browserHardReload({ key: browserSessionKey }); setMenuOpen(false); }}>강제 새로고침</button>
           <button onClick={() => { setFindOpen(true); setMenuOpen(false); }}>페이지에서 찾기</button>
           <div className="browser-menu-divider" />
           <div className="browser-menu-zoom">
@@ -590,19 +591,19 @@ function BrowserPanel({ browserSessionKey, workspace, fileTarget, changes, onAsk
             <button onClick={resetZoom} aria-label="초기화"><RotateCcw size={13} /></button>
           </div>
           <div className="browser-menu-divider" />
-          <button onClick={() => { void window.devilCodex.browserClearCookies(); setMenuOpen(false); }}>쿠키 지우기</button>
-          <button onClick={() => { void window.devilCodex.browserClearCache(); setMenuOpen(false); }}>캐시 지우기</button>
+          <button onClick={() => { void window.devilCodex.browserClearCookies({ key: browserSessionKey }); setMenuOpen(false); }}>쿠키 지우기</button>
+          <button onClick={() => { void window.devilCodex.browserClearCache({ key: browserSessionKey }); setMenuOpen(false); }}>캐시 지우기</button>
         </div>}
       </div>
     </div>
     {findOpen && <div className="browser-find">
-      <input autoFocus value={findText} placeholder="페이지에서 찾기" onChange={(e) => { setFindText(e.target.value); void window.devilCodex.browserFind({ text: e.target.value }); }} onKeyDown={(e) => { if (e.key === "Enter") void window.devilCodex.browserFind({ text: findText, findNext: true }); if (e.key === "Escape") { void window.devilCodex.browserStopFind(); setFindOpen(false); } }} />
-      <button onClick={() => { void window.devilCodex.browserStopFind(); setFindOpen(false); setFindText(""); }}><X size={14} /></button>
+      <input autoFocus value={findText} placeholder="페이지에서 찾기" onChange={(e) => { setFindText(e.target.value); void window.devilCodex.browserFind({ key: browserSessionKey, text: e.target.value }); }} onKeyDown={(e) => { if (e.key === "Enter") void window.devilCodex.browserFind({ key: browserSessionKey, text: findText, findNext: true }); if (e.key === "Escape") { void window.devilCodex.browserStopFind({ key: browserSessionKey }); setFindOpen(false); } }} />
+      <button onClick={() => { void window.devilCodex.browserStopFind({ key: browserSessionKey }); setFindOpen(false); setFindText(""); }}><X size={14} /></button>
     </div>}
     <div className="browser-host">
       {state.loading && <span className="browser-load-bar" aria-label="페이지 불러오는 중" />}
       {/* @ts-expect-error webview is an Electron intrinsic element */}
-      <webview key={browserPartition} ref={webviewRef} src={initialBrowserUrl.current} partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} />
+      <webview key={browserPartition} ref={webviewRef} src={initialBrowserUrl.current} partition={browserPartition} allowpopups="true" style={{ width: "100%", height: "100%", border: 0 }} onDomReady={() => { const id = (webviewRef.current as unknown as { getWebContentsId?: () => number } | null)?.getWebContentsId?.(); if (id) void window.devilCodex.browserRegister({ key: browserSessionKey, webContentsId: id }); }} />
       {isBrowserEmpty && <div className="browser-host-empty">
         <Globe2 />
         <strong>브라우징 시작</strong>

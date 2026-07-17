@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadApprovalPolicy, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
-import { SideChat, ToolContent } from "./ToolContent";
+import { BrowserPanel, SideChat, ToolContent } from "./ToolContent";
 import type { ToolKind } from "./ToolLauncherMenu";
 
 export function BottomDock({
@@ -73,6 +73,7 @@ export function BottomDock({
 }): React.JSX.Element {
   const [shell, setShell] = useState("연결 중…");
   const setShellStable = useCallback((value: string) => setShell(value), []);
+  const browserTabs = tabs.filter((tab) => tab.startsWith("browser:"));
   const subId = active?.startsWith("subagent:") ? active.slice("subagent:".length)
     : active?.startsWith("sidechat:") ? active.slice("sidechat:".length) : null;
 
@@ -91,9 +92,10 @@ export function BottomDock({
         <button type="button" onClick={onClose} aria-label="하단 패널 닫기"><X size={17} /></button>
       </header>
       <div className="bottom-dock-content">
-        {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="bottom" terminalKey={terminalSessionKey} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
+        {active?.startsWith("terminal:") && <TerminalSession active={open} workspace={workspace} dock="bottom" terminalKey={active} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
+        {browserTabs.map((tab) => <BrowserPanel key={tab} browserSessionKey={tab} visible={active === tab} workspace={workspace} fileTarget={fileTarget} changes={changes} />)}
         {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "사이드 채팅" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} lockedModel={active?.startsWith("subagent:")} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} onOpenFile={onTerminalOpenPath} />}
-        {active && active !== "terminal" && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
+        {active && !active.startsWith("terminal:") && !active.startsWith("browser:") && !subId && <ToolContent active={active as Exclude<ToolKind, "terminal">} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       </div>
     </section>
   );

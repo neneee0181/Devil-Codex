@@ -1126,8 +1126,8 @@ function App(): React.JSX.Element {
       setUtilityActive(null);
       setUtilityPanelOpen(false);
       setUtilityPanelExpanded(false);
-      setBottomTabs(["terminal"]);
-      setBottomActive("terminal");
+      setBottomTabs(["terminal:default"]);
+      setBottomActive("terminal:default");
       setTerminalOpen(false);
       setEnvironmentOpen(false);
     }
@@ -1207,8 +1207,8 @@ function App(): React.JSX.Element {
   const [runningTurns, setRunningTurns] = useState<Record<string, { turnId?: string; startedAt: number }>>(() => readPersistedRunningTurns());
   const [queuedView, setQueuedView] = useState<Record<string, Array<{ id: string; text: string; attachments?: ThreadAttachment[]; steering?: boolean }>>>({});
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal"]);
-  const [bottomActive, setBottomActive] = useState<string | null>("terminal");
+  const [bottomTabs, setBottomTabs] = useState<string[]>(["terminal:default"]);
+  const [bottomActive, setBottomActive] = useState<string | null>("terminal:default");
   const [terminalHeight, setTerminalHeight] = useState(286);
   const [resizing, setResizing] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => Number(localStorage.getItem("devil-codex:sidebar-width")) || 310);
@@ -1408,7 +1408,7 @@ function App(): React.JSX.Element {
     setUtilityActive(panel.active);
     setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
     setUtilityPanelExpanded(panel.open && panel.expanded);
-    const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal"], active: "terminal", open: false, height: terminalHeight };
+    const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal:default"], active: "terminal:default", open: false, height: terminalHeight };
     setBottomTabs(bottom.tabs);
     setBottomActive(bottom.active);
     setTerminalOpen(bottom.open && bottom.tabs.length > 0);
@@ -1527,7 +1527,10 @@ function App(): React.JSX.Element {
   }, []);
   // When the AI drives the browser (devil_browser MCP), open/focus the browser
   // tab so the user watches it act.
-  useEffect(() => window.devilCodex.onBrowserActivate(() => { openUtility("browser"); setUtilityPanelOpen(true); }), []);
+  useEffect(() => window.devilCodex.onBrowserActivate(() => { openBrowserTab("right"); }), []);
+  useEffect(() => window.devilCodex.onBrowserNewTab(({ sourceKey, url }) => {
+    openBrowserTab(utilityTabs.includes(sourceKey) ? "right" : "bottom", url);
+  }), [utilityTabs]);
   useEffect(() => { void window.devilCodex.appInfo().then(setAppInfo).catch(() => undefined); }, []);
   useEffect(() => { void window.devilCodex.listOpenWorkspaceTargets().then(setOpenTargets).catch(() => undefined); }, []);
 
@@ -1560,7 +1563,7 @@ function App(): React.JSX.Element {
     if (command === "search") setCommandPaletteOpen(true);
     if (command === "settings") openView("settings");
     if (command === "open-project") void chooseWorkspace();
-    if (command === "terminal") { closePopovers(); if (terminalOpen && bottomActive === "terminal") setTerminalOpen(false); else openBottomTool("terminal"); }
+    if (command === "terminal") { closePopovers(); if (terminalOpen && bottomActive === "terminal:default") setTerminalOpen(false); else openBottomTool("terminal:default"); }
     if (command === "environment") { closePopovers(); setEnvironmentOpen((open) => !open); }
   }), [workspace, runtime.state, model, busy, bottomActive, terminalOpen, bridgeChatLocked]);
 
@@ -2847,7 +2850,7 @@ function App(): React.JSX.Element {
       setUtilityActive(panel.active);
       setUtilityPanelOpen(panel.open && panel.tabs.length > 0);
       setUtilityPanelExpanded(panel.open && panel.expanded);
-      const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal"], active: "terminal", open: false, height: terminalHeight };
+      const bottom = bottomByThread.current[panelKey] ?? { tabs: ["terminal:default"], active: "terminal:default", open: false, height: terminalHeight };
       setBottomTabs(bottom.tabs);
       setBottomActive(bottom.active);
       setTerminalOpen(bottom.open && bottom.tabs.length > 0);
@@ -3937,7 +3940,7 @@ function App(): React.JSX.Element {
       return;
     }
     if (command === "review") { openUtility("review"); return; }
-    if (command === "terminal") { openBottomTool("terminal"); return; }
+    if (command === "terminal") { openBottomTool("terminal:default"); return; }
     if (command === "files") { openUtility("files"); return; }
     if (command === "plugins") { openView("plugins"); return; }
     if (command === "toggle-pin") { toggleActiveThreadPin(); return; }
@@ -4020,6 +4023,27 @@ function App(): React.JSX.Element {
     if (tool === "review") {
       void prepareReview();
     }
+  }
+
+  function uniqueDockTab(kind: "browser" | "terminal"): string {
+    return `${kind}:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function openBrowserTab(dock: "right" | "bottom", url?: string): void {
+    const tab = uniqueDockTab("browser");
+    if (url) {
+      try {
+        const key = "devil-codex:browser-session-urls";
+        const saved = JSON.parse(localStorage.getItem(key) ?? "{}") as Record<string, string>;
+        localStorage.setItem(key, JSON.stringify({ ...saved, [tab]: url }));
+      } catch { /* Opens blank when session storage is unavailable. */ }
+    }
+    if (dock === "right") openUtility(tab); else openBottomTool(tab);
+  }
+
+  function openTerminalTab(dock: "right" | "bottom"): void {
+    const tab = uniqueDockTab("terminal");
+    if (dock === "right") openUtility(tab); else openBottomTool(tab);
   }
 
   function openUtility(tool: string): void {
@@ -4290,7 +4314,7 @@ function App(): React.JSX.Element {
               </motion.div>}</AnimatePresence>
             </div>
             <button className={environmentOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); setEnvironmentOpen((open) => !open); }} aria-label="환경"><SlidersHorizontal size={18} /></button>
-            <button className={terminalOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); if (terminalOpen && bottomActive === "terminal") setTerminalOpen(false); else openBottomTool("terminal"); }} aria-label="터미널"><PanelBottom size={18} /></button>
+            <button className={terminalOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); if (terminalOpen && bottomActive === "terminal:default") setTerminalOpen(false); else openBottomTool("terminal:default"); }} aria-label="터미널"><PanelBottom size={18} /></button>
             <button className={utilityPanelOpen ? "square-action active" : "square-action"} onClick={() => { closePopovers(); setUtilityPanelOpen((open) => { if (open) setUtilityPanelExpanded(false); else setEnvironmentOpen(false); return !open; }); }} aria-label="도구 패널"><PanelRight size={18} /></button>
           </div>
         </header>
@@ -4344,10 +4368,10 @@ function App(): React.JSX.Element {
         )}
         </div>
 
-        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:right-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} sideChatCreating={sideChatCreatingDock === "right"} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
+        <UtilityPanel open={utilityPanelOpen} tabs={utilityTabs} active={utilityActive} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} subagentList={sideChatList} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:right-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} expanded={utilityPanelExpanded} onBrowserAsk={askAboutPage} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} subagentPick={subagentPick} onToggleExpanded={() => setUtilityPanelExpanded((value) => !value)} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onOpenSubagent={openSubagentTab} onNewSideChat={() => void newSideChat()} sideChatCreating={sideChatCreatingDock === "right"} onSelect={openUtility} onAdd={(tool) => { if (tool === "side-chat") void newSideChat(); else if (tool === "browser") openBrowserTab("right"); else if (tool === "terminal") openTerminalTab("right"); else openUtility(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeUtilityTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => { setUtilityPanelExpanded(false); setUtilityPanelOpen(false); }} onResize={(event) => startSideResize(event, "right")} />
         </div>
 
-        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:bottom-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onNewSideChat={() => void newSideChat("bottom")} sideChatCreating={sideChatCreatingDock === "bottom"} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
+        <BottomDock open={terminalOpen} tabs={bottomTabs} active={bottomActive} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} projectName={projectName} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} subagentLabels={subagentNames} browserSessionKey={sideChatKey} terminalSessionKey={`${sideChatKey}:bottom-terminal`} subagentCtx={{ runtime: sideConversationRuntime, model: sideConversationModel, provider: sideConversationProvider, accountId: sideConversationAccountId, cwd: workspace, providers: sideConversationProviders, ...sideConversationPermissions }} subagentHistory={subagentHistory} subagentBusy={subagentBusy} subagentPick={subagentPick} onTerminalAsk={askAboutTerminal} onTerminalOpenPath={openWorkspaceFile} onSubagentPick={(id, pick) => setSubagentPick((prev) => ({ ...prev, [id]: pick }))} onSubagentHistory={(id, items) => setSubagentHistory((prev) => ({ ...prev, [id]: items }))} onNewSideChat={() => void newSideChat("bottom")} sideChatCreating={sideChatCreatingDock === "bottom"} onSelect={openBottomTool} onAdd={(tool) => { if (tool === "side-chat") void newSideChat("bottom"); else if (tool === "browser") openBrowserTab("bottom"); else if (tool === "terminal") openTerminalTab("bottom"); else openBottomTool(tool); }} onCloseTab={(tab) => { if (tab.startsWith("sidechat:")) closeSideChat(tab.slice("sidechat:".length)); else closeBottomTab(tab); }} onSelectDiff={(file) => void selectDiff(file)} onSendReviewComment={sendInlineReviewComment} onApplyHunk={applyReviewHunk} onClose={() => setTerminalOpen(false)} onResize={startTerminalResize} />
       </section>
       {gitDialogOpen && <GitWorkflowDialog cwd={workspace} changes={changes} onClose={() => setGitDialogOpen(false)} onRefresh={() => refreshChanges()} onError={setExternalError} />}
       {worktreeDialogCwd && <WorktreeDialog cwd={worktreeDialogCwd} onClose={() => setWorktreeDialogCwd(null)} onOpen={(path) => void openWorktree(path)} onError={setExternalError} />}

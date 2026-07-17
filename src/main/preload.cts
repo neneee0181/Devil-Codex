@@ -6,19 +6,21 @@ const api: DevilCodexApi = {
   windowControl: (input) => ipcRenderer.invoke("app:window-control", input),
   showNotification: (input) => ipcRenderer.invoke("app:notify", input),
   openPermission: (input) => ipcRenderer.invoke("app:open-permission", input),
+  browserRegister: (input) => ipcRenderer.invoke("browser:register", input),
+  browserFocus: (input) => ipcRenderer.invoke("browser:focus", input),
   browserNavigate: (input) => ipcRenderer.invoke("browser:navigate", input),
-  browserBack: () => ipcRenderer.invoke("browser:back"),
-  browserForward: () => ipcRenderer.invoke("browser:forward"),
-  browserReload: () => ipcRenderer.invoke("browser:reload"),
-  browserStop: () => ipcRenderer.invoke("browser:stop"),
-  browserHardReload: () => ipcRenderer.invoke("browser:hard-reload"),
-  browserState: () => ipcRenderer.invoke("browser:state"),
-  browserScreenshot: () => ipcRenderer.invoke("browser:screenshot"),
+  browserBack: (input) => ipcRenderer.invoke("browser:back", input),
+  browserForward: (input) => ipcRenderer.invoke("browser:forward", input),
+  browserReload: (input) => ipcRenderer.invoke("browser:reload", input),
+  browserStop: (input) => ipcRenderer.invoke("browser:stop", input),
+  browserHardReload: (input) => ipcRenderer.invoke("browser:hard-reload", input),
+  browserState: (input) => ipcRenderer.invoke("browser:state", input),
+  browserScreenshot: (input) => ipcRenderer.invoke("browser:screenshot", input),
   browserFind: (input) => ipcRenderer.invoke("browser:find", input),
-  browserStopFind: () => ipcRenderer.invoke("browser:stop-find"),
+  browserStopFind: (input) => ipcRenderer.invoke("browser:stop-find", input),
   browserZoom: (input) => ipcRenderer.invoke("browser:zoom", input),
-  browserClearCookies: () => ipcRenderer.invoke("browser:clear-cookies"),
-  browserClearCache: () => ipcRenderer.invoke("browser:clear-cache"),
+  browserClearCookies: (input) => ipcRenderer.invoke("browser:clear-cookies", input),
+  browserClearCache: (input) => ipcRenderer.invoke("browser:clear-cache", input),
   browserCaptureRect: (input) => ipcRenderer.invoke("browser:capture-rect", input),
   browserAiClick: (input) => ipcRenderer.invoke("browser:ai-click", input),
   browserAiType: (input) => ipcRenderer.invoke("browser:ai-type", input),
@@ -35,6 +37,11 @@ const api: DevilCodexApi = {
     const handler = () => listener();
     ipcRenderer.on("browser:activate", handler);
     return () => ipcRenderer.removeListener("browser:activate", handler);
+  },
+  onBrowserNewTab: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("browser:new-tab", handler);
+    return () => ipcRenderer.removeListener("browser:new-tab", handler);
   },
   onAsk: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);

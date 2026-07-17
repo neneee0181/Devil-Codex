@@ -79,16 +79,18 @@ export function DockTabStrip({
     <div className={`dock-tab-strip ${dock}`}>
       <div className="dock-tabs-scroll" ref={stripRef} onWheel={scrollTabs}>
         {tabs.map((tool) => {
+          const isBrowser = tool.startsWith("browser:");
+          const isTerminal = tool.startsWith("terminal:");
           const isSub = tool.startsWith("subagent:");
           const isSide = tool.startsWith("sidechat:");
           const chatId = isSub ? tool.slice("subagent:".length) : isSide ? tool.slice("sidechat:".length) : "";
-          const Icon = isSub ? Bot : isSide ? MessageSquarePlus : icons[tool] ?? MessageSquarePlus;
-          const label = isSub ? (subagentLabels?.[chatId] || "서브에이전트") : isSide ? (subagentLabels?.[chatId] || "사이드 채팅") : tool === "terminal" ? projectName : labels[tool] ?? tool;
+          const Icon = isBrowser ? Globe2 : isTerminal ? SquareTerminal : isSub ? Bot : isSide ? MessageSquarePlus : icons[tool] ?? MessageSquarePlus;
+          const label = isBrowser ? "브라우저" : isTerminal ? projectName : isSub ? (subagentLabels?.[chatId] || "서브에이전트") : isSide ? (subagentLabels?.[chatId] || "사이드 채팅") : labels[tool] ?? tool;
           return (
             <button type="button" className={active === tool ? "dock-tab active" : "dock-tab"} key={tool} onClick={() => onSelect(tool)}>
               <Icon size={15} />
               <span>{label}</span>
-              {tool === "terminal" && shell && <small>{shell}</small>}
+              {isTerminal && shell && <small>{shell}</small>}
               <i role="button" aria-label={`${label} 탭 닫기`} onClick={(event) => { event.stopPropagation(); onCloseTab(tool); }}><X size={12} /></i>
             </button>
           );

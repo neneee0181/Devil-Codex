@@ -3,7 +3,7 @@ import { Maximize2, Minimize2, X } from "lucide-react";
 import type { AgentRuntimeId, ProviderId, ProviderInfo, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadSandboxMode, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../../shared/contracts";
 import { DockTabStrip } from "./DockTabStrip";
 import { TerminalSession } from "./TerminalSession";
-import { ToolContent, SideChat, type ContentTool } from "./ToolContent";
+import { BrowserPanel, ToolContent, SideChat, type ContentTool } from "./ToolContent";
 import { ToolLauncherMenu, type ToolKind } from "./ToolLauncherMenu";
 
 export function UtilityPanel({
@@ -83,6 +83,7 @@ export function UtilityPanel({
 }): React.JSX.Element {
   const [shell, setShell] = useState("연결 중…");
   const setShellStable = useCallback((value: string) => setShell(value), []);
+  const browserTabs = tabs.filter((tab) => tab.startsWith("browser:"));
   const subId = active?.startsWith("subagent:") ? active.slice("subagent:".length)
     : active?.startsWith("sidechat:") ? active.slice("sidechat:".length) : null;
 
@@ -94,9 +95,10 @@ export function UtilityPanel({
         <button type="button" onClick={onToggleExpanded} aria-label={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"} title={expanded ? "우측 패널 축소" : "우측 패널 전체 화면"}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
         <button type="button" onClick={onClose} aria-label="우측 패널 닫기"><X size={17} /></button>
       </header>
-      {active === "terminal" && <TerminalSession active={open} workspace={workspace} dock="right" terminalKey={terminalSessionKey} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
+      {active?.startsWith("terminal:") && <TerminalSession active={open} workspace={workspace} dock="right" terminalKey={active} onShell={setShellStable} onSendToComposer={onTerminalAsk} onOpenPath={onTerminalOpenPath} />}
+      {browserTabs.map((tab) => <BrowserPanel key={tab} browserSessionKey={tab} visible={active === tab} workspace={workspace} fileTarget={fileTarget} changes={changes} onAsk={onBrowserAsk} />)}
       {subId && <SideChat key={subId} target={{ thread: { id: subId, label: subagentLabels[subId] || "서브에이전트" }, ...subagentCtx }} history={subagentHistory[subId]} busy={Boolean(subagentBusy[subId])} pick={subagentPick[subId]} lockedModel={active?.startsWith("subagent:")} onPick={(p) => onSubagentPick(subId, p)} onHistory={(items) => onSubagentHistory(subId, items)} onOpenFile={onTerminalOpenPath} />}
-      {active && active !== "terminal" && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
+      {active && !active.startsWith("terminal:") && !active.startsWith("browser:") && !subId && <ToolContent active={active as ContentTool} workspace={workspace} fileTarget={fileTarget} filesLocked={filesLocked} changes={changes} selectedDiff={selectedDiff} diffBusy={diffBusy} browserSessionKey={browserSessionKey} onBrowserAsk={onBrowserAsk} subagents={subagentList} onOpenSubagent={onOpenSubagent} onNewSideChat={onNewSideChat} sideChatCreating={sideChatCreating} onSelectDiff={onSelectDiff} onSendReviewComment={onSendReviewComment} onApplyHunk={onApplyHunk} />}
       {!active && <ToolLauncherMenu onSelect={onAdd} />}
     </aside>
   );

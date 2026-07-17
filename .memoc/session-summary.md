@@ -10,13 +10,13 @@ tags:
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-16. Replace; keep <800B.
+Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
-- v0.3.6 browser routing: Bridge OFF + Devil MCP ON temporarily disables only stock `browser@openai-bundled`, preventing its iab-only skill from overriding `devil_browser`; original plugin state restores on Bridge ON, MCP OFF, or exit. Other plugins/MCPs remain. Status also verifies App Server loaded Devil tools.
+- Dock tabs now permit multiple independent browser and terminal instances. Browser WebContents are registered per tab, preserved while switching, and MCP stays bound to selected tab. Ctrl/Cmd-click and `window.open` create/focus a new tab in same dock. Files/review remain single-instance.
 
 ## Verification
-- `npm run build`, `npm run test:main`, and `git diff --check` pass.
+- `npm run build` and `git diff --check` pass.
 
 ## Resume
-- Manual: Bridge OFF + MCP ON → request Devil/우측 browser, verify `devil_browser`; Bridge ON → stock Codex Browser skill/iab remains available.
+- Manual Electron check: add multiple browser/terminal tabs in both docks; Ctrl/Cmd-click a link and verify a new browser tab opens with original page intact.

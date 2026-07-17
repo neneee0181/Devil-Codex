@@ -17,6 +17,8 @@ export interface BrowserState {
 export class BrowserViewManager {
   private wc: WebContents | undefined;
   private pendingUrl = "";
+  private readonly guests = new Map<number, WebContents>();
+  private readonly tabs = new Map<string, WebContents>();
 
   constructor(private readonly send: (channel: string, payload: unknown) => void) {}
 
@@ -25,20 +27,55 @@ export class BrowserViewManager {
 
   attach(wc: WebContents): void {
     this.wc = wc;
+    this.guests.set(wc.id, wc);
     if (this.pendingUrl) { const url = this.pendingUrl; this.pendingUrl = ""; void wc.loadURL(url).catch(() => undefined); }
-    const emit = (): void => this.send("browser:state", this.state());
+    const emit = (): void => {
+      const key = this.keyFor(wc);
+      if (key) this.send("browser:state", { key, state: this.stateFor(wc) });
+    };
     wc.on("did-navigate", emit);
     wc.on("did-navigate-in-page", emit);
     wc.on("page-title-updated", emit);
     wc.on("did-start-loading", emit);
     wc.on("did-stop-loading", emit);
     wc.on("did-finish-load", emit);
-    wc.setWindowOpenHandler(({ url }) => { void wc.loadURL(normalizeUrl(url)).catch(() => undefined); return { action: "deny" }; });
-    wc.on("destroyed", () => { if (this.wc === wc) this.wc = undefined; });
+    wc.setWindowOpenHandler(({ url }) => {
+      const key = this.keyFor(wc);
+      if (key) this.send("browser:new-tab", { sourceKey: key, url: normalizeUrl(url) });
+      else void wc.loadURL(normalizeUrl(url)).catch(() => undefined);
+      return { action: "deny" };
+    });
+    wc.on("destroyed", () => {
+      this.guests.delete(wc.id);
+      for (const [key, guest] of this.tabs) if (guest === wc) this.tabs.delete(key);
+      if (this.wc === wc) this.wc = undefined;
+    });
   }
 
-  state(): BrowserState {
-    const wc = this.wc;
+  register(key: string, webContentsId: number): BrowserState {
+    const guest = this.guests.get(webContentsId);
+    if (!guest) return this.state();
+    this.tabs.set(key, guest);
+    this.wc = guest;
+    const state = this.stateFor(guest);
+    this.send("browser:state", { key, state });
+    return state;
+  }
+
+  focus(key?: string): BrowserState {
+    if (key) {
+      const guest = this.tabs.get(key);
+      if (guest) this.wc = guest;
+    }
+    return this.state();
+  }
+
+  private keyFor(wc: WebContents): string | undefined {
+    for (const [key, guest] of this.tabs) if (guest === wc) return key;
+    return undefined;
+  }
+
+  private stateFor(wc: WebContents | undefined): BrowserState {
     return {
       url: wc?.getURL() ?? "",
       title: wc?.getTitle() ?? "",
@@ -46,6 +83,10 @@ export class BrowserViewManager {
       canGoBack: wc?.navigationHistory.canGoBack() ?? false,
       canGoForward: wc?.navigationHistory.canGoForward() ?? false,
     };
+  }
+
+  state(): BrowserState {
+    return this.stateFor(this.wc);
   }
 
   navigate(rawUrl: string): void {
