@@ -146,7 +146,10 @@ async function listCodexPluginSkills(): Promise<CodexSkillInfo[]> {
       const versions = await readdir(join(cacheRoot, marketplace.name, plugin.name), { withFileTypes: true }).catch(() => []);
       const version = versions.filter((entry) => entry.isDirectory()).at(-1);
       if (!version) continue;
-      skills.push(...await readSkillDirectory(join(cacheRoot, marketplace.name, plugin.name, version.name, "skills"), "plugin"));
+      // Namespace every cached skill with its plugin name. The renderer groups
+      // these as `@plugin`, while `$plugin:skill` remains available for a
+      // single-skill selection.
+      skills.push(...await readSkillDirectory(join(cacheRoot, marketplace.name, plugin.name, version.name, "skills"), "plugin", plugin.name));
     }
   }
   const seen = new Set<string>();

@@ -6,7 +6,7 @@ import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, Bell, Blocks, Bot, Check, ChevronDown, ChevronRight, CirclePlus, CircleUser, CloudOff, ExternalLink,
   Clock, CloudCog, Code2, Copy, Download, FileText, Folder, FolderOpen, GitBranch, GitFork, Globe2, Laptop, Loader2, MessageSquarePlus,
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
-  Settings, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
+  Settings, Share2, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
 import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ApprovalResolvedEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
@@ -37,7 +37,7 @@ import { estimateProviderUsageCost } from "./providerPricing";
 import { isPrimaryModifier, shortcut } from "./shortcuts";
 import "./styles.css";
 
-type AppView = "thread" | "search" | "archive" | "plugins" | "automations" | "settings";
+type AppView = "thread" | "search" | "archive" | "sites" | "plugins" | "automations" | "settings";
 type NavigationEntry = { view: AppView; runtime: AgentRuntimeId; thread: ThreadRef | null; workspace: string; items: ThreadHistoryItem[]; projectDraft: boolean; environmentOpen: boolean; settingsSection: string; search: string };
 type TextPromptState = { title: string; label: string; initialValue: string; placeholder?: string; confirmLabel: string; resolve: (value: string | null) => void };
 type ProjectSortMode = "manual" | "created" | "updated";
@@ -1607,12 +1607,15 @@ function App(): React.JSX.Element {
   }, [view]);
 
   useEffect(() => {
-    if (!workspace || runtime.state !== "connected") { setAvailableSkills([]); return; }
     let active = true;
+    // Marketplace plugins are local cache data and must be available even in a
+    // fresh chat before a project/runtime connection exists. Otherwise typing
+    // `@` produces an empty suggestion panel until after the first connection.
+    const runtimeSkills = workspace && runtime.state === "connected"
+      ? window.devilCodex.listSkills({ cwd: workspace }).catch((error) => { setExternalError(`스킬 목록 실패: ${String(error)}`); return [] as CodexSkillInfo[]; })
+      : Promise.resolve([] as CodexSkillInfo[]);
     void Promise.all([
-      window.devilCodex.listSkills({ cwd: workspace }).catch((error) => { setExternalError(`스킬 목록 실패: ${String(error)}`); return [] as CodexSkillInfo[]; }),
-      // Desktop-installed marketplace plugins (Notion, GitHub, ...) are not in
-      // the app-server skill registry, so merge the plugin cache scan.
+      runtimeSkills,
       window.devilCodex.listCodexPluginSkills().catch(() => [] as CodexSkillInfo[]),
     ]).then(([skills, pluginSkills]) => {
       if (!active) return;
@@ -4194,6 +4197,7 @@ function App(): React.JSX.Element {
         <nav className="primary-nav">
           <button onClick={() => void newThread()} disabled={bridgeChatLocked || (busy && !thread?.id)} title={bridgeChatLocked ? "순정 Codex Bridge 사용 중에는 새 채팅을 시작할 수 없습니다" : undefined}><MessageSquarePlus />새 채팅</button>
           <button className={commandPaletteOpen ? "selected" : ""} onClick={() => { closePopovers(); setCommandPaletteOpen(true); }}><Search />검색</button>
+          <button className={view === "sites" ? "selected" : ""} onClick={() => openView("sites")}><Globe2 />사이트</button>
           <button className={view === "plugins" ? "selected" : ""} onClick={() => openView("plugins")}><Blocks />플러그인</button>
           <button className={view === "automations" ? "selected" : ""} onClick={() => openView("automations")}><Bot />자동화</button>
         </nav>
@@ -4371,6 +4375,8 @@ function App(): React.JSX.Element {
           <ArchivedThreadsView threads={archivedThreads} loading={archivedBusy} onBack={() => openView("thread")} onOpen={(summary) => void resumeThread(summary)} onRestore={(summary) => void unarchiveThread(summary)} relativeTime={relativeTime} />
         ) : view === "settings" ? (
           <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} providerSettings={providers.settings} providerState={providers.state} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider, accountId) => providers.clearKey(provider, accountId)} onProviderRefreshModels={(provider, accountId) => providers.refreshModels(provider, accountId)} />
+        ) : view === "sites" ? (
+          <SitesView servers={availableMcpServers} threadId={thread?.id ?? null} onCall={(input) => window.devilCodex.callMcpTool(input)} onOpen={(url) => openBrowserTab("right", url)} onCreate={() => { setView("thread"); setComposerInject({ text: "Sites를 사용해 새 웹사이트를 만들고 비공개로 배포해줘. 필요한 초기화, 빌드, 저장, 배포 상태 확인까지 진행해줘.", nonce: Date.now() }); }} />
         ) : view === "plugins" ? (
           <IntegrationsView skills={availableSkills} threadId={thread?.id ?? null} cwd={workspace} />
         ) : (
@@ -5028,6 +5034,66 @@ function SearchView({ query, onQuery, threads, loading, onOpen }: { query: strin
   return <div className="page-view"><h1>검색</h1><div className="search-box"><Search size={17} /><input autoFocus value={query} onChange={(event) => onQuery(event.target.value)} placeholder="스레드, 대화 내용 또는 브랜치 검색" /></div>{loading ? <div className="feature-empty">검색 중…</div> : query.trim() && threads.length === 0 ? <div className="feature-empty"><Search /><strong>검색 결과 없음</strong></div> : <div className="search-results">{threads.map((thread) => <button key={thread.id} onClick={() => void onOpen(thread)}><strong>{thread.title}</strong><span>{thread.preview}</span><small>{thread.cwd}</small></button>)}</div>}</div>;
 }
 
+type SiteCard = { id: string; name: string; url: string; access: string; updated: string };
+
+function siteCardsFromResult(value: unknown): SiteCard[] {
+  const found: SiteCard[] = [];
+  const seen = new Set<string>();
+  const visit = (entry: unknown): void => {
+    if (Array.isArray(entry)) { entry.forEach(visit); return; }
+    if (!entry || typeof entry !== "object") return;
+    const row = entry as Record<string, unknown>;
+    const url = [row.url, row.site_url, row.deployment_url, row.preview_url].find((item): item is string => typeof item === "string" && /^https?:\/\//.test(item));
+    const id = String(row.project_id ?? row.site_id ?? row.id ?? url ?? "");
+    if (url && id && !seen.has(id)) {
+      seen.add(id);
+      found.push({
+        id,
+        name: String(row.name ?? row.title ?? row.slug ?? "이름 없는 사이트"),
+        url,
+        access: String(row.access ?? row.visibility ?? row.access_level ?? "나만"),
+        updated: String(row.updated_at ?? row.created_at ?? ""),
+      });
+    }
+    Object.values(row).forEach((child) => { if (child && typeof child === "object") visit(child); });
+  };
+  visit(value);
+  return found;
+}
+
+function SitesView({ servers, threadId, onCall, onOpen, onCreate }: {
+  servers: McpServerInfo[];
+  threadId: string | null;
+  onCall: (input: { threadId: string; server: string; tool: string; arguments?: unknown }) => Promise<unknown>;
+  onOpen: (url: string) => void;
+  onCreate: () => void;
+}): React.JSX.Element {
+  const [sites, setSites] = useState<SiteCard[]>([]);
+  const [query, setQuery] = useState("");
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [error, setError] = useState("");
+  const server = servers.find((item) => item.name.toLowerCase() === "sites" || item.name.toLowerCase().includes("sites"));
+  const canList = Boolean(threadId && server?.tools.some((tool) => tool.name === "list_sites"));
+  const load = async (): Promise<void> => {
+    if (!threadId || !server) { setState("error"); setError(threadId ? "현재 Codex app-server에서 Sites 도구를 찾지 못했습니다." : "Sites 목록을 불러오려면 먼저 채팅을 하나 열어 주세요."); return; }
+    setState("loading"); setError("");
+    try {
+      const result = await onCall({ threadId, server: server.name, tool: "list_sites" });
+      setSites(siteCardsFromResult(result)); setState("ready");
+    } catch (cause) { setState("error"); setError(`Sites 목록을 불러오지 못했습니다: ${String(cause)}`); }
+  };
+  useEffect(() => { if (canList) void load(); }, [threadId, server?.name]);
+  const visible = sites.filter((site) => `${site.name} ${site.url}`.toLowerCase().includes(query.trim().toLowerCase()));
+  return <div className="sites-page">
+    <div className="sites-head"><div><h1>사이트</h1><p>아이디어를 실제 웹사이트로 만들고 관리하세요.</p></div><div><button className="sites-refresh" type="button" onClick={() => void load()} disabled={state === "loading"}><Loader2 className={state === "loading" ? "spin" : ""} size={16} />새로고침</button><button className="sites-create" type="button" onClick={onCreate}><Plus size={16} />만들기</button></div></div>
+    <label className="sites-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="사이트 검색" /></label>
+    {state === "loading" ? <div className="sites-empty"><Loader2 className="spin" /><strong>사이트를 불러오는 중</strong></div>
+      : state === "error" ? <div className="sites-empty error"><Globe2 /><strong>Sites 연결을 확인할 수 없습니다</strong><small>{error}</small><button type="button" onClick={() => void load()}>다시 시도</button></div>
+      : state === "ready" && visible.length === 0 ? <div className="sites-empty"><Globe2 /><strong>{sites.length ? "검색 결과가 없습니다" : "아직 만든 사이트가 없습니다"}</strong><small>만들기를 누르면 Sites 생성과 비공개 배포 작업을 채팅에서 시작합니다.</small></div>
+      : <section className="sites-list"><div className="sites-list-label"><span>사이트</span><span>공유 대상</span></div>{visible.map((site) => <article className="site-row" key={site.id}><div className="site-thumb"><Globe2 size={22} /></div><div className="site-info"><strong>{site.name}</strong><small>{site.url.replace(/^https?:\/\//, "")}</small></div><div className="site-access"><span>▣</span>{site.access === "private" ? "나만" : site.access}</div><div className="site-actions"><button type="button" onClick={() => onOpen(site.url)}><ExternalLink size={15} />Open</button><button type="button" onClick={() => void navigator.clipboard.writeText(site.url)}><Share2 size={15} />공유</button></div></article>)}</section>}
+  </div>;
+}
+
 function FeatureView({ view, onAutomationPrompt }: { view: "plugins" | "automations"; onAutomationPrompt?: (prompt: string) => void }): React.JSX.Element {
   if (view === "automations") return <AutomationsView onPrompt={onAutomationPrompt ?? (() => undefined)} />;
   return <div className="page-view"><h1>플러그인</h1><p>Skills, MCP, Apps를 설치하고 관리합니다.</p><div className="feature-empty"><Blocks /><strong>설치된 플러그인</strong><small>app-server 관리 API 연결 예정</small></div></div>;
@@ -5123,7 +5189,7 @@ function relativeTime(timestamp: number): string {
 }
 
 function viewLabel(view: AppView): string {
-  return { thread: "새 채팅", search: "검색", archive: "보관된 채팅", plugins: "플러그인", automations: "자동화", settings: "설정" }[view];
+  return { thread: "새 채팅", search: "검색", archive: "보관된 채팅", sites: "사이트", plugins: "플러그인", automations: "자동화", settings: "설정" }[view];
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

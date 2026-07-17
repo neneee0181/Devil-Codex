@@ -14,10 +14,10 @@ Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
 - v0.3.9: Devil MCP registrations now exist only while Devil desktop is running. Shutdown waits for browser/computer/ask/subagent MCP removal; Bridge owners also clean all Devil MCP entries before serving stock Codex.
-- Composer: `@` lists installed Codex plugins by name; choosing one expands its bundled skills into the actual request. `$` remains single-skill selection.
+- v0.3.10: Sites navigation calls live `list_sites`, supports search/copy/Open in Devil browser, and starts build/deploy chats. `@` plugin suggestions now load without a workspace/runtime connection and group cached skills by plugin.
 
 ## Verification
-- `npm run build` and `git diff --check` pass.
+- `npm run build` and `git diff --check` pass after Sites UI work.
 
 ## Resume
-- Manual Electron check: quit Devil with Bridge OFF, then open stock Codex and confirm no `devil_*` MCP tool is offered. With Bridge ON, confirm the same while the background Bridge service is running.
+- Manual Electron check: open a Codex thread, choose `사이트`, and verify `list_sites` loads actual sites when the runtime exposes `sites`; Open should create a right-side browser tab.
