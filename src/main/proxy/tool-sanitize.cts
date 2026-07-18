@@ -9,13 +9,25 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
   "default",
   "examples",
   "title",
+  // Responses-only collaboration annotation; it is not a JSON-Schema keyword
+  // understood by external provider tool APIs.
+  "encrypted",
 ]);
 
 const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
   ...UNSUPPORTED_SCHEMA_KEYS,
+  "$comment",
   "additionalProperties",
   "patternProperties",
   "propertyNames",
+  "if",
+  "then",
+  "else",
+  "uniqueItems",
+  "additionalItems",
+  "dependentRequired",
+  "dependentSchemas",
+  "contains",
   "unevaluatedProperties",
   "unevaluatedItems",
 ]);
@@ -47,22 +59,53 @@ function normalizeValue(value: unknown): unknown {
   return composition ? { ...composition, ...result } : result;
 }
 
-function normalizeGeminiValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(normalizeGeminiValue);
+function normalizeGeminiValue(value: unknown, defs: Map<string, unknown>, depth = 0): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeGeminiValue(item, defs, depth));
   if (!isRecord(value)) return value;
+
+  if (typeof value.$ref === "string" && depth < 64) {
+    const match = value.$ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/);
+    const targetName = match?.[1].replace(/~1/g, "/").replace(/~0/g, "~");
+    const target = targetName ? defs.get(decodeURIComponent(targetName)) : undefined;
+    if (isRecord(target)) {
+      const merged: Schema = { ...target };
+      for (const [key, child] of Object.entries(value)) if (key !== "$ref") merged[key] = child;
+      return normalizeGeminiValue(merged, defs, depth + 1);
+    }
+  }
 
   const result: Schema = {};
   let composition: Schema | undefined;
   for (const [key, child] of Object.entries(value)) {
     if (GEMINI_UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
+    if (key === "$ref") continue;
     if (COMPOSITION_KEYS.has(key)) {
       const first = Array.isArray(child) ? child.find(isRecord) : undefined;
-      if (first) composition = normalizeGeminiValue(first) as Schema;
+      if (first) composition = normalizeGeminiValue(first, defs, depth + 1) as Schema;
       continue;
     }
-    result[key] = normalizeGeminiValue(child);
+    if (key === "type" && Array.isArray(child)) {
+      const nonNull = child.filter((type) => type !== "null");
+      if (nonNull.length) result.type = nonNull[0];
+      if (child.includes("null")) result.nullable = true;
+      continue;
+    }
+    if (key === "const") {
+      result.enum = [child];
+      continue;
+    }
+    result[key] = normalizeGeminiValue(child, defs, depth + 1);
   }
   return normalizeGeminiRequired(composition ? { ...composition, ...result } : result);
+}
+
+function collectGeminiDefs(root: unknown, defs: Map<string, unknown>): void {
+  if (!isRecord(root)) return;
+  for (const key of ["$defs", "definitions"]) {
+    const group = root[key];
+    if (!isRecord(group)) continue;
+    for (const [name, value] of Object.entries(group)) if (!defs.has(name)) defs.set(name, value);
+  }
 }
 
 function normalizeGeminiRequired(schema: Schema): Schema {
@@ -85,7 +128,9 @@ export function normalizeSchema(schema: unknown): Schema {
 }
 
 export function normalizeGeminiSchema(schema: unknown): Schema {
-  const normalized = normalizeGeminiValue(schema);
+  const defs = new Map<string, unknown>();
+  collectGeminiDefs(schema, defs);
+  const normalized = normalizeGeminiValue(schema, defs);
   if (!isRecord(normalized)) return { type: "object", properties: {}, required: [] };
   if (typeof normalized.type === "string") return normalized;
   return { type: "object", properties: {}, required: [], ...normalized };

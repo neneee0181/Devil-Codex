@@ -15,6 +15,26 @@ const MIN_BUDGET = 1024;
 const HEADROOM = 8192;
 const FLOOR = 4096;
 
+const ADAPTIVE_THINKING_MINIMUMS: Record<string, readonly [number, number]> = {
+  sonnet: [5, 0],
+  opus: [4, 7],
+  fable: [0, 0],
+};
+
+function usesAdaptiveThinking(model: string): boolean {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/i.exec(model);
+  if (!match) return false;
+  const minimum = ADAPTIVE_THINKING_MINIMUMS[match[1].toLowerCase()];
+  if (!minimum) return false;
+  const major = Number(match[2]);
+  const minor = match[3] === undefined ? 0 : Number(match[3]);
+  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+}
+
+function adaptiveEffort(effort: string): string {
+  return effort === "minimal" ? "low" : effort;
+}
+
 export interface AnthropicAuth { apiKey?: string; accessToken?: string }
 
 function budget(effort: string): number {
@@ -135,12 +155,17 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   else if (tc && "allowedTools" in tc) body.tool_choice = { type: "auto" };
   else if (tc && "name" in tc) body.tool_choice = { type: "tool", name: toClaudeToolName(sanitizeName(tc.name), oauth) };
 
-  if (parsed.reasoningEffort && parsed.reasoningEffort !== "none" && parsed.reasoningEffort !== "minimal") {
+  if (parsed.reasoningEffort && parsed.reasoningEffort !== "none") {
     const want = budget(parsed.options.reasoning ?? parsed.reasoningEffort);
     const maxOut = parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
-    const maxTokens = Math.min(REASONING_CEIL, Math.max(maxOut, want + HEADROOM));
-    body.max_tokens = maxTokens;
-    body.thinking = { type: "enabled", budget_tokens: Math.max(MIN_BUDGET, Math.min(want, maxTokens - FLOOR)) };
+    if (usesAdaptiveThinking(parsed.model)) {
+      body.thinking = { type: "adaptive" };
+      body.output_config = { effort: adaptiveEffort(parsed.options.reasoning ?? parsed.reasoningEffort) };
+    } else {
+      const maxTokens = Math.min(REASONING_CEIL, Math.max(maxOut, want + HEADROOM));
+      body.max_tokens = maxTokens;
+      body.thinking = { type: "enabled", budget_tokens: Math.max(MIN_BUDGET, Math.min(want, maxTokens - FLOOR)) };
+    }
     // Anthropic extended thinking rejects temperature != 1 and top_p. Match opencodex by
     // dropping sampling controls whenever thinking is enabled.
     delete body.temperature;

@@ -55,7 +55,7 @@ function wireToolCallName(part: { name: string; namespace?: string }): string {
   return sanitizeName(namespacedToolName(part.namespace, part.name));
 }
 
-function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean): unknown[] {
+function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): unknown[] {
   const out: unknown[] = [];
   let pendingToolCallIds = new Set<string>();
   if (parsed.context.instructions) out.push({ role: "system", content: parsed.context.instructions });
@@ -69,11 +69,20 @@ function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean): unknown
     } else if (msg.role === "assistant") {
       const assistant = msg as OcxAssistantMessage;
       const text = assistant.content.filter((part) => part.type === "text").map((part) => (part.type === "text" ? part.text : "")).join("");
+      const reasoning = assistant.content.filter((part) => part.type === "thinking").map((part) => (part.type === "thinking" ? part.text : "")).join("");
       const toolCalls = assistant.content
         .filter((part) => part.type === "toolCall")
         .map((part) => part.type === "toolCall" ? { id: part.id, type: "function", function: { name: wireToolCallName(part), arguments: part.arguments || "{}" } } : null)
         .filter(Boolean);
-      if (text || toolCalls.length) out.push({ role: "assistant", content: text || null, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) });
+      const preserveReasoning = reasoning.length > 0 && preservesReasoningContent(provider, parsed.model);
+      if (text || toolCalls.length || preserveReasoning) {
+        out.push({
+          role: "assistant",
+          content: text || (toolCalls.length || preserveReasoning ? "" : null),
+          ...(preserveReasoning ? { reasoning_content: reasoning } : {}),
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        });
+      }
       pendingToolCallIds = new Set(toolCalls.map((call) => typeof call === "object" && call ? String((call as { id?: unknown }).id ?? "") : "").filter(Boolean));
     } else if (msg.role === "toolResult") {
       const tool = msg as OcxToolResultMessage;
@@ -138,7 +147,7 @@ export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
 }
 
 function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): Record<string, unknown> {
-  const body: Record<string, unknown> = { model: parsed.model, messages: openAiMessages(parsed, allowImages), stream: parsed.stream };
+  const body: Record<string, unknown> = { model: wireModelForProvider(provider, parsed.model), messages: openAiMessages(parsed, allowImages, provider), stream: parsed.stream };
   const toolLimit = maxToolsForProvider(provider);
   const allowed = allowedToolNames(parsed.options.toolChoice);
   const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), toolLimit, requiredToolName(parsed));
@@ -148,26 +157,78 @@ function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, pr
       function: {
         name: wireToolName(tool),
         description: tool.description ?? "",
-        parameters: normalizeSchema(tool.parameters),
+        parameters: toolParametersForProvider(provider, tool.parameters),
         ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
       },
     }));
     if (tools.length) body.tools = tools;
     body.parallel_tool_calls = false;
     const choice = parsed.options.toolChoice;
-    if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice;
+    if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice === "required" && provider === "moonshot" ? "auto" : choice;
     else if (choice && "name" in choice) body.tool_choice = { type: "function", function: { name: sanitizeName(choice.name) } };
     else if (choice && "allowedTools" in choice) body.tool_choice = choice.mode === "required" ? "required" : "auto";
   }
   if (parsed.options.maxOutputTokens !== undefined) body.max_tokens = parsed.options.maxOutputTokens;
-  if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
-  if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
+  if (parsed.options.temperature !== undefined && !locksSamplingParameters(provider, parsed.model)) body.temperature = parsed.options.temperature;
+  if (parsed.options.topP !== undefined && !locksSamplingParameters(provider, parsed.model)) body.top_p = parsed.options.topP;
   if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
   if (parsed.options.reasoning !== undefined && supportsReasoningEffort(provider, parsed.model)) body.reasoning_effort = parsed.options.reasoning === "xhigh" ? "high" : parsed.options.reasoning;
   if (parsed.options.serviceTier !== undefined && provider === "openai") body.service_tier = parsed.options.serviceTier;
-  if (parsed.options.presencePenalty !== undefined) body.presence_penalty = parsed.options.presencePenalty;
-  if (parsed.options.frequencyPenalty !== undefined) body.frequency_penalty = parsed.options.frequencyPenalty;
+  if (parsed.options.presencePenalty !== undefined && !locksSamplingParameters(provider, parsed.model)) body.presence_penalty = parsed.options.presencePenalty;
+  if (parsed.options.frequencyPenalty !== undefined && !locksSamplingParameters(provider, parsed.model)) body.frequency_penalty = parsed.options.frequencyPenalty;
   return body;
+}
+
+function wireModelForProvider(provider: ApiKeyProvider, model: string): string {
+  // Z.AI accepts the context suffix in the catalog but rejects it on the wire.
+  return provider === "zai" ? model.replace(/\[[^\]]*\]\s*$/, "") : model;
+}
+
+function locksSamplingParameters(provider: ApiKeyProvider, model: string): boolean {
+  return provider === "moonshot" || (provider === "opencode-free" && /kimi|deepseek/i.test(model));
+}
+
+function preservesReasoningContent(provider: ApiKeyProvider, model: string): boolean {
+  if (provider === "deepseek") return !/^deepseek-chat$/i.test(model);
+  if (provider === "zai") return /^glm-5(?:\.1|\.2)?/i.test(model);
+  if (provider === "moonshot") return /kimi/i.test(model);
+  if (provider === "opencode-free") return /deepseek|glm|kimi/i.test(model);
+  return false;
+}
+
+function stripSchemaMarker(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripSchemaMarker);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key !== "encrypted")
+    .map(([key, child]) => [key, stripSchemaMarker(child)]));
+}
+
+function normalizeXaiSchema(schema: unknown): Record<string, unknown> {
+  const input = stripSchemaMarker(schema);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { type: "object", properties: {} };
+  const root = input as Record<string, unknown>;
+  const composition = Array.isArray(root.oneOf) ? "oneOf" : Array.isArray(root.anyOf) ? "anyOf" : undefined;
+  if (!composition) return { ...root, type: "object" };
+  const siblings = Object.fromEntries(Object.entries(root).filter(([key]) => key !== composition && key !== "type"));
+  const variants = (root[composition] as unknown[]).flatMap((branch) => {
+    if (!branch || typeof branch !== "object" || Array.isArray(branch)) return [];
+    return [{ ...siblings, ...(branch as Record<string, unknown>), type: "object" }];
+  });
+  return variants.length ? { ...siblings, [composition]: variants, type: "object" } : { type: "object", properties: {} };
+}
+
+function normalizeZenSchema(schema: unknown): Record<string, unknown> {
+  const input = stripSchemaMarker(schema);
+  const out = normalizeSchema(input) as Record<string, unknown>;
+  if (out.type === "object") return out;
+  return { ...out, type: "object" };
+}
+
+function toolParametersForProvider(provider: ApiKeyProvider, schema: unknown): Record<string, unknown> {
+  if (provider === "xai") return normalizeXaiSchema(schema);
+  if (provider === "opencode-free") return normalizeZenSchema(schema);
+  return normalizeSchema(schema);
 }
 
 function requiredToolName(parsed: OcxParsedRequest): string | undefined {
@@ -219,6 +280,7 @@ export function buildGoogleGenerateContentBody(parsed: OcxParsedRequest): Record
 }
 
 function supportsReasoningEffort(provider: ApiKeyProvider, model: string): boolean {
+  if (provider === "deepseek" && /^deepseek-chat$/i.test(model)) return false;
   if (provider === "moonshot") return false;
   if (provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "huggingface" || provider === "nvidia" || provider === "openrouter" || provider === "openrouter-free" || provider === "ollama" || provider === "vllm" || provider === "lm-studio") return false;
   if (provider === "xai") return !/grok-build|composer/i.test(model);
