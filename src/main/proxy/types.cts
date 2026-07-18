@@ -6,7 +6,7 @@ export interface OcxImageContent { type: "image"; dataUrl: string; detail?: stri
 export type OcxContentPart = OcxTextContent | OcxImageContent;
 
 export interface OcxToolCall { type: "toolCall"; id: string; name: string; arguments: string; namespace?: string; thoughtSignature?: string }
-export interface OcxThinkingContent { type: "thinking"; text: string }
+export interface OcxThinkingContent { type: "thinking"; text: string; signature?: string; redacted?: string[] }
 export type OcxAssistantContentPart = OcxTextContent | OcxThinkingContent | OcxToolCall;
 
 export interface OcxUserMessage { role: "user"; content: OcxContentPart[] }
@@ -49,16 +49,21 @@ export interface OcxRequestOptions {
   temperature?: number;
   topP?: number;
   stopSequences?: string[];
-  toolChoice?: "auto" | "none" | "required" | { name: string };
+  toolChoice?: "auto" | "none" | "required" | { name: string } | { allowedTools: string[]; mode: "auto" | "required" };
   reasoning?: string;
   serviceTier?: string;
   presencePenalty?: number;
   frequencyPenalty?: number;
 }
 
+export function allowedToolNames(choice: OcxRequestOptions["toolChoice"]): Set<string> | undefined {
+  return choice && typeof choice === "object" && "allowedTools" in choice ? new Set(choice.allowedTools) : undefined;
+}
+
 export type AdapterEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
+  | { type: "thinking_signature"; signature: string }
   | { type: "reasoning_raw_delta"; text: string }
   | { type: "tool_call_start"; id: string; name: string; thoughtSignature?: string }
   | { type: "tool_call_delta"; arguments: string }

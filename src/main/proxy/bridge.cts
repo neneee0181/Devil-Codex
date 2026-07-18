@@ -1,5 +1,6 @@
 import type { AdapterEvent, OcxUsage } from "./types.cjs";
 import { classifyError, emptyAssistantOutputMessage, type OcxErrorPayload } from "./errors.cjs";
+import { encodeReasoningEnvelope } from "./reasoning-envelope.cjs";
 
 function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
@@ -131,7 +132,7 @@ export function bridgeToResponsesSSE(
       }, heartbeatMs);
 
       let currentMsg: { itemId: string; outputIndex: number; text: string } | null = null;
-      let currentReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
+      let currentReasoning: { itemId: string; outputIndex: number; text: string; signature?: string } | null = null;
       let currentRawReasoning: { itemId: string; outputIndex: number; text: string } | null = null;
       let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; namespace?: string; freeform?: boolean; toolSearch?: boolean } | null = null;
 
@@ -168,6 +169,7 @@ export function bridgeToResponsesSSE(
         const item = {
           type: "reasoning", id: currentReasoning.itemId,
           summary: [{ type: "summary_text", text: currentReasoning.text }],
+          encrypted_content: encodeReasoningEnvelope({ txt: currentReasoning.text, ...(currentReasoning.signature ? { sig: currentReasoning.signature } : {}) }),
         };
         emit("response.output_item.done", { output_index: currentReasoning.outputIndex, item });
         finishedItems.push(item as OutputItem);
@@ -278,6 +280,10 @@ export function bridgeToResponsesSSE(
                 item_id: currentReasoning.itemId, output_index: currentReasoning.outputIndex,
                 summary_index: 0, delta: event.thinking,
               });
+              break;
+            }
+            case "thinking_signature": {
+              if (currentReasoning) currentReasoning.signature = (currentReasoning.signature ?? "") + event.signature;
               break;
             }
             case "reasoning_raw_delta": {
@@ -436,6 +442,7 @@ export function buildResponseJSON(
 
   let currentText = "";
   let currentSummaryReasoning = "";
+  let currentReasoningSignature = "";
   let currentRawReasoning = "";
   let currentToolCallId = "";
   let currentToolCallName = "";
@@ -462,8 +469,10 @@ export function buildResponseJSON(
     output.push({
       type: "reasoning", id: `rs_${uuid()}`,
       summary: [{ type: "summary_text", text: currentSummaryReasoning }],
+      encrypted_content: encodeReasoningEnvelope({ txt: currentSummaryReasoning, ...(currentReasoningSignature ? { sig: currentReasoningSignature } : {}) }),
     });
     currentSummaryReasoning = "";
+    currentReasoningSignature = "";
   };
   const flushRawReasoning = () => {
     if (!currentRawReasoning) return;
@@ -518,6 +527,9 @@ export function buildResponseJSON(
         if (currentRawReasoning) flushRawReasoning();
         if (currentToolCallId) flushToolCall();
         currentSummaryReasoning += e.thinking;
+        break;
+      case "thinking_signature":
+        currentReasoningSignature += e.signature;
         break;
       case "reasoning_raw_delta":
         if (currentText) flushText();

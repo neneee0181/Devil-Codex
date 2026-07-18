@@ -3,6 +3,8 @@
 // and streams Codex Responses SSE back. Codex records the turn natively → syncs.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
+import { gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -73,6 +75,20 @@ function rejectWebSocketUpgrade(socket: Duplex, status: number, message: string)
   ].join("\r\n"));
   socket.destroy();
 }
+
+function ssePayloads(buffer: string): { payloads: string[]; rest: string } {
+  const payloads: string[] = [];
+  let rest = buffer;
+  while (true) {
+    const match = rest.match(/\r?\n\r?\n/);
+    if (!match || match.index === undefined) break;
+    const block = rest.slice(0, match.index);
+    rest = rest.slice(match.index + match[0].length);
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+    if (data && data !== "[DONE]") payloads.push(data);
+  }
+  return { payloads, rest };
+}
 const FORWARDED_OPENAI_HEADERS = [
   "authorization",
   "chatgpt-account-id",
@@ -136,11 +152,84 @@ function splitModel(id: string): { provider: ProxyProvider; accountId?: string; 
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
 }
 
+const MAX_COMPRESSED_BODY_BYTES = 96 * 1024 * 1024;
+const MAX_DECOMPRESSED_BODY_BYTES = 128 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 120_000;
+
+class ProxyRequestError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); this.name = "ProxyRequestError"; }
+}
+
+function decodeRequestBody(raw: Buffer, encoding: string | string[] | undefined): Buffer {
+  const value = Array.isArray(encoding) ? encoding.join(",") : encoding ?? "";
+  const encodings = value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  if (encodings.length > 1) throw new ProxyRequestError(415, "다중 Content-Encoding 요청은 지원하지 않습니다.");
+  let decoded = raw;
+  for (const item of encodings.reverse()) {
+    if (item === "identity") continue;
+    try {
+      if (item === "zstd") decoded = zstdDecompressSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
+      else if (item === "gzip" || item === "x-gzip") decoded = gunzipSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
+      else if (item === "deflate") decoded = inflateSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
+      else throw new ProxyRequestError(415, `지원하지 않는 요청 Content-Encoding입니다: ${item}`);
+    } catch (error) {
+      if (error instanceof ProxyRequestError) throw error;
+      throw new ProxyRequestError(400, "요청 본문의 압축을 해제할 수 없습니다.");
+    }
+  }
+  if (decoded.byteLength > MAX_DECOMPRESSED_BODY_BYTES) throw new ProxyRequestError(413, "요청 본문이 너무 큽니다.");
+  return decoded;
+}
+
 async function readBody(req: IncomingMessage): Promise<{ raw: string; body: unknown }> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return { raw, body: raw ? JSON.parse(raw) : {} };
+  let size = 0;
+  for await (const chunk of req) {
+    const value = chunk as Buffer;
+    size += value.byteLength;
+    if (size > MAX_COMPRESSED_BODY_BYTES) throw new ProxyRequestError(413, "압축된 요청 본문이 너무 큽니다.");
+    chunks.push(value);
+  }
+  const raw = decodeRequestBody(Buffer.concat(chunks), req.headers["content-encoding"]).toString("utf8");
+  try { return { raw, body: raw ? JSON.parse(raw) : {} }; }
+  catch { throw new ProxyRequestError(400, "요청 본문이 올바른 JSON이 아닙니다."); }
+}
+
+function retryableStatus(status: number): boolean { return status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504; }
+
+function retryAfterMs(response: Response): number {
+  const value = response.headers.get("retry-after")?.trim();
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.min(10_000, Math.max(0, seconds * 1000));
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.min(10_000, Math.max(0, date - Date.now())) : 0;
+}
+
+async function fetchUpstream(url: string, init: RequestInit, parentSignal: AbortSignal): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (parentSignal.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), UPSTREAM_TIMEOUT_MS);
+    const abort = () => timeout.abort();
+    parentSignal.addEventListener("abort", abort, { once: true });
+    try {
+      const response = await fetch(url, { ...init, signal: timeout.signal });
+      if (!retryableStatus(response.status) || attempt === 2) return response;
+      try { await response.arrayBuffer(); } catch { /* body drain is best effort */ }
+      await new Promise<void>((resolve) => setTimeout(resolve, retryAfterMs(response) || Math.min(2_000, 250 * (2 ** attempt))));
+    } catch (error) {
+      lastError = error;
+      if (parentSignal.aborted) throw error;
+      if (attempt === 2) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(2_000, 250 * (2 ** attempt))));
+    } finally {
+      clearTimeout(timer);
+      parentSignal.removeEventListener("abort", abort);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("upstream request failed");
 }
 
 function modelId(body: unknown): string {
@@ -368,12 +457,11 @@ function forwardedHeaders(req: IncomingMessage): Record<string, string> {
 async function handleNativeResponses(req: IncomingMessage, raw: string, res: ServerResponse): Promise<void> {
   const controller = new AbortController();
   res.on("close", () => controller.abort());
-  const upstream = await fetch(CHATGPT_CODEX_RESPONSES, {
+  const upstream = await fetchUpstream(CHATGPT_CODEX_RESPONSES, {
     method: "POST",
     headers: forwardedHeaders(req),
     body: raw,
-    signal: controller.signal,
-  });
+  }, controller.signal);
   res.writeHead(upstream.status, {
     "Content-Type": upstream.headers.get("content-type") ?? "application/json",
     "Cache-Control": upstream.headers.get("cache-control") ?? "no-cache",
@@ -392,6 +480,63 @@ async function handleNativeResponses(req: IncomingMessage, raw: string, res: Ser
   }
 }
 
+async function handleNativeCompact(req: IncomingMessage, raw: string, res: ServerResponse): Promise<void> {
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  const upstream = await fetchUpstream(`${CHATGPT_CODEX_RESPONSES}/compact`, { method: "POST", headers: forwardedHeaders(req), body: raw }, controller.signal);
+  res.writeHead(upstream.status, { "Content-Type": upstream.headers.get("content-type") ?? "application/json" });
+  if (upstream.body) {
+    const reader = upstream.body.getReader();
+    while (true) { const { done, value } = await reader.read(); if (done) break; res.write(Buffer.from(value)); }
+  }
+  res.end();
+}
+
+const COMPACT_PROMPT = "대화 컨텍스트를 압축하십시오. 다음 작업자가 즉시 이어서 작업할 수 있도록 목표, 완료된 작업, 변경 파일, 중요한 결정, 오류와 남은 작업을 간결하고 구체적으로 정리하십시오.";
+
+function compactUserMessages(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    if (value.type !== "message" || value.role !== "user") return [];
+    const content = Array.isArray(value.content) ? value.content : [];
+    const text = content.flatMap((part) => part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? [(part as Record<string, unknown>).text as string] : []).join("");
+    return text ? [text] : [];
+  });
+}
+
+async function handleCompactResponses(req: IncomingMessage, body: unknown, res: ServerResponse): Promise<void> {
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as Record<string, unknown>).model !== "string") {
+    throw new ProxyRequestError(400, "compact 요청에는 model이 필요합니다.");
+  }
+  const parsed = parseRequest(body);
+  const { provider, accountId, model } = splitModel(parsed.model);
+  parsed.model = model;
+  parsed.tools = [];
+  // Adapters are streaming transports; compact consumes the stream internally and
+  // returns a unary Responses replacement to Codex.
+  parsed.stream = true;
+  parsed.context.messages.push({ role: "user", content: [{ type: "text", text: COMPACT_PROMPT }] });
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  let summary = "";
+  let failure = "";
+  try {
+    const stream = await providerEventStream(provider, accountId, parsed, controller.signal);
+    for await (const event of stream) {
+      if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "reasoning_raw_delta") summary += event.type === "text_delta" ? event.text : event.type === "thinking_delta" ? event.thinking : event.text;
+      if (event.type === "error") failure = event.message;
+    }
+  } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+  if (failure) throw new ProxyRequestError(502, redactSensitiveText(failure));
+  const messages = compactUserMessages((body as Record<string, unknown>).input);
+  const retained = messages.slice(-12);
+  const output = [...retained.map((text) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] })), { type: "message", role: "user", content: [{ type: "input_text", text: `작업 재개 요약:\n${summary.trim() || "요약을 생성하지 못했습니다."}` }] }];
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ output }));
+}
+
 async function providerEventStream(
   provider: ProxyProvider,
   accountId: string | undefined,
@@ -405,26 +550,26 @@ async function providerEventStream(
     const auth = await claudeAuth(accountId);
     if (!auth) throw new Error("Claude Code 로그인이 필요합니다.");
     const reqInit = buildAnthropicRequest(parsed, auth);
-    upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
+    upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
     return streamAnthropic(upstream);
   }
   if (provider === "copilot") {
     const auth = await copilotAuth(accountId);
     if (!auth) throw new Error("GitHub Copilot 로그인이 필요합니다.");
     const reqInit = buildCopilotRequest(parsed, auth);
-    upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
+    upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
     return streamCopilot(upstream);
   }
   if (provider === "antigravity") {
     const auth = await antigravityAuth(accountId);
     if (!auth) throw new Error("Antigravity 로그인이 필요합니다.");
     const reqInit = buildAntigravityRequest(parsed, auth);
-    upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
+    upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
     return streamAntigravity(upstream);
   }
   const key = await providerSettings.readApiKey(provider, accountId);
   const reqInit = provider === "anthropic" ? buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
-  upstream = await fetch(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body, signal });
+  upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
   return provider === "google" ? streamGoogle(upstream) : provider === "anthropic" ? streamAnthropic(upstream) : streamOpenAiCompatible(providerLabel(provider), upstream);
 }
 
@@ -636,6 +781,7 @@ export class CodexProxyServer {
     if (this.server) return this.port;
     await loadRequestLog();
     this.secret = await loadProxySecret();
+    const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
     const server = createServer((req, res) => {
       void (async () => {
         try {
@@ -654,23 +800,23 @@ export class CodexProxyServer {
           }
           const url = rawUrl.slice(prefix.length) || "/";
           if (req.method === "GET" && url.startsWith("/v1/models")) { await handleModels(res); return; }
-          if (req.method === "POST" && url.startsWith("/v1/responses")) {
+          if (req.method === "POST" && (url === "/v1/responses" || url === "/v1/responses/compact")) {
             const { raw, body } = await readBody(req);
-            if (isExternalModel(modelId(body))) await handleExternalResponses(req, body, res);
+            if (url === "/v1/responses/compact" && isExternalModel(modelId(body))) await handleCompactResponses(req, body, res);
+            else if (url === "/v1/responses/compact") await handleNativeCompact(req, raw, res);
+            else if (isExternalModel(modelId(body))) await handleExternalResponses(req, body, res);
             else await handleNativeResponses(req, raw, res);
             return;
           }
           res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"error":"not found"}');
         } catch (error) {
-          if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+          const status = error instanceof ProxyRequestError ? error.status : (error && typeof error === "object" && "status" in error && typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : 500);
+          if (!res.headersSent) res.writeHead(status, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
         }
       })();
     });
-    // Codex's built-in OpenAI provider probes this exact endpoint over WebSocket
-    // before using HTTP/SSE. A 426 is its documented fallback signal; returning
-    // 404 or dropping the socket makes the turn fail before the HTTP request.
-    server.on("upgrade", (req, socket) => {
+    server.on("upgrade", (req, socket, head) => {
       const prefix = `/${this.secret}`;
       const rawUrl = req.url ?? "/";
       const path = rawUrl.slice(prefix.length).split("?", 1)[0];
@@ -683,10 +829,60 @@ export class CodexProxyServer {
         return;
       }
       if (path === "/v1/responses") {
-        rejectWebSocketUpgrade(socket, 426, "Responses WebSocket transport is disabled; use HTTP");
+        websocketServer.handleUpgrade(req, socket, head, (ws) => websocketServer.emit("connection", ws, req));
         return;
       }
       rejectWebSocketUpgrade(socket, 403, "forbidden");
+    });
+    websocketServer.on("connection", (ws, req) => {
+      let activeAbort: AbortController | undefined;
+      ws.on("message", (raw: RawData) => {
+        let frame: Record<string, unknown>;
+        try { frame = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
+        if (frame.type === "response.processed") return;
+        if (frame.type !== "response.create") return;
+        activeAbort?.abort();
+        const turnAbort = new AbortController();
+        activeAbort = turnAbort;
+        const payload = { ...frame };
+        delete payload.type;
+        if (payload.generate === false) {
+          const model = typeof payload.model === "string" ? payload.model : "";
+          ws.send(JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "in_progress", output: [] } }));
+          ws.send(JSON.stringify({ type: "response.completed", sequence_number: 1, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "completed", output: [] } }));
+          return;
+        }
+        void (async () => {
+          try {
+            const headers: Record<string, string> = { "Content-Type": "application/json" };
+            for (const name of FORWARDED_OPENAI_HEADERS) {
+              const value = req.headers[name];
+              if (typeof value === "string") headers[name] = value;
+            }
+            const response = await fetch(`http://127.0.0.1:${DEVIL_PROXY_PORT}/${this.secret}/v1/responses`, {
+              method: "POST", headers, body: JSON.stringify({ ...payload, stream: true }), signal: turnAbort.signal,
+            });
+            if (!response.ok || !response.body) {
+              ws.send(JSON.stringify({ type: "error", status: response.status, error: { message: await response.text() } }));
+              return;
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            while (!turnAbort.signal.aborted) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const parsed = ssePayloads(buffer);
+              buffer = parsed.rest;
+              for (const event of parsed.payloads) if (ws.readyState === WebSocket.OPEN) ws.send(event);
+            }
+          } catch (error) {
+            if (!turnAbort.signal.aborted && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: 502, error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
+          }
+        })();
+      });
+      ws.on("close", () => activeAbort?.abort());
     });
     // Keep the provider URL stable across Devil restarts. Codex stores the
     // provider name in a rollout, and a fixed URL lets stock Codex recognise

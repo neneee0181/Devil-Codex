@@ -1,5 +1,5 @@
 // Copilot adapter: neutral request → GitHub Copilot chat/completions → AdapterEvent stream.
-import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
+import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 import { copilotChatHeaders } from "../provider-oauth.cjs";
@@ -91,7 +91,8 @@ function toResponsesInput(parsed: OcxParsedRequest): unknown[] {
 function buildResponsesBody(parsed: OcxParsedRequest): Record<string, unknown> {
   const body: Record<string, unknown> = { model: parsed.model, input: toResponsesInput(parsed), stream: true };
   if (parsed.context.instructions) body.instructions = parsed.context.instructions;
-  const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  const allowed = allowedToolNames(parsed.options.toolChoice);
+  const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), 24, requiredToolName(parsed));
   if (selectedTools.length) {
     body.tools = selectedTools.map((tool) => ({
       type: "function",
@@ -103,6 +104,7 @@ function buildResponsesBody(parsed: OcxParsedRequest): Record<string, unknown> {
     const choice = parsed.options.toolChoice;
     if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice;
     else if (choice && "name" in choice) body.tool_choice = { type: "function", name: sanitizeName(choice.name) };
+    else if (choice && "allowedTools" in choice) body.tool_choice = choice.mode === "required" ? "required" : "auto";
   }
   if (parsed.options.maxOutputTokens !== undefined) body.max_output_tokens = parsed.options.maxOutputTokens;
   if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
@@ -117,7 +119,8 @@ export function buildCopilotRequest(parsed: OcxParsedRequest, auth: string | { b
   const bearer = typeof auth === "string" ? auth : auth.bearer;
   const apiUrl = typeof auth === "string" ? COPILOT_API : auth.apiUrl ?? COPILOT_API;
   const body: Record<string, unknown> = { model: parsed.model, messages: toChatMessages(parsed), stream: true };
-  const selectedTools = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  const allowed = allowedToolNames(parsed.options.toolChoice);
+  const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), 24, requiredToolName(parsed));
   if (selectedTools.length) {
     const tools = selectedTools.map((tool) => ({
       type: "function",
@@ -131,6 +134,7 @@ export function buildCopilotRequest(parsed: OcxParsedRequest, auth: string | { b
     const choice = parsed.options.toolChoice;
     if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice;
     else if (choice && "name" in choice) body.tool_choice = { type: "function", function: { name: sanitizeName(choice.name) } };
+    else if (choice && "allowedTools" in choice) body.tool_choice = choice.mode === "required" ? "required" : "auto";
   }
   if (parsed.options.maxOutputTokens !== undefined) body.max_tokens = parsed.options.maxOutputTokens;
   if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;

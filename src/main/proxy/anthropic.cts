@@ -1,6 +1,6 @@
 // Anthropic adapter: neutral request → Anthropic Messages call → AdapterEvent stream.
 // Adapted from opencodex (MIT).
-import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxMessage, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
+import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxMessage, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 
@@ -114,7 +114,8 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   if (oauth) body.system = [{ type: "text", text: CLAUDE_CODE_SYSTEM }, ...(sys ? [{ type: "text", text: sys }] : [])];
   else if (sys) body.system = sys;
 
-  const selectedTools = budgetTools(parsed.tools, 64, requiredToolName(parsed));
+  const allowed = allowedToolNames(parsed.options.toolChoice);
+  const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), 64, requiredToolName(parsed));
   if (selectedTools.length) {
     body.tools = selectedTools.map((tool) => ({
       name: toClaudeToolName(sanitizeName(namespacedToolName(tool.namespace, tool.name)), oauth),
@@ -130,7 +131,8 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   const tc = parsed.options.toolChoice;
   if (tc === "auto") body.tool_choice = { type: "auto" };
   else if (tc === "none") body.tool_choice = { type: "none" };
-  else if (tc === "required") body.tool_choice = { type: "any" };
+  else if (tc === "required" || (tc && "allowedTools" in tc && tc.mode === "required")) body.tool_choice = { type: "any" };
+  else if (tc && "allowedTools" in tc) body.tool_choice = { type: "auto" };
   else if (tc && "name" in tc) body.tool_choice = { type: "tool", name: toClaudeToolName(sanitizeName(tc.name), oauth) };
 
   if (parsed.reasoningEffort && parsed.reasoningEffort !== "none" && parsed.reasoningEffort !== "minimal") {
@@ -198,6 +200,7 @@ export async function* streamAnthropic(response: Response): AsyncGenerator<Adapt
             if (!delta) break;
             if (delta.type === "text_delta" && typeof delta.text === "string") yield { type: "text_delta", text: delta.text };
             else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") yield { type: "thinking_delta", thinking: delta.thinking };
+            else if (delta.type === "signature_delta" && typeof delta.signature === "string") yield { type: "thinking_signature", signature: delta.signature };
             else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") yield { type: "tool_call_delta", arguments: delta.partial_json };
             break;
           }

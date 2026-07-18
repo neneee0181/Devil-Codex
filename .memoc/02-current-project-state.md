@@ -15,6 +15,9 @@ tags:
 
 - Bridge stale-model overwrite fix (2026-07-18, v0.3.18): separate `useCodexSettings()` instances in the main view and Bridge picker could keep different snapshots; the main view could save an old external-model list after the picker removed it, leaving `devil-codex-catalog.json` stale. Added a renderer IPC listener for authoritative `settings:changed` events so all hooks converge on the saved list. Full build, main test, and diff check pass.
 
+- Stock Bridge zstd request fix (2026-07-18, uncommitted): session `019f733f-7b48-7982-a467-69e0f76bfb0d` sent a zstd-compressed Responses request; the proxy parsed compressed bytes as UTF-8 JSON and returned 500, which stock Codex displayed as a generic high-demand error. Proxy request bodies now decode zstd, gzip, deflate, and brotli before parsing. Full build, main test, and diff check pass.
+- OpenCodex parity pass (2026-07-18, uncommitted): Bridge now handles `/v1/responses/compact`, bounded compressed bodies, upstream retry/timeout, reasoning envelopes/signatures, allowed tool choices, web-search history, image limits, atomic model catalogs, and Responses WebSocket frames. `npm run build`, `npm run test:main`, and `git diff --check` pass.
+
 - OpenCode Free provider (2026-07-18, uncommitted): added keyless `opencode-free` using `https://opencode.ai/zen/v1`, `x-opencode-client: desktop`, live `/models` discovery filtered to `big-pickle` and `*-free`, and Bridge/main/side model-picker exposure. Added privacy warning because OpenCode documents data-use exceptions for free models. Main/renderer builds, diff check, live endpoint model-list check, and provider config smoke pass.
 
 Last synced: 2026-07-11

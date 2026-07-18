@@ -1,4 +1,4 @@
-import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { codexHome } from "./codex-home.cjs";
@@ -68,12 +68,9 @@ function externalEntry(template: CatalogEntry, model: { id: string; label: strin
   entry.supports_parallel_tool_calls = false;
   entry.supports_search_tool = false;
   delete entry.web_search_tool_type;
-  // The local Bridge intentionally serves HTTP/SSE only. Keep OpenCodex's
-  // default-off catalog shape: Codex's built-in OpenAI provider still probes
-  // WebSocket, and the proxy answers that probe with 426 to request HTTP/SSE
-  // fallback while preserving the stock thread identity.
-  delete entry.supports_websockets;
-  delete entry.prefer_websockets;
+  // The local Bridge supports both Codex HTTP/SSE and WebSocket transports.
+  entry.supports_websockets = true;
+  entry.prefer_websockets = true;
   return entry;
 }
 
@@ -107,6 +104,12 @@ function nativeCatalogSourcePath(home: string): string {
   return existsSync(backup) ? backup : join(home, "models_cache.json");
 }
 
+async function atomicWriteCatalog(path: string, catalog: Catalog): Promise<void> {
+  const temp = `${path}.tmp-${process.pid}`;
+  await writeFile(temp, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(temp, path);
+}
+
 export async function syncNativeCodexCatalog(home = codexHome()): Promise<{ path: string; models: number }> {
   const sourcePath = nativeCatalogSourcePath(home);
   if (!existsSync(sourcePath)) throw new Error(`Codex model cache was not found: ${sourcePath}`);
@@ -118,7 +121,7 @@ export async function syncNativeCodexCatalog(home = codexHome()): Promise<{ path
     models: (native.models ?? []).filter((entry) => !isRoutedModelSlug(entry.slug)),
   };
   const target = nativeCatalogPath(home);
-  await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await atomicWriteCatalog(target, catalog);
   return { path: target, models: catalog.models.length };
 }
 
@@ -130,7 +133,7 @@ export async function syncStockCodexCatalog(providers: ProviderInfo[], home = co
   const backup = join(home, CATALOG_BACKUP_FILE);
   if (!existsSync(backup)) await copyFile(sourcePath, backup);
   const catalog = buildStockCatalog(native, providers, featuredModelIds);
-  await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await atomicWriteCatalog(target, catalog);
   const added = (catalog.models ?? []).filter((entry) => isRoutedModelSlug(entry.slug)).length;
   return { path: target, added };
 }

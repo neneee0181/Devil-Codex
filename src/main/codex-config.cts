@@ -59,9 +59,7 @@ function block(port: number, secret: string): string {
     // Native Codex passthrough relays the caller's ChatGPT OAuth headers when
     // compatibility mode makes Devil the active model provider.
     `requires_openai_auth = true`,
-    // The local proxy is HTTP/SSE only. Opt out of Codex's WebSocket prewarm
-    // so an external-model turn never starts with a 404 upgrade attempt.
-    `supports_websockets = false`,
+    `supports_websockets = true`,
     END,
     "",
   ].join("\n");
@@ -152,8 +150,8 @@ function stripManagedRootBlock(source: string, begin: string, end: string): stri
 
 // The Codex desktop model picker has one active OpenAI transport for its
 // catalog. Native models pass through unchanged; provider:model entries are
-// translated by the local Devil proxy. WebSocket is disabled per external
-// catalog row, preserving stock Codex's OpenAI thread identity and sync flow.
+// translated by the local Devil proxy. HTTP/SSE and WebSocket share the same
+// local Responses endpoint so stock Codex can use either transport.
 export async function registerDevilStockBridge(port: number, secret: string, catalogPath: string): Promise<void> {
   const source = await recoverDesktopAppearanceTheme(await read(), CODEX_HOME);
   const cleaned = stripManagedRootBlock(stripManagedRootBlock(source, STOCK_BEGIN, STOCK_END), NATIVE_CATALOG_BEGIN, NATIVE_CATALOG_END).trimEnd();

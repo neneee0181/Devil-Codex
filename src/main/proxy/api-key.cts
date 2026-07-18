@@ -1,4 +1,4 @@
-import { namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxTool, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
+import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxTool, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 import { budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import type { ProviderId } from "../contracts.cjs";
@@ -140,7 +140,8 @@ export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
 function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): Record<string, unknown> {
   const body: Record<string, unknown> = { model: parsed.model, messages: openAiMessages(parsed, allowImages), stream: parsed.stream };
   const toolLimit = maxToolsForProvider(provider);
-  const selectedTools = budgetTools(parsed.tools, toolLimit, requiredToolName(parsed));
+  const allowed = allowedToolNames(parsed.options.toolChoice);
+  const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), toolLimit, requiredToolName(parsed));
   if (selectedTools.length) {
     const tools = selectedTools.map((tool) => ({
       type: "function",
@@ -156,6 +157,7 @@ function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, pr
     const choice = parsed.options.toolChoice;
     if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice;
     else if (choice && "name" in choice) body.tool_choice = { type: "function", function: { name: sanitizeName(choice.name) } };
+    else if (choice && "allowedTools" in choice) body.tool_choice = choice.mode === "required" ? "required" : "auto";
   }
   if (parsed.options.maxOutputTokens !== undefined) body.max_tokens = parsed.options.maxOutputTokens;
   if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
