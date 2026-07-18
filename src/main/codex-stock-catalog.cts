@@ -14,7 +14,12 @@ type Catalog = { models?: CatalogEntry[]; [key: string]: unknown };
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 
 function externalModelId(provider: ProviderId, accountId: string | undefined, model: string): string {
-  return `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
+  // Codex Desktop expects routed catalog slugs in the provider/model form.
+  return `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}/${model}`;
+}
+
+function isRoutedModelSlug(slug: unknown): boolean {
+  return typeof slug === "string" && (slug.includes("/") || slug.includes(":"));
 }
 
 function mergeModels(...groups: Array<Array<{ id: string; label: string }> | undefined>): Array<{ id: string; label: string }> {
@@ -81,7 +86,7 @@ export function buildStockCatalog(native: Catalog, providers: ProviderInfo[], fe
     .sort((left, right) => (featuredModelIds.indexOf(left.id) - featuredModelIds.indexOf(right.id)) || left.label.localeCompare(right.label));
   const featured = new Map(featuredModelIds.map((id, index) => [id, index]));
   const nativeModels = (native.models ?? [])
-    .filter((entry) => typeof entry.slug !== "string" || !entry.slug.includes(":"))
+    .filter((entry) => !isRoutedModelSlug(entry.slug))
     // Native Codex models must stay before every Devil-routed model in both
     // the picker and the compact subagent candidate list.
     .map((entry, index) => ({ ...entry, priority: index }));
@@ -109,7 +114,7 @@ export async function syncNativeCodexCatalog(home = codexHome()): Promise<{ path
   const native = JSON.parse(await readFile(sourcePath, "utf8")) as Catalog;
   const catalog = {
     ...native,
-    models: (native.models ?? []).filter((entry) => typeof entry.slug !== "string" || !entry.slug.includes(":")),
+    models: (native.models ?? []).filter((entry) => !isRoutedModelSlug(entry.slug)),
   };
   const target = nativeCatalogPath(home);
   await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -125,10 +130,10 @@ export async function syncStockCodexCatalog(providers: ProviderInfo[], home = co
   if (!existsSync(backup)) await copyFile(sourcePath, backup);
   const catalog = buildStockCatalog(native, providers, featuredModelIds);
   await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  const added = (catalog.models ?? []).filter((entry) => typeof entry.slug === "string" && entry.slug.includes(":")).length;
+  const added = (catalog.models ?? []).filter((entry) => isRoutedModelSlug(entry.slug)).length;
   return { path: target, added };
 }
 
 export function stockCatalogModelIds(catalog: Catalog): string[] {
-  return (catalog.models ?? []).flatMap((entry) => typeof entry.slug === "string" && entry.slug.includes(":") ? [entry.slug] : []);
+  return (catalog.models ?? []).flatMap((entry) => isRoutedModelSlug(entry.slug) && typeof entry.slug === "string" ? [entry.slug] : []);
 }

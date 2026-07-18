@@ -15,6 +15,10 @@ Last synced: 2026-07-11
 
 ## Current Status
 
+- Bridge save-failure fix (2026-07-18, uncommitted): Bridge activation saved config/catalog successfully but its `/v1/models` health check omitted a selected Claude login model because proxy discovery used only live OAuth results. Login proxy rows now union live, connected-account, and provider-cached models, matching the catalog path; TypeScript `--noEmit` and `git diff --check` pass. Packaged-app Bridge re-toggle remains.
+
+- Bridge model-picker/version fix (2026-07-18, uncommitted): stock Codex routed catalog IDs now use OpenCodex-compatible `provider[@account]/model` slugs; proxy `/models` and request parsing accept slash plus legacy colon IDs. Existing Bridge settings migrate on load/save, and connected login/API-key filtering remains enforced. Main/renderer builds, main test, catalog and migration smoke checks pass. Version 0.3.16.
+
 - Stock Codex projectless-thread parity (2026-07-18, uncommitted): native Codex summaries are marked from `.codex-global-state.json` `projectless-thread-ids`; renderer excludes those threads from project folders and shows them in the standalone chat list. Opening one keeps a projectless UI workspace instead of reclassifying it as a project. Electron-hosted TypeScript `--noEmit` and `git diff --check` pass; manual stock-thread/sidebar check remains.
 
 - File-change card timing fix (2026-07-18, uncommitted): `ChangesCard` now stays hidden while the agent's final message is streaming and appears after the turn leaves the running state. Electron-hosted TypeScript `--noEmit` and `git diff --check` pass; manual completion-stream check remains.

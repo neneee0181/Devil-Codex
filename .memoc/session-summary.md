@@ -13,6 +13,7 @@ tags:
 Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
+- 2026-07-18: Bridge save failure reproduced and fixed: `/v1/models` unions live + connected cached account/provider models. Stock routed catalog IDs now use OpenCodex-compatible `provider[@account]/model` slugs, with legacy colon migration and proxy compatibility. Version 0.3.16; main/renderer builds, main test, catalog/migration smoke pass.
 - 2026-07-18: Stock Codex `projectless-thread-ids` now drives standalone chat classification; imported projectless threads no longer create/show as Devil project folders. TypeScript no-emit and diff checks pass.
 - 2026-07-18: File-change summary card now waits until the final agent message stream/turn completes before appearing. TypeScript no-emit and diff checks pass.
 - 2026-07-18: Long pasted text is kept as a compact attachment card after live completion sync; echoed model-bound attachment context no longer replaces it with the full body. TypeScript no-emit and diff checks pass.

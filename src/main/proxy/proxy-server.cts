@@ -121,8 +121,10 @@ function providerLabel(provider: ProxyProvider): string {
 }
 
 function splitModel(id: string): { provider: ProxyProvider; accountId?: string; model: string } {
-  const sep = id.indexOf(":");
-  if (sep > 0) {
+  const slash = id.indexOf("/");
+  const colon = id.indexOf(":");
+  const separators = [slash, colon].filter((position) => position > 0).sort((left, right) => left - right);
+  for (const sep of separators) {
     const rawProvider = id.slice(0, sep);
     const accountSep = rawProvider.indexOf("@");
     const p = accountSep >= 0 ? rawProvider.slice(0, accountSep) : rawProvider;
@@ -145,7 +147,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^:]+)?:/.test(model);
+  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^/:]+)?[/:]/.test(model);
 }
 
 function redactSensitiveText(text: string): string {
@@ -557,16 +559,24 @@ async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: {
 
 async function handleModels(res: ServerResponse): Promise<void> {
   const settings = await providerSettings.load();
-  const routedId = (provider: ProviderId, accountId: string | undefined, model: string): string => `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}:${model}`;
+  const routedId = (provider: ProviderId, accountId: string | undefined, model: string): string => `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}/${model}`;
   const connected = (account: { credentialSource?: string }): boolean => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
   const loginRows = (await Promise.all(settings.providers
     .filter((provider) => provider.kind === "login" && provider.id !== "codex")
     .flatMap((provider) => provider.accounts.filter(connected).map(async (account) => {
-      const models = provider.id === "antigravity"
+      const liveModels = provider.id === "antigravity"
         ? await antigravityModels(account.id).catch(() => [])
         : await oauthModels(provider.id as "copilot" | "claude-code", account.id).catch(() => []);
+      // Login model refreshes can lag behind the account/provider cache. Keep
+      // connected saved models in the catalog so Bridge activation does not
+      // reject a valid selected model during that staggered refresh window.
+      const models = [...new Set([
+        ...liveModels.map((model) => model.id),
+        ...(account.models ?? []).map((model) => model.id),
+        ...(provider.models ?? []).map((model) => model.id),
+      ])];
       const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : "anthropic";
-      return models.map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: owner }));
+      return models.map((model) => ({ id: routedId(provider.id, account.id, model), object: "model", owned_by: owner }));
     })))).flat();
   const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && provider.accounts.some(connected));
   const apiRows = apiProviders.flatMap((provider) => {

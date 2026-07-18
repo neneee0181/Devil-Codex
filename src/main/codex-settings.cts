@@ -81,6 +81,15 @@ function readArray(source: string, key: string): string[] | undefined {
   }
 }
 
+function normalizeStockBridgeModelId(value: string): string {
+  // Migrate the pre-0.3.16 provider[:account]:model spelling to the
+  // slash-namespaced slug expected by Codex Desktop's model catalog.
+  const separator = value.indexOf(":");
+  const slash = value.indexOf("/");
+  if (separator <= 0 || (slash >= 0 && slash < separator)) return value;
+  return `${value.slice(0, separator)}/${value.slice(separator + 1)}`;
+}
+
 // Strip a root key line wherever it currently sits in the file (it may have
 // leaked under a trailing [table], which would make TOML parse it as a member
 // of that table — fatal for boolean values under a string-only env table).
@@ -116,7 +125,7 @@ export class CodexSettingsStore {
         subagentMcpEnabled: readBoolean(source, keys.subagentMcpEnabled) ?? defaults.subagentMcpEnabled,
         englishOutput: readBoolean(source, keys.englishOutput) ?? defaults.englishOutput,
         stockBridgeEnabled: readBoolean(source, keys.stockBridgeEnabled) ?? defaults.stockBridgeEnabled,
-        stockBridgeModels: readArray(source, keys.stockBridgeModels) ?? defaults.stockBridgeModels,
+        stockBridgeModels: (readArray(source, keys.stockBridgeModels) ?? defaults.stockBridgeModels).map(normalizeStockBridgeModelId),
         stockBridgeWebSearch: readBoolean(source, keys.stockBridgeWebSearch) ?? defaults.stockBridgeWebSearch,
         stockBridgeVision: readBoolean(source, keys.stockBridgeVision) ?? defaults.stockBridgeVision,
         remoteControlEnabled: readBoolean(source, keys.remoteControlEnabled) ?? defaults.remoteControlEnabled,
@@ -139,9 +148,10 @@ export class CodexSettingsStore {
     // end would slot them under a managed MCP table and break config parsing.
     const previousTier = readValue(source, keys.responseSpeed);
     for (const key of Object.values(keys)) source = stripKeyLine(source, key);
+    const normalizedNext = { ...next, stockBridgeModels: next.stockBridgeModels.map(normalizeStockBridgeModelId) };
     const block = (Object.entries(keys) as Array<[keyof CodexSettings, string]>)
       .map(([field, key]) => {
-        const value = field === "responseSpeed" ? serviceTierValue(next.responseSpeed, previousTier) : next[field];
+        const value = field === "responseSpeed" ? serviceTierValue(normalizedNext.responseSpeed, previousTier) : normalizedNext[field];
         return `${key} = ${formatValue(value)}`;
       })
       .join("\n");

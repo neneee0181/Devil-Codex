@@ -184,7 +184,7 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
     return accounts.flatMap((account) => {
       const models = mergeBridgeModels(account?.models, provider.models);
       return models.map((model) => ({
-        id: `${provider.id}${account?.id ? `@${encodeURIComponent(account.id)}` : ""}:${model.id}`,
+        id: `${provider.id}${account?.id ? `@${encodeURIComponent(account.id)}` : ""}/${model.id}`,
         provider: provider.label,
         account: account?.email ?? account?.label ?? provider.label,
         label: model.label,
