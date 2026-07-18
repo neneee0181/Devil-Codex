@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-18T22:11:11+09:00
+updated: 2026-07-19T00:59:37+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- Antigravity Sites bridge repair (2026-07-19, uncommitted): Gemini tool-schema normalization now preserves user argument names such as `title`, `default`, and `examples` inside every `properties` map while still removing unsupported metadata from the schema nodes themselves. This fixes Sites `create_site(title, slug)` losing its required `title`. External-provider guidance now treats connector results as authoritative, forbids claiming create/update/deploy success without confirmation, and reports missing existing resources instead of substituting localhost or silently creating a replacement unless explicitly authorized. Antigravity responses are buffered until a tool turn is known, then ordinary narration/raw patch text is suppressed while final text-only answers remain intact. Cached plugin versions are selected deterministically by parsed version rather than OS directory order. `npm run test:main` passes 32/32, full `npm run build` passes, and `git diff --check` passes. Installed-app Antigravity + Sites E2E remains; the current Sites connection still returns 404 for the persisted project and an empty site list, which is outside the local bridge path.
 
 - Antigravity custom-tool signature fix (2026-07-18, uncommitted): diagnosed session `019f7526-c472-7522-91cc-9a9398c2e8be` on installed v0.4.0. Eleven ordinary `function_call` steps succeeded because their synthetic `fc_...` item ids were rejected as signatures; the first `custom_tool_call` (`apply_patch`) used `ctc_...`, which both signature validators incorrectly accepted and replayed to Gemini instead of the cached opaque signature, causing deterministic `Corrupted thought signature` failures after the tool result. The parser no longer maps Responses item ids to `thoughtSignature`, both validators reject `ctc_`/`tsc_`, and independent parser/Google-wire/replay regression tests cover the failure path. `npm run test:main` passes 29 tests, full `npm run build` passes, and `git diff --check` passes. Installed-app E2E remains pending; the already-poisoned session cannot self-recover because its replay cache was cleared, so verify in a newly created Antigravity thread after rebuilding/reinstalling.
 

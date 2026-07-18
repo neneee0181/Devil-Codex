@@ -76,6 +76,18 @@ function normalizeGeminiValue(value: unknown, defs: Map<string, unknown>, depth 
   const result: Schema = {};
   let composition: Schema | undefined;
   for (const [key, child] of Object.entries(value)) {
+    // `properties` is a map of user-facing argument names, not a schema node.
+    // Preserve names such as `title`, `default`, and `examples` while still
+    // normalizing each property's schema value. Filtering the map itself makes
+    // required connector arguments disappear from Gemini tool declarations.
+    if (key === "properties" && isRecord(child)) {
+      const properties: Schema = {};
+      for (const [name, propertySchema] of Object.entries(child)) {
+        properties[name] = normalizeGeminiValue(propertySchema, defs, depth + 1);
+      }
+      result.properties = properties;
+      continue;
+    }
     if (GEMINI_UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
     if (key === "$ref") continue;
     if (COMPOSITION_KEYS.has(key)) {
@@ -196,6 +208,8 @@ export function buildToolCatalogNudge(
     neighboringNames.length ? `Do not use neighboring-agent tool names ${neighboringNames.map((name) => `\`${name}\``).join(", ")} unless this turn's catalog lists those exact names.` : undefined,
     "If you need shell, file search, file read, edit, or discovery behavior, choose the listed tool that provides that capability.",
     "Count a tool call only after its tool result returns; batch independent read-only calls when the runtime supports it.",
+    "Treat tool results as ground truth; never claim an external create, update, save, publish, or deployment succeeded unless its result confirms success.",
+    "If a referenced existing remote resource is missing or inaccessible, report that blocker instead of silently substituting a local URL or creating a replacement unless the user explicitly requested or authorized that fallback.",
     "Keep calling tools until the requested work is complete; a progress statement alone is not completion.",
   ].filter((line): line is string => typeof line === "string").join(" ");
 }

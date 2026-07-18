@@ -8,8 +8,10 @@ import { renameAtomicFile, renameAtomicFileSync } from "../atomic-file.cjs";
 import { buildStockCatalog, selectConfiguredModelRows } from "../codex-stock-catalog.cjs";
 import type { ProviderInfo } from "../contracts.cjs";
 import { providerAccountReady } from "../provider-settings.cjs";
+import { latestPluginVersionName } from "../plugin-cache.cjs";
 import { buildMacStockProxyPlist, stockProxyTaskArgs } from "../stock-proxy-autostart.cjs";
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
+import { filterAntigravityToolTurnText } from "./antigravity.cjs";
 import { applyAntigravityReplay, observeAntigravityReplayCall, resetAntigravityReplayForTests } from "./antigravity-replay.cjs";
 import { buildApiKeyRequest, buildGoogleGenerateContentBody, googleContents, streamOpenAiCompatible } from "./api-key.cjs";
 import { bridgeToResponsesSSE } from "./bridge.cjs";
@@ -118,6 +120,13 @@ test("platform bridge autostart commands preserve executable paths safely", () =
   assert.match(mac, /Devil &amp; Codex &lt;Beta&gt;/);
   assert.match(mac, /Devil &quot;Codex&quot;/);
   assert.match(mac, /--devil-stock-proxy/);
+});
+
+test("plugin cache selects the latest version independently of directory order", () => {
+  assert.equal(latestPluginVersionName(["0.1.30", "0.1.9", "0.1.10"]), "0.1.30");
+  assert.equal(latestPluginVersionName(["0.1.30-beta.2", "0.1.30", "0.1.30-beta.10"]), "0.1.30");
+  assert.equal(latestPluginVersionName(["0.1.7", "0.1.7+1"]), "0.1.7+1");
+  assert.equal(latestPluginVersionName(["current", "0.1.30"]), "0.1.30");
 });
 
 test("Bridge discovery exposes only configured models in configured order", () => {
@@ -419,6 +428,95 @@ test("Gemini schema removes Responses-only markers and resolves definitions", ()
   assert.equal(((schema.properties as Record<string, Record<string, unknown>>).target).type, "string");
   assert.equal(((schema.properties as Record<string, Record<string, unknown>>).count).minimum, 0);
   assert.match(body.systemInstruction.parts[0]!.text, /Prefer taking the next tool action/);
+  assert.match(body.systemInstruction.parts[0]!.text, /never claim an external create, update, save, publish, or deployment succeeded/i);
+  assert.match(body.systemInstruction.parts[0]!.text, /Never print raw tool arguments, patches, source files, shell commands, or tool schemas as intermediate text/);
+});
+
+test("Gemini schema preserves property names that collide with metadata keys", () => {
+  const parsed = parsedRequest({
+    tools: [{
+      type: "function",
+      name: "create_site",
+      parameters: {
+        type: "object",
+        title: "Create site metadata",
+        default: {},
+        examples: [],
+        properties: {
+          title: {
+            type: "string",
+            title: "Site title metadata",
+            default: "Portfolio",
+            examples: ["Career Atlas"],
+          },
+          slug: { type: "string" },
+          options: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              default: { type: "string" },
+              examples: { type: "array", items: { type: "string" } },
+            },
+            required: ["title", "default", "examples"],
+          },
+        },
+        required: ["title", "slug", "options"],
+      },
+    }],
+  });
+  const body = buildGoogleGenerateContentBody(parsed) as { tools: Array<{ functionDeclarations: Array<{ parameters: Record<string, unknown> }> }> };
+  const schema = body.tools[0]!.functionDeclarations[0]!.parameters;
+  assert.equal(schema.title, undefined);
+  assert.equal(schema.default, undefined);
+  assert.equal(schema.examples, undefined);
+
+  const properties = schema.properties as Record<string, Record<string, unknown>>;
+  assert.ok(Object.hasOwn(properties, "title"));
+  assert.ok(Object.hasOwn(properties, "slug"));
+  assert.deepEqual(schema.required, ["title", "slug", "options"]);
+  assert.equal(properties.title!.title, undefined);
+  assert.equal(properties.title!.default, undefined);
+  assert.equal(properties.title!.examples, undefined);
+
+  const nested = properties.options!.properties as Record<string, unknown>;
+  assert.ok(Object.hasOwn(nested, "title"));
+  assert.ok(Object.hasOwn(nested, "default"));
+  assert.ok(Object.hasOwn(nested, "examples"));
+  assert.deepEqual(properties.options!.required, ["title", "default", "examples"]);
+});
+
+test("Antigravity hides ordinary text in tool turns but preserves final answers", async () => {
+  async function* toolTurn(): AsyncGenerator<AdapterEvent> {
+    yield { type: "thinking_delta", thinking: "private plan" };
+    yield { type: "text_delta", text: "I will apply this raw patch: *** Begin Patch" };
+    yield { type: "tool_call_start", id: "call_1", name: "apply_patch" };
+    yield { type: "tool_call_delta", arguments: '{"input":"*** Begin Patch"}' };
+    yield { type: "tool_call_end" };
+    yield { type: "text_delta", text: "tool call sent" };
+    yield { type: "done" };
+  }
+  const filteredToolTurn = await collect(filterAntigravityToolTurnText(toolTurn()));
+  assert.equal(filteredToolTurn.some((event) => event.type === "text_delta"), false);
+  assert.deepEqual(filteredToolTurn.map((event) => event.type), [
+    "thinking_delta",
+    "heartbeat",
+    "tool_call_start",
+    "tool_call_delta",
+    "tool_call_end",
+    "heartbeat",
+    "done",
+  ]);
+
+  async function* finalTurn(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "Deployment completed." };
+    yield { type: "done" };
+  }
+  const filteredFinalTurn = await collect(filterAntigravityToolTurnText(finalTurn()));
+  assert.deepEqual(filteredFinalTurn, [
+    { type: "heartbeat" },
+    { type: "text_delta", text: "Deployment completed." },
+    { type: "done" },
+  ]);
 });
 
 test("native Codex identity is neutralized before an external provider sees it", () => {

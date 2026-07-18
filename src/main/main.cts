@@ -26,6 +26,7 @@ import { UnrealMcpRelay, unrealMcpRelayOptionsFromEnv } from "./unreal-mcp-relay
 import { selectConfiguredModelRows, syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { AsyncSerialQueue, persistAndApplyWithRollback } from "./settings-transaction.cjs";
+import { latestPluginVersionName } from "./plugin-cache.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
@@ -146,12 +147,12 @@ async function listCodexPluginSkills(): Promise<CodexSkillInfo[]> {
     for (const plugin of plugins) {
       if (!plugin.isDirectory()) continue;
       const versions = await readdir(join(cacheRoot, marketplace.name, plugin.name), { withFileTypes: true }).catch(() => []);
-      const version = versions.filter((entry) => entry.isDirectory()).at(-1);
+      const version = latestPluginVersionName(versions.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
       if (!version) continue;
       // Namespace every cached skill with its plugin name. The renderer groups
       // these as `@plugin`, while `$plugin:skill` remains available for a
       // single-skill selection.
-      skills.push(...await readSkillDirectory(join(cacheRoot, marketplace.name, plugin.name, version.name, "skills"), "plugin", plugin.name));
+      skills.push(...await readSkillDirectory(join(cacheRoot, marketplace.name, plugin.name, version, "skills"), "plugin", plugin.name));
     }
   }
   const seen = new Set<string>();

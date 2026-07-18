@@ -70,11 +70,52 @@ export function buildAntigravityRequest(
   };
 }
 
+// Gemini can emit work narration or raw patch text as ordinary text in the
+// same response that later contains a function call. Responses streaming
+// cannot retract text after it reaches the client, so hold the response once
+// text begins until we know whether it is a final answer or a tool turn.
+export async function* filterAntigravityToolTurnText(events: AsyncIterable<AdapterEvent>): AsyncGenerator<AdapterEvent> {
+  let buffered: AdapterEvent[] | undefined;
+  let toolTurn = false;
+  for await (const event of events) {
+    if (toolTurn) {
+      if (event.type === "text_delta") yield { type: "heartbeat" };
+      else yield event;
+      continue;
+    }
+    if (event.type === "tool_call_start") {
+      if (buffered) {
+        for (const pending of buffered) if (pending.type !== "text_delta") yield pending;
+        buffered = undefined;
+      }
+      toolTurn = true;
+      yield event;
+      continue;
+    }
+    if (!buffered && event.type !== "text_delta") {
+      yield event;
+      continue;
+    }
+    buffered ??= [];
+    buffered.push(event);
+    if (event.type === "done" || event.type === "error") {
+      for (const pending of buffered) yield pending;
+      buffered = undefined;
+    } else {
+      // The Responses bridge treats AdapterEvents as upstream activity. Keep
+      // its stall timer alive while final text is intentionally buffered.
+      yield { type: "heartbeat" };
+    }
+  }
+  if (buffered) for (const pending of buffered) yield pending;
+}
+
 export async function* streamAntigravity(response: Response, parsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
   const model = resolveAntigravityWireModelId(parsed.model);
   const sessionId = antigravitySessionId(parsed);
   let currentCall: { name: string; args: string; signature?: string } | undefined;
-  for await (const event of streamGoogle(response, { label: "Antigravity", unwrapResponse: true })) {
+  const upstream = streamGoogle(response, { label: "Antigravity", unwrapResponse: true });
+  for await (const event of filterAntigravityToolTurnText(upstream)) {
     if (event.type === "tool_call_start") {
       currentCall = { name: event.name, args: "", ...(event.thoughtSignature ? { signature: event.thoughtSignature } : {}) };
     } else if (event.type === "tool_call_delta" && currentCall) {

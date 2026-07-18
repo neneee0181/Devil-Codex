@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-18T22:11:11+09:00
+updated: 2026-07-19T00:59:37+09:00
 status: active
 tags:
   - memoc
@@ -11,9 +11,16 @@ tags:
 ---
 # Agent Handoff
 
-Last synced: 2026-07-18
+Last synced: 2026-07-19
 
 ## What Changed
+
+### Latest: Antigravity Sites schema and deployment-truth repair
+
+- Gemini `properties` maps now retain connector fields named `title`, `default`, and `examples`; Sites `create_site` keeps both required `title` and `slug`.
+- External models must not claim remote mutation/deployment success without a confirming tool result or replace a missing existing project with localhost/new creation unless explicitly authorized. Antigravity tool-turn narration/raw payload text is suppressed at the stream boundary, while final text-only answers remain intact.
+- Plugin cache version selection is deterministic across APFS/NTFS. Main tests pass 32/32; full build and diff check pass.
+- **Manual test pending:** rebuild/reinstall, start a new Antigravity Gemini thread, select `@sites`, and update a project whose `.openai/hosting.json` is visible to the current Sites account. Confirm save/deploy/status returns a production URL. If the project remains 404, the turn must report the Sites connection blocker and must not claim localhost is deployed. Exact Mac comparison still needs the successful Mac task ID/export.
 
 ### Latest: Antigravity `custom_tool_call` thought-signature repair
 

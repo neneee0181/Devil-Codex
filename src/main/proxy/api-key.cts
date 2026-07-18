@@ -13,6 +13,7 @@ const GOOGLE_BREVITY_INSTRUCTION = [
   "Output style for this session:",
   "- While you are still working (between tool calls), keep any text you emit to a single short line; do not narrate at length.",
   "- Do detailed reasoning internally, not as visible intermediate output.",
+  "- Never print raw tool arguments, patches, source files, shell commands, or tool schemas as intermediate text; send them only through the matching tool call.",
   "- Prefer taking the next tool action over explaining; keep calling tools until the task is complete.",
   "- This applies only to intermediate progress text. Your final answer after the work is done is exempt: write it in full and at whatever length the task requires.",
 ].join("\n");

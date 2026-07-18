@@ -287,3 +287,26 @@ History: worklog. Resume risks: 04-handoff.md.
 
 ## Verify
 - `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.json --noEmit`, `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/tsc -p tsconfig.electron.json`, `PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" ./node_modules/.bin/vite build`, `git diff --check` pass.
+
+## [2026-07-18T16:05:36] archived summary (834B)
+
+---
+memoc: true
+type: state
+scope: project-memory
+status: active
+updated: 2026-07-19T00:59:37+09:00
+created: 2026-07-18T03:42:37
+tags: [memoc, memoc/state]
+---
+# Session Summary
+Last: 2026-07-19.
+
+## Status
+- Gemini connector schemas preserve `properties.title/default/examples`; plugin version selection is deterministic across OSes.
+- Remote mutation claims require confirming tool results; missing existing resources no longer justify localhost/new-site substitution.
+- Antigravity tool-turn narration/raw patch text is suppressed; final text-only answers remain intact.
+- Main tests 32/32, full build, and diff check pass.
+
+## Resume
+- Rebuild/reinstall and run a new Antigravity `@sites` E2E. Current Sites account still returns persisted-project 404 plus an empty list; exact Mac comparison needs its successful task ID/export.

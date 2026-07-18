@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-18T19:35:00+09:00
+updated: 2026-07-19T00:59:37+09:00
 status: active
 tags:
   - memoc
@@ -14,6 +14,12 @@ tags:
 Durable project decisions live here. Keep entries short, dated, and useful to future agents.
 
 ## Decision Log
+
+### 2026-07-19 — Preserve connector argument names and trust mutation results
+
+- Schema sanitizers must distinguish JSON-Schema metadata from names inside `properties`; connector arguments named `title`, `default`, or `examples` remain intact while their schema metadata is removed.
+- External models may report a remote create/update/save/deploy only after a tool result confirms it. A missing referenced resource is a blocker, not permission to substitute localhost or create a replacement.
+- Cached plugin versions are selected by deterministic parsed-version precedence, never filesystem enumeration order.
 
 ### 2026-07-18 — Settings save includes runtime transition and rollback
 
