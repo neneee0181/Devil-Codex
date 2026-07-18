@@ -159,6 +159,7 @@ function DevilMcpStatusCard({ status, loading, onRefresh }: { status: DevilMcpSt
 type StockBridgeModelChoice = { id: string; provider: string; account: string; label: string };
 
 function hasConnectedCredential(provider: ProviderSettings["providers"][number]): boolean {
+  if (provider.id === "opencode-free") return true;
   return provider.accounts.some((account) => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop");
 }
 

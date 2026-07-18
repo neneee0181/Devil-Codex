@@ -13,6 +13,7 @@ export interface ApiProviderConfig {
   modelPath: string;
   keyRequired: boolean;
   allowImages: boolean;
+  headers?: Record<string, string>;
 }
 
 const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
@@ -23,6 +24,7 @@ const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
   xai: { adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   openrouter: { adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   "openrouter-free": { adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", modelPath: "/models", keyRequired: true, allowImages: true },
+  "opencode-free": { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/v1", modelPath: "/models", keyRequired: false, allowImages: false, headers: { "x-opencode-client": "desktop" } },
   groq: { adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   mistral: { adapter: "openai-chat", baseUrl: "https://api.mistral.ai/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   cerebras: { adapter: "openai-chat", baseUrl: "https://api.cerebras.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
@@ -86,6 +88,13 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     webSearch: "sidecar",
     diagnostics: "experimental",
     notes: ["OpenRouter의 무료 모델만 노출하는 전용 목록입니다.", "무료 모델 availability/rate limit은 OpenRouter 정책과 각 모델 상태에 따라 바뀔 수 있습니다."],
+  };
+  if (provider === "opencode-free") return {
+    tools: "limited",
+    images: "sidecar",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["OpenCode Zen 공개 무료 모델 경로입니다. API 키 없이 사용하지만 모델/쿼터가 수시로 변경될 수 있습니다.", "무료 endpoint는 요청 데이터가 모델 개선에 사용될 수 있으므로 민감한 소스와 비밀값을 보내지 마세요."],
   };
   if (provider === "zai") return {
     tools: "limited",
@@ -190,6 +199,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
   { id: "xai", label: "xAI Grok", kind: "apikey", keyRequired: true, models: [{ id: "grok-4.3", label: "Grok 4.3" }, { id: "grok-code-fast-1", label: "Grok Code Fast 1" }] },
   { id: "openrouter", label: "OpenRouter", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-5", label: "OpenAI GPT-5" }, { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5" }] },
   { id: "openrouter-free", label: "OpenRouter Free", kind: "apikey", keyRequired: true, models: [{ id: "openrouter/free", label: "OpenRouter Free Router" }] },
+  { id: "opencode-free", label: "OpenCode Free", kind: "apikey", keyRequired: false, models: [{ id: "big-pickle", label: "Big Pickle" }] },
   { id: "groq", label: "Groq", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-oss-120b", label: "GPT OSS 120B" }, { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" }] },
   { id: "mistral", label: "Mistral", kind: "apikey", keyRequired: true, models: [{ id: "codestral-latest", label: "Codestral Latest" }, { id: "mistral-large-latest", label: "Mistral Large" }] },
   { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "llama-3.3-70b", label: "Llama 3.3 70B" }] },

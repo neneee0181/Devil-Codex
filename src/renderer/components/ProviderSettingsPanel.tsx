@@ -22,6 +22,7 @@ function loginStatusLabel(provider: ProviderInfo, auth: ProviderAuthStatus): str
 }
 
 function keyStatusLabel(provider: ProviderInfo): string {
+  if (provider.id === "opencode-free") return provider.modelsLoaded ? "API 키 없이 사용 가능 · 무료 모델 확인됨" : "API 키 없이 사용 가능 · 모델 확인 필요";
   if (!provider.keyRequired) return "API 키 필요 없음 · 로컬 endpoint";
   const suffix = provider.modelsLoaded ? "모델 확인됨" : "모델 확인 필요";
   if (provider.credentialSource === "keychain") return `API 키 ${provider.accounts.length || 1}개 · Keychain · ${suffix}`;
@@ -120,7 +121,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
     const keyValue = keys[provider.id] ?? "";
     const labelValue = labels[provider.id] ?? "";
     const loginAccounts = provider.kind === "login" ? visibleLoginAccounts(provider, auth) : [];
-    const connected = provider.kind === "login" ? authedFor(provider, auth) : provider.accounts.length > 0 || provider.credentialSource !== "none";
+    const connected = provider.id === "opencode-free" ? true : provider.kind === "login" ? authedFor(provider, auth) : provider.accounts.length > 0 || provider.credentialSource !== "none";
     return <article key={provider.id} className={`provider-card ${activeCard ? "active" : ""} ${connected ? "connected" : ""}`}>
       <button type="button" className="provider-choice" onClick={() => { setViewingId(provider.id); setNotice(""); }}>
         <span><strong>{provider.label}</strong><small><i className="provider-dot" />{sub}</small></span>
@@ -147,7 +148,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
           </div>
         </div>)}</div>}
         {!provider.keyRequired
-          ? <p className="provider-local-note">로컬 OpenAI-compatible 서버가 실행 중이면 모델 목록 새로고침 후 picker에 표시됩니다.</p>
+          ? <p className="provider-local-note">{provider.id === "opencode-free" ? "API 키 없이 OpenCode 무료 모델을 사용합니다. 무료 endpoint에는 데이터 보존/학습 사용 예외가 있으니 민감한 내용을 보내지 마세요." : "로컬 OpenAI-compatible 서버가 실행 중이면 모델 목록 새로고침 후 picker에 표시됩니다."}</p>
           : <div className="provider-key-input multi"><input type="text" value={labelValue} onChange={(event) => setLabelDraft(provider, event.target.value)} placeholder="계정 이름 예: work, personal" autoComplete="off" /><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder={`${provider.label} API 키`} autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>키 추가</button></div>}
       </div>}
     </article>;

@@ -117,6 +117,7 @@ function providerLabel(provider: ProxyProvider): string {
   if (provider === "ollama") return "Ollama";
   if (provider === "vllm") return "vLLM";
   if (provider === "lm-studio") return "LM Studio";
+  if (provider === "opencode-free") return "OpenCode Free";
   return provider;
 }
 
@@ -129,7 +130,7 @@ function splitModel(id: string): { provider: ProxyProvider; accountId?: string; 
     const accountSep = rawProvider.indexOf("@");
     const p = accountSep >= 0 ? rawProvider.slice(0, accountSep) : rawProvider;
     const accountId = accountSep >= 0 ? decodeURIComponent(rawProvider.slice(accountSep + 1)) : undefined;
-    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "zai" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, accountId, model: id.slice(sep + 1) };
+    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "opencode-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "zai" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, accountId, model: id.slice(sep + 1) };
   }
   // Fallback by name shape.
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
@@ -147,7 +148,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^/:]+)?[/:]/.test(model);
+  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|opencode-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^/:]+)?[/:]/.test(model);
 }
 
 function redactSensitiveText(text: string): string {
@@ -578,9 +579,9 @@ async function handleModels(res: ServerResponse): Promise<void> {
       const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : "anthropic";
       return models.map((model) => ({ id: routedId(provider.id, account.id, model), object: "model", owned_by: owner }));
     })))).flat();
-  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && provider.accounts.some(connected));
+  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && (provider.id === "opencode-free" || provider.accounts.some(connected)));
   const apiRows = apiProviders.flatMap((provider) => {
-    const accounts = provider.accounts.filter(connected);
+    const accounts = provider.accounts.filter((account) => provider.id === "opencode-free" || connected(account));
     return accounts.flatMap((account) => (account.models?.length ? account.models : provider.models).map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: provider.id })));
   });
   const data = [...loginRows, ...apiRows];

@@ -13,6 +13,8 @@ tags:
 Last: 2026-07-17. Replace; keep <800B.
 
 ## Status
+- 2026-07-18: Bridge picker showed only two because config/catalog actually contained two; provider cache had many models. Added main-process settings write lock to prevent concurrent picker saves from overwriting a larger selection with a shorter snapshot. Electron main build and 12-selection concurrency smoke pass.
+- 2026-07-18: Added keyless OpenCode Free provider from OpenCodex pattern: Zen `/models` live discovery, `big-pickle`/`*-free` filter, desktop client header, proxy/catalog/pickers, and privacy warning. Main/renderer builds and provider config smoke pass; live endpoint returned free model ids.
 - 2026-07-18: Bridge save failure reproduced and fixed: `/v1/models` unions live + connected cached account/provider models. Stock routed catalog IDs now use OpenCodex-compatible `provider[@account]/model` slugs, with legacy colon migration and proxy compatibility. Version 0.3.16; main/renderer builds, main test, catalog/migration smoke pass.
 - 2026-07-18: Stock Codex `projectless-thread-ids` now drives standalone chat classification; imported projectless threads no longer create/show as Devil project folders. TypeScript no-emit and diff checks pass.
 - 2026-07-18: File-change summary card now waits until the final agent message stream/turn completes before appearing. TypeScript no-emit and diff checks pass.

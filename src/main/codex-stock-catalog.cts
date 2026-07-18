@@ -33,6 +33,7 @@ function mergeModels(...groups: Array<Array<{ id: string; label: string }> | und
 
 function connectedAccount(provider: ProviderInfo, account: ProviderInfo["accounts"][number]): boolean {
   if (provider.id === "codex") return false;
+  if (provider.id === "opencode-free") return true;
   return account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
 }
 

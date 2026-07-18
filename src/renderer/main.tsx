@@ -463,6 +463,7 @@ function responseSpeedLabel(value: ResponseSpeed): string {
 function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatus["state"]): boolean {
   if (!provider) return false;
   if (provider.id === "codex") return runtimeState === "connected";
+  if (provider.id === "opencode-free") return provider.models.length > 0;
   return provider.accounts.some((account) => account.credentialSource !== "none") && provider.modelsLoaded;
 }
 

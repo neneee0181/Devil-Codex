@@ -59,6 +59,7 @@ function selectableApiProvider(provider: ProviderInfo): boolean {
   // fail (offline) or get wiped, hiding a perfectly working provider. Local
   // providers (ollama/vllm/lm-studio) have no fixed models, so they still need
   // a successfully loaded list.
+  if (provider.id === "opencode-free") return provider.models.length > 0;
   return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
 }
 

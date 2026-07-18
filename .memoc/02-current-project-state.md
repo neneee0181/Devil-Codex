@@ -11,6 +11,10 @@ tags:
 ---
 # Current Project State
 
+- Bridge multi-selection persistence fix (2026-07-18, uncommitted): stock model picker clicks could issue concurrent `settings:save` IPC calls; `CodexSettingsStore` now serializes read-modify-write cycles so a stale shorter selection cannot overwrite the final list. Concurrent 12-selection smoke test and Electron main build pass. Current local config still contains only the previously persisted two models and requires re-selection for models that were never saved.
+
+- OpenCode Free provider (2026-07-18, uncommitted): added keyless `opencode-free` using `https://opencode.ai/zen/v1`, `x-opencode-client: desktop`, live `/models` discovery filtered to `big-pickle` and `*-free`, and Bridge/main/side model-picker exposure. Added privacy warning because OpenCode documents data-use exceptions for free models. Main/renderer builds, diff check, live endpoint model-list check, and provider config smoke pass.
+
 Last synced: 2026-07-11
 
 ## Current Status

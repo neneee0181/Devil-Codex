@@ -42,6 +42,7 @@ function providerLabel(provider: ExternalProvider): string {
   if (provider === "ollama") return "Ollama";
   if (provider === "vllm") return "vLLM";
   if (provider === "lm-studio") return "LM Studio";
+  if (provider === "opencode-free") return "OpenCode Free";
   return provider;
 }
 
@@ -170,6 +171,6 @@ export class ProviderRuntime {
     if (!config) throw new Error(`지원하지 않는 Provider입니다: ${input.provider}`);
     if (config.adapter === "anthropic") return fetch(apiProviderUrl(input.provider, "/v1/messages"), { method: "POST", signal, headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model: input.model, max_tokens: 4096, stream: true, messages: [{ role: "user", content: input.text }] }) });
     if (config.adapter === "google") return fetch(`${apiProviderUrl(input.provider, `/v1beta/models/${encodeURIComponent(input.model)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(key)}`, { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: input.text }] }] }) });
-    return fetch(apiProviderUrl(input.provider, "/chat/completions"), { method: "POST", signal, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), "Content-Type": "application/json" }, body: JSON.stringify({ model: input.model, stream: true, messages: [{ role: "user", content: input.text }] }) });
+    return fetch(apiProviderUrl(input.provider, "/chat/completions"), { method: "POST", signal, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(config.headers ?? {}), "Content-Type": "application/json" }, body: JSON.stringify({ model: input.model, stream: true, messages: [{ role: "user", content: input.text }] }) });
   }
 }

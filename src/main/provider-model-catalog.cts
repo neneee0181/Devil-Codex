@@ -41,6 +41,11 @@ function isOpenRouterFreeModel(row: ModelRow): boolean {
   return prompt === 0 && completion === 0 && (request === undefined || request === 0);
 }
 
+function isOpenCodeFreeModel(row: ModelRow): boolean {
+  const id = String(row.id ?? row.name ?? "").replace(/^models\//, "");
+  return id === "big-pickle" || id.endsWith("-free");
+}
+
 export class ProviderModelCatalog {
   constructor(private readonly settings: ProviderSettingsStore) {}
 
@@ -68,6 +73,8 @@ export class ProviderModelCatalog {
         ? (payload.models ?? []).filter((model) => Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
         : provider === "openrouter-free"
           ? (payload.data ?? []).filter(isOpenRouterFreeModel)
+          : provider === "opencode-free"
+            ? (payload.data ?? []).filter(isOpenCodeFreeModel)
           : payload.data ?? [];
       const models = normalizeModels(rows);
       if (!models.length) return this.withFallback(provider, "사용 가능한 대화 모델이 없습니다.", accountId);
@@ -97,6 +104,6 @@ export class ProviderModelCatalog {
     if (!config) throw new Error(`지원하지 않는 Provider입니다: ${provider}`);
     if (config.adapter === "anthropic") return fetch(apiProviderUrl(provider, config.modelPath), { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } });
     if (config.adapter === "google") return fetch(`${apiProviderUrl(provider, config.modelPath)}?key=${encodeURIComponent(key)}`);
-    return fetch(apiProviderUrl(provider, config.modelPath), { headers: key ? { Authorization: `Bearer ${key}` } : undefined });
+    return fetch(apiProviderUrl(provider, config.modelPath), { headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(config.headers ?? {}) } });
   }
 }

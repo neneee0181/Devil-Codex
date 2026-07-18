@@ -189,7 +189,7 @@ export function buildApiKeyRequest(provider: ApiKeyProvider, parsed: OcxParsedRe
   if (config.adapter === "openai-chat") {
     return {
       url: apiProviderUrl(provider, "/chat/completions"),
-      headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), "Content-Type": "application/json" },
+      headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(config.headers ?? {}), "Content-Type": "application/json" },
       body: JSON.stringify(openAiCompatibleBody(parsed, config.allowImages, provider)),
     };
   }

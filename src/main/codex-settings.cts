@@ -111,6 +111,17 @@ export async function writeCodexConfigAtomic(path: string, content: string): Pro
 export class CodexSettingsStore {
   constructor(private readonly configPath = defaultConfigPath) {}
 
+  // The settings picker can issue several IPC saves before the previous one
+  // finishes. Serialize read-modify-write cycles so an older snapshot cannot
+  // overwrite a newer multi-model Bridge selection.
+  private writeChain: Promise<unknown> = Promise.resolve();
+
+  private withWriteLock<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(task, task);
+    this.writeChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   async load(): Promise<CodexSettings> {
     try {
       const source = await readFile(this.configPath, "utf8");
@@ -139,6 +150,10 @@ export class CodexSettingsStore {
   }
 
   async save(next: CodexSettings): Promise<CodexSettings> {
+    return this.withWriteLock(() => this.saveUnlocked(next));
+  }
+
+  private async saveUnlocked(next: CodexSettings): Promise<CodexSettings> {
     let source = "";
     try { source = await readFile(this.configPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const previous = source;
@@ -158,6 +173,6 @@ export class CodexSettingsStore {
     source = `${block}\n${source.replace(/^[\r\n]+/, "")}`;
     source = preserveDesktopAppearanceTheme(source, previous);
     if (source !== previous) await writeCodexConfigAtomic(this.configPath, source);
-    return next;
+    return normalizedNext;
   }
 }
