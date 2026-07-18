@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 status: active
-updated: 2026-07-18T19:35:00+09:00
+updated: 2026-07-18T22:11:11+09:00
 created: 2026-07-18T03:42:37
 tags:
   - memoc
@@ -13,10 +13,8 @@ tags:
 Last: 2026-07-18.
 
 ## Status
-- OpenCodex parity remains shared by internal external-model and stock Bridge paths.
-- Settings transitions are serialized and rollback persisted/runtime state on failure; startup Bridge failure no longer blocks the app.
-- Local providers require successful model discovery; exact provider errors, model capability controls, preparation feedback, and Bridge-off UX are implemented.
-- Full build, 26 main tests, and `git diff --check` pass.
+- Antigravity v0.4.0 `custom_tool_call` failure is fixed in source: synthetic `ctc_...` Responses ids can no longer masquerade as Gemini thought signatures, and cached real signatures replace legacy fake ids.
+- `npm run test:main` passes 29/29; full build and `git diff --check` pass.
 
 ## Resume
-- No version/commit. Preserve `.DS_Store`; installed-provider smoke remains.
+- Uncommitted. Rebuild/reinstall, then smoke a new Antigravity thread through `apply_patch` result continuation. The old failed session is poisoned and the target site repo remains clean.

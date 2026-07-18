@@ -11,7 +11,7 @@ import { providerAccountReady } from "../provider-settings.cjs";
 import { buildMacStockProxyPlist, stockProxyTaskArgs } from "../stock-proxy-autostart.cjs";
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
 import { applyAntigravityReplay, observeAntigravityReplayCall, resetAntigravityReplayForTests } from "./antigravity-replay.cjs";
-import { buildApiKeyRequest, buildGoogleGenerateContentBody, streamOpenAiCompatible } from "./api-key.cjs";
+import { buildApiKeyRequest, buildGoogleGenerateContentBody, googleContents, streamOpenAiCompatible } from "./api-key.cjs";
 import { bridgeToResponsesSSE } from "./bridge.cjs";
 import { encodeCompactionSummary } from "./compaction.cjs";
 import { buildCopilotRequest } from "./copilot.cjs";
@@ -570,4 +570,71 @@ test("Antigravity replay keys function calls by canonical arguments", () => {
   const contents = [{ role: "model", parts: [{ functionCall: { name: "exec", args: { a: 1, b: 2 } } }] }];
   applyAntigravityReplay("gemini-3.5-flash-low", "session", contents);
   assert.equal((contents[0]!.parts[0] as Record<string, unknown>).thoughtSignature, "ValidSignature1234567890==");
+});
+
+function parsedCustomToolReplay(): OcxParsedRequest {
+  return parsedRequest({
+    model: "gemini-3.5-flash-low",
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "apply the patch" }] },
+      {
+        type: "custom_tool_call",
+        id: "ctc_74c2c8ff4a1b4a55a52358ebbe38f6a3",
+        call_id: "qvv9vt5s",
+        name: "apply_patch",
+        input: "*** Begin Patch\n*** End Patch",
+      },
+      { type: "custom_tool_call_output", call_id: "qvv9vt5s", output: "invalid patch" },
+    ],
+  });
+}
+
+function parsedCustomToolCall(parsed: OcxParsedRequest) {
+  const assistant = parsed.context.messages.find((message) => message.role === "assistant");
+  return assistant?.content.find((part) => part.type === "toolCall");
+}
+
+function firstGoogleModelPart(parsed: OcxParsedRequest): Record<string, unknown> | undefined {
+  const contents = googleContents(parsed) as Array<{ role?: string; parts?: Array<Record<string, unknown>> }>;
+  return contents.find((content) => content.role === "model")?.parts?.[0];
+}
+
+test("Responses item ids stay out of parsed custom tool signatures", () => {
+  const call = parsedCustomToolCall(parsedCustomToolReplay());
+
+  assert.equal(call?.type, "toolCall");
+  if (call?.type === "toolCall") assert.equal(call.thoughtSignature, undefined);
+});
+
+test("Google contents reject synthetic Responses item ids as thought signatures", () => {
+  for (const syntheticId of ["ctc_74c2c8ff4a1b4a55a52358ebbe38f6a3", "tsc_74c2c8ff4a1b4a55a52358ebbe38f6a3"]) {
+    const parsed = parsedCustomToolReplay();
+    const call = parsedCustomToolCall(parsed);
+    if (call?.type === "toolCall") call.thoughtSignature = syntheticId;
+
+    assert.equal(firstGoogleModelPart(parsed)?.thoughtSignature, undefined);
+  }
+});
+
+test("Antigravity replay replaces synthetic Responses item ids with the cached signature", () => {
+  resetAntigravityReplayForTests();
+  observeAntigravityReplayCall(
+    "gemini-3.5-flash-low",
+    "session",
+    "apply_patch",
+    { input: "*** Begin Patch\n*** End Patch" },
+    "ValidCustomToolSignature1234567890==",
+  );
+  for (const syntheticId of ["ctc_74c2c8ff4a1b4a55a52358ebbe38f6a3", "tsc_74c2c8ff4a1b4a55a52358ebbe38f6a3"]) {
+    const contents = [{
+      role: "model",
+      parts: [{
+        functionCall: { name: "apply_patch", args: { input: "*** Begin Patch\n*** End Patch" } },
+        thoughtSignature: syntheticId,
+      }],
+    }];
+    applyAntigravityReplay("gemini-3.5-flash-low", "session", contents);
+
+    assert.equal(contents[0]!.parts[0]!.thoughtSignature, "ValidCustomToolSignature1234567890==");
+  }
 });

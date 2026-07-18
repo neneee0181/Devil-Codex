@@ -301,9 +301,9 @@ export function parseRequest(body: unknown): OcxParsedRequest {
             console.warn(`[parser] function_call ${String(item.call_id ?? item.id ?? "")} has non-JSON arguments; defaulting to {}`);
           }
         }
-        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: args, ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}), ...(typeof item.id === "string" ? { thoughtSignature: item.id } : {}) });
+        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: args, ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}) });
       } else if (type === "custom_tool_call") {
-        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: JSON.stringify({ input: item.input ?? "" }), ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}), ...(typeof item.id === "string" ? { thoughtSignature: item.id } : {}) });
+        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: JSON.stringify({ input: item.input ?? "" }), ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}) });
       } else if (type === "local_shell_call") {
         const callId = String(item.call_id ?? item.id ?? "");
         const action = isObj(item.action) ? item.action : undefined;

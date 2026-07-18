@@ -79,7 +79,7 @@ function geminiToolCallId(raw: string | undefined): string | undefined {
 
 function realThoughtSignature(signature: string | undefined): signature is string {
   if (!signature || signature.length < 16) return false;
-  if (/^(fc|call|msg|rs|resp|reasoning|item|ws|tool|func|function)[-_]/i.test(signature)) return false;
+  if (/^(fc|ctc|tsc|call|msg|rs|resp|reasoning|item|ws|tool|func|function)[-_]/i.test(signature)) return false;
   return /^[A-Za-z0-9+/_=-]+$/.test(signature);
 }
 

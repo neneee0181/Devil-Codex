@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-06-25T21:55:00
+updated: 2026-07-18T22:11:11+09:00
 status: active
 tags:
   - memoc
@@ -11,9 +11,15 @@ tags:
 ---
 # Agent Handoff
 
-Last synced: 2026-07-05
+Last synced: 2026-07-18
 
 ## What Changed
+
+### Latest: Antigravity `custom_tool_call` thought-signature repair
+
+- Session `019f7526-c472-7522-91cc-9a9398c2e8be` failed immediately after the first `apply_patch` result because synthetic Responses id `ctc_74c2...` was sent as Gemini's opaque thought signature. This is a v0.3.23/v0.4.0 proxy regression, not a network, context-limit, build, or auth failure.
+- Source fix removes the invalid `item.id -> thoughtSignature` mapping, rejects `ctc_`/`tsc_` in both signature validators, and independently tests parser, Google-wire filtering, and replay replacement. Main tests: 29/29; full build and diff check pass.
+- **Manual test pending:** rebuild/reinstall or run the updated app, start a new Antigravity Gemini thread, execute a custom tool such as `apply_patch`, let its result return to the model, and confirm the next model step continues without `Corrupted thought signature`. Do not use the old failed session for acceptance; its true signature was cleared and its stored history cannot reconstruct it.
 
 ### Latest: Claude-mode delegate_subagent parity (2026-07-05)
 

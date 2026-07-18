@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-18T19:35:00+09:00
+updated: 2026-07-18T22:11:11+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- Antigravity custom-tool signature fix (2026-07-18, uncommitted): diagnosed session `019f7526-c472-7522-91cc-9a9398c2e8be` on installed v0.4.0. Eleven ordinary `function_call` steps succeeded because their synthetic `fc_...` item ids were rejected as signatures; the first `custom_tool_call` (`apply_patch`) used `ctc_...`, which both signature validators incorrectly accepted and replayed to Gemini instead of the cached opaque signature, causing deterministic `Corrupted thought signature` failures after the tool result. The parser no longer maps Responses item ids to `thoughtSignature`, both validators reject `ctc_`/`tsc_`, and independent parser/Google-wire/replay regression tests cover the failure path. `npm run test:main` passes 29 tests, full `npm run build` passes, and `git diff --check` passes. Installed-app E2E remains pending; the already-poisoned session cannot self-recover because its replay cache was cleared, so verify in a newly created Antigravity thread after rebuilding/reinstalling.
 
 - Internal provider/Bridge UX hardening (2026-07-18, uncommitted): settings persistence and MCP/Bridge/remote runtime effects now run in a serialized transaction and restore the prior config/runtime on failure; startup Bridge failure safely disables Bridge without blocking the app. Renderer settings share one authoritative controller, show exact cross-platform errors, and reconcile optimistic state. Local Ollama/vLLM/LM Studio accounts become selectable only after a successful current-session model refresh; provider readiness is shared by the internal picker, stock catalog, and proxy discovery. Model-specific reasoning/speed controls, external-turn preparation feedback, and an in-composer Bridge-off action were added. Full build, 26 main tests, and `git diff --check` pass.
 
