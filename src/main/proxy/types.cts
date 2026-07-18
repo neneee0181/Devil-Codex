@@ -6,7 +6,7 @@ export interface OcxImageContent { type: "image"; dataUrl: string; detail?: stri
 export type OcxContentPart = OcxTextContent | OcxImageContent;
 
 export interface OcxToolCall { type: "toolCall"; id: string; name: string; arguments: string; namespace?: string; thoughtSignature?: string }
-export interface OcxThinkingContent { type: "thinking"; text: string; signature?: string; redacted?: string[] }
+export interface OcxThinkingContent { type: "thinking"; text: string; signature?: string; redacted?: string[]; itemId?: string }
 export type OcxAssistantContentPart = OcxTextContent | OcxThinkingContent | OcxToolCall;
 
 export interface OcxUserMessage { role: "user"; content: OcxContentPart[] }
@@ -35,6 +35,10 @@ export interface OcxContext { instructions?: string; messages: OcxMessage[] }
 
 export interface OcxParsedRequest {
   model: string;
+  previousResponseId?: string;
+  _rawBody?: unknown;
+  _previousResponseInputExpanded?: boolean;
+  _compactionRequest?: boolean;
   context: OcxContext;
   tools: OcxTool[];
   hostedWebSearch?: Record<string, unknown>;
@@ -50,8 +54,11 @@ export interface OcxRequestOptions {
   topP?: number;
   stopSequences?: string[];
   toolChoice?: "auto" | "none" | "required" | { name: string } | { allowedTools: string[]; mode: "auto" | "required" };
+  parallelToolCalls?: boolean;
   reasoning?: string;
+  hideThinkingSummary?: boolean;
   serviceTier?: string;
+  promptCacheKey?: string;
   presencePenalty?: number;
   frequencyPenalty?: number;
 }
@@ -61,19 +68,27 @@ export function allowedToolNames(choice: OcxRequestOptions["toolChoice"]): Set<s
 }
 
 export type AdapterEvent =
+  | { type: "heartbeat" }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; thinking: string }
   | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { type: "reasoning_raw_delta"; text: string }
   | { type: "tool_call_start"; id: string; name: string; thoughtSignature?: string }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
+  | { type: "web_search_call_begin"; id: string }
+  | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: Array<{ url: string; title?: string }> }
   | { type: "done"; usage?: OcxUsage }
-  | { type: "error"; message: string; status?: number; errorType?: string };
+  | { type: "error"; message: string; status?: number; errorType?: string; usage?: OcxUsage };
 
 export interface OcxUsage {
   inputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
   cachedInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
+  estimated?: boolean;
 }

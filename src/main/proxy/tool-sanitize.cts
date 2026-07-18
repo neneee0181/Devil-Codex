@@ -17,7 +17,6 @@ const UNSUPPORTED_SCHEMA_KEYS = new Set([
 const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
   ...UNSUPPORTED_SCHEMA_KEYS,
   "$comment",
-  "additionalProperties",
   "patternProperties",
   "propertyNames",
   "if",
@@ -92,6 +91,18 @@ function normalizeGeminiValue(value: unknown, defs: Map<string, unknown>, depth 
     }
     if (key === "const") {
       result.enum = [child];
+      continue;
+    }
+    if (key === "exclusiveMinimum" && typeof child === "number") {
+      result.minimum = child;
+      continue;
+    }
+    if (key === "exclusiveMaximum" && typeof child === "number") {
+      result.maximum = child;
+      continue;
+    }
+    if (key === "additionalProperties") {
+      result.additionalProperties = typeof child === "boolean" ? child : normalizeGeminiValue(child, defs, depth + 1);
       continue;
     }
     result[key] = normalizeGeminiValue(child, defs, depth + 1);
@@ -176,11 +187,15 @@ export function buildToolCatalogNudge(
   if (choice === "none") return undefined;
   const unique = [...new Set(names.filter((name) => name.trim().length > 0))];
   if (!unique.length) return undefined;
+  const neighboringNames = ["Read", "Grep", "Glob", "Bash", "LS", "apply_patch"]
+    .filter((name) => !unique.includes(name));
   return [
     "Tool contract: use the current tool catalog as ground truth.",
     `Valid tool names for this turn are exactly ${unique.map((name) => `\`${name}\``).join(", ")}.`,
     "Call only listed names with their listed argument keys; do not invent, translate, or rename tools.",
-    "If the task requires file, shell, search, or browser work, call the listed tool that provides it before explaining.",
+    neighboringNames.length ? `Do not use neighboring-agent tool names ${neighboringNames.map((name) => `\`${name}\``).join(", ")} unless this turn's catalog lists those exact names.` : undefined,
+    "If you need shell, file search, file read, edit, or discovery behavior, choose the listed tool that provides that capability.",
+    "Count a tool call only after its tool result returns; batch independent read-only calls when the runtime supports it.",
     "Keep calling tools until the requested work is complete; a progress statement alone is not completion.",
-  ].join(" ");
+  ].filter((line): line is string => typeof line === "string").join(" ");
 }

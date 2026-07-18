@@ -1,12 +1,14 @@
 import { app } from "electron";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { writeTextFileAtomic } from "./atomic-file.cjs";
 import type { ProviderAccount, ProviderId, ProviderInfo, ProviderModel, ProviderModelCapability, ProviderSettings } from "./contracts.cjs";
 import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
 import { codexAuthSubject, readCurrentCodexAuth } from "./provider-codex-accounts.cjs";
 import { createAccountId, defaultAccountId, deleteStoredAccount, envAccountId, getStoredAccount, listStoredAccounts, localAccountId, migrateLegacySecret, readEncryptedText, upsertStoredAccount, virtualAccount, writeEncryptedText } from "./provider-accounts.cjs";
+import { providerNativeImageInput } from "./proxy/provider-policy.cjs";
 
-export type ProviderAdapterKind = "openai-chat" | "anthropic" | "google";
+export type ProviderAdapterKind = "openai-chat" | "openai-responses" | "anthropic" | "google";
 export interface ApiProviderConfig {
   adapter: ProviderAdapterKind;
   baseUrl: string;
@@ -17,7 +19,7 @@ export interface ApiProviderConfig {
 }
 
 const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
-  openai: { adapter: "openai-chat", baseUrl: "https://api.openai.com/v1", modelPath: "/models", keyRequired: true, allowImages: true },
+  openai: { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   anthropic: { adapter: "anthropic", baseUrl: "https://api.anthropic.com", modelPath: "/v1/models?limit=100", keyRequired: true, allowImages: true },
   google: { adapter: "google", baseUrl: "https://generativelanguage.googleapis.com", modelPath: "/v1beta/models", keyRequired: true, allowImages: true },
   deepseek: { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", modelPath: "/models", keyRequired: true, allowImages: false },
@@ -80,7 +82,7 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     images: "sidecar",
     webSearch: "sidecar",
     diagnostics: "experimental",
-    notes: ["Groq on-demand TPM 제한을 피하기 위해 기본 요청에는 tool_search 중심의 최소 도구만 전송합니다.", "필요한 도구는 lazy loading으로 일부만 로드하며, 큰 파일 편집/명령 작업은 Codex/OpenAI/Anthropic 계열을 권장합니다."],
+    notes: ["활성화된 Codex 도구 전체를 OpenAI-compatible 형식으로 전달합니다.", "Groq의 계정/모델별 TPM 및 도구 지원 한도에 따라 요청이 거절될 수 있습니다."],
   };
   if (provider === "openrouter-free") return {
     tools: "limited",
@@ -91,7 +93,7 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
   };
   if (provider === "opencode-free") return {
     tools: "limited",
-    images: "sidecar",
+    images: providerNativeImageInput(provider, model) ? "native" : "sidecar",
     webSearch: "sidecar",
     diagnostics: "experimental",
     notes: ["OpenCode Zen 공개 무료 모델 경로입니다. API 키 없이 사용하지만 모델/쿼터가 수시로 변경될 수 있습니다.", "무료 endpoint는 요청 데이터가 모델 개선에 사용될 수 있으므로 민감한 소스와 비밀값을 보내지 마세요."],
@@ -105,7 +107,7 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
   };
   if (provider === "openrouter" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "moonshot" || provider === "huggingface" || provider === "nvidia" || provider === "xai") return {
     tools: "limited",
-    images: apiProviderConfig(provider)?.allowImages ? "native" : "sidecar",
+    images: (providerNativeImageInput(provider, model) ?? apiProviderConfig(provider)?.allowImages) ? "native" : "sidecar",
     webSearch: "sidecar",
     diagnostics: "experimental",
     notes: ["opencodex provider registry 기반 OpenAI-compatible API 경로입니다.", "Provider/모델별 tool, image, reasoning 지원은 계정과 모델에 따라 다를 수 있습니다."],
@@ -119,10 +121,10 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
   };
   if (provider === "copilot") return {
     tools: "limited",
-    images: "sidecar",
+    images: "native",
     webSearch: "sidecar",
     diagnostics: "experimental",
-    notes: ["Copilot 모델 목록은 metadata 기반입니다. 일부 모델은 목록에 보여도 계정에서 응답하지 않을 수 있습니다.", "128개 초과 도구는 제한/정규화됩니다.", "이미지는 vision sidecar가 텍스트 설명으로 변환해 전달합니다."],
+    notes: ["Copilot 모델 목록은 metadata 기반입니다. 일부 모델은 목록에 보여도 계정에서 응답하지 않을 수 있습니다.", "활성화된 Codex 도구 전체를 OpenAI-compatible 형식으로 전달합니다.", "이미지는 OpenAI-compatible image_url 형식으로 직접 전달합니다."],
   };
   if (provider === "antigravity") return {
     tools: "limited",
@@ -133,10 +135,10 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
   };
   if (provider === "claude-code") return {
     tools: "limited",
-    images: "sidecar",
+    images: "native",
     webSearch: "sidecar",
     diagnostics: "limited",
-    notes: ["Claude Code OAuth/구독 상태에 따라 401 또는 사용량 문제가 날 수 있습니다.", "이미지는 vision sidecar가 텍스트 설명으로 변환해 전달합니다."],
+    notes: ["Claude Code OAuth/구독 상태에 따라 401 또는 사용량 문제가 날 수 있습니다.", "이미지는 Anthropic 네이티브 이미지 블록으로 전달합니다."],
   };
   if (provider === "anthropic") return {
     tools: "native",
@@ -168,7 +170,16 @@ function antigravityCatalogModels(): ProviderModel[] {
 
 const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">> = [
   { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }, { id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
-  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [{ id: "claude-sonnet-5", label: "Claude Sonnet 5" }, { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
+  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [
+    { id: "claude-fable-5", label: "Claude Fable 5" },
+    { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+    { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  ] },
   { id: "copilot", label: "GitHub Copilot", kind: "login", authProvider: "copilot", keyRequired: false, models: [
     { id: "gpt-5.5", label: "GPT-5.5" },
     { id: "gpt-5.4", label: "GPT-5.4" },
@@ -192,23 +203,40 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
     { id: "raptor-mini", label: "Raptor Mini" },
   ] },
   { id: "antigravity", label: "Antigravity", kind: "login", authProvider: "antigravity", keyRequired: false, models: antigravityCatalogModels() },
-  { id: "openai", label: "OpenAI", kind: "apikey", keyRequired: true, models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
-  { id: "anthropic", label: "Anthropic", kind: "apikey", keyRequired: true, models: [{ id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" }, { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" }] },
-  { id: "google", label: "Google", kind: "apikey", keyRequired: true, models: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }, { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" }] },
-  { id: "deepseek", label: "DeepSeek", kind: "apikey", keyRequired: true, models: [{ id: "deepseek-chat", label: "DeepSeek Chat" }, { id: "deepseek-reasoner", label: "DeepSeek Reasoner" }] },
-  { id: "xai", label: "xAI Grok", kind: "apikey", keyRequired: true, models: [{ id: "grok-4.3", label: "Grok 4.3" }, { id: "grok-code-fast-1", label: "Grok Code Fast 1" }] },
-  { id: "openrouter", label: "OpenRouter", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-5", label: "OpenAI GPT-5" }, { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5" }] },
+  { id: "openai", label: "OpenAI", kind: "apikey", keyRequired: true, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }, { id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
+  { id: "anthropic", label: "Anthropic", kind: "apikey", keyRequired: true, models: [
+    { id: "claude-fable-5", label: "Claude Fable 5" },
+    { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+    { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+    { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  ] },
+  { id: "google", label: "Google", kind: "apikey", keyRequired: true, models: [{ id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" }, { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" }, { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }, { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" }] },
+  { id: "deepseek", label: "DeepSeek", kind: "apikey", keyRequired: true, models: [{ id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" }, { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" }, { id: "deepseek-chat", label: "DeepSeek Chat" }, { id: "deepseek-reasoner", label: "DeepSeek Reasoner" }] },
+  { id: "xai", label: "xAI Grok", kind: "apikey", keyRequired: true, models: [
+    { id: "grok-4.5", label: "Grok 4.5" },
+    { id: "grok-4.3", label: "Grok 4.3" },
+    { id: "grok-4.20-multi-agent-0309", label: "Grok 4.20 Multi-Agent" },
+    { id: "grok-4.20-0309-reasoning", label: "Grok 4.20 Reasoning" },
+    { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20 Non-Reasoning" },
+    { id: "grok-build-0.1", label: "Grok Build 0.1" },
+    { id: "grok-composer-2.5-fast", label: "Grok Composer 2.5 Fast" },
+  ] },
+  { id: "openrouter", label: "OpenRouter", kind: "apikey", keyRequired: true, models: [{ id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5" }, { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna" }] },
   { id: "openrouter-free", label: "OpenRouter Free", kind: "apikey", keyRequired: true, models: [{ id: "openrouter/free", label: "OpenRouter Free Router" }] },
-  { id: "opencode-free", label: "OpenCode Free", kind: "apikey", keyRequired: false, models: [{ id: "big-pickle", label: "Big Pickle" }] },
+  { id: "opencode-free", label: "OpenCode Free", kind: "apikey", keyRequired: false, models: [{ id: "big-pickle", label: "Big Pickle" }, { id: "deepseek-v4-flash-free", label: "DeepSeek V4 Flash Free" }] },
   { id: "groq", label: "Groq", kind: "apikey", keyRequired: true, models: [{ id: "openai/gpt-oss-120b", label: "GPT OSS 120B" }, { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" }] },
   { id: "mistral", label: "Mistral", kind: "apikey", keyRequired: true, models: [{ id: "codestral-latest", label: "Codestral Latest" }, { id: "mistral-large-latest", label: "Mistral Large" }] },
-  { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "llama-3.3-70b", label: "Llama 3.3 70B" }] },
+  { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "gpt-oss-120b", label: "GPT OSS 120B" }] },
   { id: "together", label: "Together", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", label: "Llama 3.3 70B Turbo" }] },
   { id: "fireworks", label: "Fireworks", kind: "apikey", keyRequired: true, models: [{ id: "accounts/fireworks/models/kimi-k2-instruct", label: "Kimi K2 Instruct" }] },
   { id: "zai", label: "Z.AI GLM Coding Plan", kind: "apikey", keyRequired: true, models: [{ id: "glm-5.2", label: "GLM 5.2" }, { id: "glm-5.2[1m]", label: "GLM 5.2 1M" }, { id: "glm-5.1", label: "GLM 5.1" }, { id: "glm-5", label: "GLM 5" }, { id: "glm-4.6", label: "GLM 4.6" }] },
-  { id: "moonshot", label: "Moonshot Kimi", kind: "apikey", keyRequired: true, models: [{ id: "kimi-k2.7-code", label: "Kimi K2.7 Code" }, { id: "kimi-k2.7-code-highspeed", label: "Kimi K2.7 Highspeed" }] },
+  { id: "moonshot", label: "Moonshot Kimi", kind: "apikey", keyRequired: true, models: [{ id: "kimi-k3", label: "Kimi K3" }, { id: "kimi-k2.7-code", label: "Kimi K2.7 Code" }, { id: "kimi-k2.7-code-highspeed", label: "Kimi K2.7 Highspeed" }, { id: "kimi-k2.6", label: "Kimi K2.6" }, { id: "kimi-k2.5", label: "Kimi K2.5" }] },
   { id: "huggingface", label: "Hugging Face", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.1-8B-Instruct", label: "Llama 3.1 8B" }] },
-  { id: "nvidia", label: "NVIDIA NIM", kind: "apikey", keyRequired: true, models: [{ id: "meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B" }] },
+  { id: "nvidia", label: "NVIDIA NIM", kind: "apikey", keyRequired: true, models: [{ id: "moonshotai/kimi-k2.6", label: "Kimi K2.6" }, { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5" }, { id: "moonshotai/kimi-k2-thinking", label: "Kimi K2 Thinking" }, { id: "openai/gpt-oss-120b", label: "GPT OSS 120B" }, { id: "meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B" }] },
   { id: "ollama", label: "Ollama", kind: "apikey", keyRequired: false, models: [{ id: "llama3.1", label: "Llama 3.1" }, { id: "qwen2.5-coder", label: "Qwen 2.5 Coder" }] },
   { id: "vllm", label: "vLLM", kind: "apikey", keyRequired: false, models: [{ id: "default", label: "Default" }] },
   { id: "lm-studio", label: "LM Studio", kind: "apikey", keyRequired: false, models: [{ id: "local-model", label: "Local Model" }] },
@@ -456,8 +484,6 @@ export class ProviderSettingsStore {
   private async writeSettings(value: PersistedSettings): Promise<void> {
     await mkdir(this.root(), { recursive: true });
     const target = this.settingsPath();
-    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, JSON.stringify(value), { mode: 0o600 });
-    await rename(tmp, target);
+    await writeTextFileAtomic(target, JSON.stringify(value));
   }
 }

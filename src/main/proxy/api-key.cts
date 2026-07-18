@@ -1,10 +1,21 @@
 import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxTool, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
+import { createHash } from "node:crypto";
 import { providerErrorMessage } from "./errors.cjs";
-import { buildToolCatalogNudge, budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { buildToolCatalogNudge, normalizeGeminiSchema, sanitizeName } from "./tool-sanitize.cjs";
 import type { ProviderId } from "../contracts.cjs";
 import { apiProviderConfig, apiProviderUrl } from "../provider-settings.cjs";
+import { neutralizeIdentity } from "./identity.cjs";
+import { mapProviderReasoningEffort, providerAutoToolChoiceOnly, providerLocksSampling, providerNativeImageInput, providerPreservesReasoning } from "./provider-policy.cjs";
 
 type ApiKeyProvider = Exclude<ProviderId, "codex" | "claude-code" | "copilot" | "antigravity">;
+
+const GOOGLE_BREVITY_INSTRUCTION = [
+  "Output style for this session:",
+  "- While you are still working (between tool calls), keep any text you emit to a single short line; do not narrate at length.",
+  "- Do detailed reasoning internally, not as visible intermediate output.",
+  "- Prefer taking the next tool action over explaining; keep calling tools until the task is complete.",
+  "- This applies only to intermediate progress text. Your final answer after the work is done is exempt: write it in full and at whatever length the task requires.",
+].join("\n");
 
 function flatten(parts: { type: string; text?: string }[]): string {
   return parts.map((part) => (part.type === "text" ? part.text ?? "" : "")).join("");
@@ -21,7 +32,7 @@ function chatContent(parts: OcxContentPart[], allowImages: boolean): string | Ar
   // image anywhere in the history fails the whole request. Flatten images to a
   // text placeholder so browser/screenshot history doesn't break the turn.
   if (!allowImages) {
-    return parts.map((part) => (part.type === "image" ? "[이미지 생략됨]" : part.text ?? "")).join("");
+    return parts.map((part) => (part.type === "image" ? "[image]" : part.text ?? "")).join("");
   }
   if (!parts.some((part) => part.type === "image")) return flatten(parts);
   return parts.map((part) => (
@@ -29,6 +40,11 @@ function chatContent(parts: OcxContentPart[], allowImages: boolean): string | Ar
       ? { type: "image_url", image_url: { url: part.dataUrl, ...(part.detail ? { detail: part.detail } : {}) } }
       : { type: "text", text: part.text }
   ));
+}
+
+function toolResultText(parts: OcxContentPart[]): string {
+  const text = parts.map((part) => part.type === "text" ? part.text : "[image]").join("");
+  return text || "[image]";
 }
 
 function geminiParts(parts: OcxContentPart[]): Array<Record<string, unknown>> {
@@ -55,22 +71,30 @@ function wireToolCallName(part: { name: string; namespace?: string }): string {
   return sanitizeName(namespacedToolName(part.namespace, part.name));
 }
 
-function selectedTools(parsed: OcxParsedRequest, max: number): OcxTool[] {
+function geminiToolCallId(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return cleaned === raw ? cleaned : `${cleaned}_${createHash("sha256").update(raw).digest("hex").slice(0, 8)}`;
+}
+
+function realThoughtSignature(signature: string | undefined): signature is string {
+  if (!signature || signature.length < 16) return false;
+  if (/^(fc|call|msg|rs|resp|reasoning|item|ws|tool|func|function)[-_]/i.test(signature)) return false;
+  return /^[A-Za-z0-9+/_=-]+$/.test(signature);
+}
+
+function selectedTools(parsed: OcxParsedRequest): OcxTool[] {
   const allowed = allowedToolNames(parsed.options.toolChoice);
-  return budgetTools(
-    parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))),
-    max,
-    requiredToolName(parsed),
-  );
+  return parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name)));
 }
 
 function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): unknown[] {
   const out: unknown[] = [];
   let pendingToolCallIds = new Set<string>();
   const nudge = provider !== "openai"
-    ? buildToolCatalogNudge(selectedTools(parsed, maxToolsForProvider(provider)).map(wireToolName), parsed.options.toolChoice)
+    ? buildToolCatalogNudge(selectedTools(parsed).map(wireToolName), parsed.options.toolChoice)
     : undefined;
-  const instructions = [parsed.context.instructions, nudge].filter(Boolean).join("\n\n");
+  const instructions = neutralizeIdentity([parsed.context.instructions, nudge].filter(Boolean).join("\n\n"));
   if (instructions) out.push({ role: "system", content: instructions });
   for (const msg of parsed.context.messages) {
     if (msg.role === "user") {
@@ -103,11 +127,11 @@ function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean, provider
       if (!pendingToolCallIds.has(toolCallId)) {
         out.push({
           role: "assistant",
-          content: null,
+          content: "",
           tool_calls: [{ id: toolCallId, type: "function", function: { name: toolResultWireName(tool), arguments: "{}" } }],
         });
       }
-      out.push({ role: "tool", tool_call_id: toolCallId, content: flatten(tool.content) });
+      out.push({ role: "tool", tool_call_id: toolCallId, content: toolResultText(tool.content) });
       pendingToolCallIds.delete(toolCallId);
     }
   }
@@ -124,21 +148,30 @@ export function googleContents(parsed: OcxParsedRequest): unknown[] {
         if (part.type === "toolCall") {
           let args: unknown = {};
           try { args = JSON.parse(part.arguments || "{}"); } catch { args = {}; }
-          return [{ functionCall: { name: wireToolCallName(part), args }, ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}) }];
+          const id = geminiToolCallId(part.id);
+          return [{ functionCall: { name: wireToolCallName(part), args, ...(id ? { id } : {}) }, ...(realThoughtSignature(part.thoughtSignature) ? { thoughtSignature: part.thoughtSignature } : {}) }];
         }
         return [];
       });
       if (parts.length) contents.push({ role: "model", parts });
     } else if (msg.role === "toolResult") {
       const tool = msg as OcxToolResultMessage;
+      const id = geminiToolCallId(tool.toolCallId);
+      const parts: Array<Record<string, unknown>> = [{
+        functionResponse: {
+          name: sanitizeName(namespacedToolName(tool.toolNamespace, tool.toolName || "tool_result")),
+          response: { result: flatten(tool.content) },
+          ...(id ? { id } : {}),
+        },
+      }];
+      for (const part of tool.content) {
+        if (part.type !== "image") continue;
+        const parsed = parseDataUrl(part.dataUrl);
+        if (parsed) parts.push({ inline_data: { mime_type: parsed.mimeType, data: parsed.base64 } });
+      }
       contents.push({
         role: "user",
-        parts: [{
-          functionResponse: {
-            name: sanitizeName(namespacedToolName(tool.toolNamespace, tool.toolName || "tool_result")),
-            response: { result: flatten(tool.content) },
-          },
-        }],
+        parts,
       });
     } else {
       contents.push({ role: "user", parts: geminiParts(msg.content) });
@@ -148,7 +181,7 @@ export function googleContents(parsed: OcxParsedRequest): unknown[] {
 }
 
 export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
-  const selected = selectedTools(parsed, 24);
+  const selected = selectedTools(parsed);
   if (!selected.length) return undefined;
   return [{
     functionDeclarations: selected.map((tool) => ({
@@ -160,35 +193,43 @@ export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
 }
 
 function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): Record<string, unknown> {
-  const body: Record<string, unknown> = { model: wireModelForProvider(provider, parsed.model), messages: openAiMessages(parsed, allowImages, provider), stream: parsed.stream };
-  const toolLimit = maxToolsForProvider(provider);
-  const allowed = allowedToolNames(parsed.options.toolChoice);
-  const selectedTools = budgetTools(parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))), toolLimit, requiredToolName(parsed));
-  if (selectedTools.length) {
-    const tools = selectedTools.map((tool) => ({
-      type: "function",
-      function: {
-        name: wireToolName(tool),
-        description: tool.description ?? "",
-        parameters: toolParametersForProvider(provider, tool.parameters),
-        ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
-      },
-    }));
+  const nativeImages = providerNativeImageInput(provider, parsed.model) ?? allowImages;
+  const body: Record<string, unknown> = { model: wireModelForProvider(provider, parsed.model), messages: openAiMessages(parsed, nativeImages, provider), stream: parsed.stream };
+  const selected = selectedTools(parsed);
+  if (selected.length) {
+    const tools = selected.flatMap((tool) => {
+      const parameters = toolParametersForProvider(provider, tool.parameters);
+      return parameters ? [{
+        type: "function",
+        function: {
+          name: wireToolName(tool),
+          description: tool.description ?? "",
+          parameters,
+          ...(tool.strict !== undefined ? { strict: tool.strict } : {}),
+        },
+      }] : [];
+    });
     if (tools.length) body.tools = tools;
-    body.parallel_tool_calls = false;
+    body.parallel_tool_calls = provider === "nvidia" ? false : parsed.options.parallelToolCalls !== false;
     const choice = parsed.options.toolChoice;
-    if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = choice === "required" && provider === "moonshot" ? "auto" : choice;
-    else if (choice && "name" in choice) body.tool_choice = { type: "function", function: { name: sanitizeName(choice.name) } };
-    else if (choice && "allowedTools" in choice) body.tool_choice = choice.mode === "required" ? "required" : "auto";
+    const autoOnly = providerAutoToolChoiceOnly(provider, parsed.model);
+    if (choice === "auto" || choice === "none" || choice === "required") body.tool_choice = autoOnly && choice !== "none" ? "auto" : choice;
+    else if (choice && "name" in choice) {
+      const selected = parsed.tools.find((tool) => tool.name === choice.name || namespacedToolName(tool.namespace, tool.name) === choice.name);
+      body.tool_choice = autoOnly ? "auto" : { type: "function", function: { name: selected ? wireToolName(selected) : sanitizeName(choice.name) } };
+    }
+    else if (choice && "allowedTools" in choice) body.tool_choice = autoOnly ? "auto" : choice.mode === "required" ? "required" : "auto";
   }
   if (parsed.options.maxOutputTokens !== undefined) body.max_tokens = parsed.options.maxOutputTokens;
-  if (parsed.options.temperature !== undefined && !locksSamplingParameters(provider, parsed.model)) body.temperature = parsed.options.temperature;
-  if (parsed.options.topP !== undefined && !locksSamplingParameters(provider, parsed.model)) body.top_p = parsed.options.topP;
+  if (parsed.options.temperature !== undefined && !providerLocksSampling(provider, parsed.model)) body.temperature = parsed.options.temperature;
+  if (parsed.options.topP !== undefined && !providerLocksSampling(provider, parsed.model)) body.top_p = parsed.options.topP;
   if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
-  if (parsed.options.reasoning !== undefined && supportsReasoningEffort(provider, parsed.model)) body.reasoning_effort = parsed.options.reasoning === "xhigh" ? "high" : parsed.options.reasoning;
+  const reasoningEffort = mapProviderReasoningEffort(provider, parsed.model, parsed.options.reasoning);
+  if (reasoningEffort !== undefined) body.reasoning_effort = reasoningEffort;
   if (parsed.options.serviceTier !== undefined && provider === "openai") body.service_tier = parsed.options.serviceTier;
-  if (parsed.options.presencePenalty !== undefined && !locksSamplingParameters(provider, parsed.model)) body.presence_penalty = parsed.options.presencePenalty;
-  if (parsed.options.frequencyPenalty !== undefined && !locksSamplingParameters(provider, parsed.model)) body.frequency_penalty = parsed.options.frequencyPenalty;
+  if (parsed.options.presencePenalty !== undefined && !providerLocksSampling(provider, parsed.model)) body.presence_penalty = parsed.options.presencePenalty;
+  if (parsed.options.frequencyPenalty !== undefined && !providerLocksSampling(provider, parsed.model)) body.frequency_penalty = parsed.options.frequencyPenalty;
+  if (parsed.stream) body.stream_options = { include_usage: true };
   return body;
 }
 
@@ -197,71 +238,102 @@ function wireModelForProvider(provider: ApiKeyProvider, model: string): string {
   return provider === "zai" ? model.replace(/\[[^\]]*\]\s*$/, "") : model;
 }
 
-function locksSamplingParameters(provider: ApiKeyProvider, model: string): boolean {
-  return provider === "moonshot" || (provider === "opencode-free" && /kimi|deepseek/i.test(model));
-}
-
 function preservesReasoningContent(provider: ApiKeyProvider, model: string): boolean {
-  if (provider === "deepseek") return !/^deepseek-chat$/i.test(model);
-  if (provider === "zai") return /^glm-5(?:\.1|\.2)?/i.test(model);
-  if (provider === "moonshot") return /kimi/i.test(model);
-  if (provider === "opencode-free") return /deepseek|glm|kimi/i.test(model);
-  return false;
+  return providerPreservesReasoning(provider, model);
 }
 
-function stripSchemaMarker(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripSchemaMarker);
+function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+  const root = schema as Record<string, unknown>;
+  const composition = ["oneOf", "anyOf"].find((key) => Array.isArray(root[key]));
+  if (!composition) return root.type !== undefined && root.type !== "object" ? undefined : [{ ...root, type: "object" }];
+  const siblings = Object.fromEntries(Object.entries(root).filter(([key]) => key !== composition));
+  const branches = root[composition];
+  if (!Array.isArray(branches)) return undefined;
+  const variants: Record<string, unknown>[] = [];
+  for (const branch of branches) {
+    const expanded = expandXaiRootObjectSchemas(branch);
+    if (!expanded) return undefined;
+    for (const variant of expanded) variants.push({ ...siblings, ...variant });
+  }
+  return variants.length ? variants : undefined;
+}
+
+function normalizeXaiSchema(schema: unknown): Record<string, unknown> | undefined {
+  const variants = expandXaiRootObjectSchemas(schema);
+  if (!variants) return undefined;
+  if (variants.length === 1) return variants[0];
+  const root = schema && typeof schema === "object" && !Array.isArray(schema) ? schema as Record<string, unknown> : {};
+  const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  return { ...metadata, oneOf: variants };
+}
+
+const ZEN_SCHEMA_NAME_BAGS = new Set(["properties", "$defs", "definitions"]);
+
+function sanitizeZenSchema(value: unknown, inNameBag = false): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeZenSchema(item));
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .filter(([key]) => key !== "encrypted")
-    .map(([key, child]) => [key, stripSchemaMarker(child)]));
-}
-
-function normalizeXaiSchema(schema: unknown): Record<string, unknown> {
-  const input = stripSchemaMarker(schema);
-  if (!input || typeof input !== "object" || Array.isArray(input)) return { type: "object", properties: {} };
-  const root = input as Record<string, unknown>;
-  const composition = Array.isArray(root.oneOf) ? "oneOf" : Array.isArray(root.anyOf) ? "anyOf" : undefined;
-  if (!composition) return { ...root, type: "object" };
-  const siblings = Object.fromEntries(Object.entries(root).filter(([key]) => key !== composition && key !== "type"));
-  const variants = (root[composition] as unknown[]).flatMap((branch) => {
-    if (!branch || typeof branch !== "object" || Array.isArray(branch)) return [];
-    return [{ ...siblings, ...(branch as Record<string, unknown>), type: "object" }];
-  });
-  return variants.length ? { ...siblings, [composition]: variants, type: "object" } : { type: "object", properties: {} };
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (!inNameBag && key === "encrypted") continue;
+    if (key === "required" && Array.isArray(child) && child.length === 0) continue;
+    if (key === "type" && Array.isArray(child)) {
+      const nonNull = child.filter((entry) => entry !== "null");
+      if (child.includes("null")) out.nullable = true;
+      if (nonNull.length) out.type = nonNull[0];
+      continue;
+    }
+    out[key] = sanitizeZenSchema(child, ZEN_SCHEMA_NAME_BAGS.has(key));
+  }
+  return out;
 }
 
 function normalizeZenSchema(schema: unknown): Record<string, unknown> {
-  const input = stripSchemaMarker(schema);
-  const out = normalizeSchema(input) as Record<string, unknown>;
-  if (out.type === "object") return out;
-  return { ...out, type: "object" };
+  const root = schema && typeof schema === "object" && !Array.isArray(schema) ? schema as Record<string, unknown> : {};
+  const compositionKeys = ["oneOf", "anyOf", "allOf"] as const;
+  const hasComposition = compositionKeys.some((key) => Array.isArray(root[key]));
+  if (!hasComposition) {
+    const base = sanitizeZenSchema(root) as Record<string, unknown>;
+    return { ...base, type: "object" };
+  }
+  const properties: Record<string, unknown> = root.properties && typeof root.properties === "object" && !Array.isArray(root.properties)
+    ? sanitizeZenSchema(root.properties, true) as Record<string, unknown>
+    : {};
+  const required = new Set<string>(Array.isArray(root.required) ? root.required.filter((entry): entry is string => typeof entry === "string") : []);
+  for (const key of compositionKeys) {
+    const variants = root[key];
+    if (!Array.isArray(variants)) continue;
+    for (const variant of variants) {
+      if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
+      const child = variant as Record<string, unknown>;
+      if (child.properties && typeof child.properties === "object" && !Array.isArray(child.properties)) {
+        Object.assign(properties, sanitizeZenSchema(child.properties, true));
+      }
+      if (key === "allOf" && Array.isArray(child.required)) {
+        for (const entry of child.required) if (typeof entry === "string") required.add(entry);
+      }
+    }
+  }
+  const merged = sanitizeZenSchema(root) as Record<string, unknown>;
+  delete merged.oneOf;
+  delete merged.anyOf;
+  delete merged.allOf;
+  merged.type = "object";
+  if (Object.keys(properties).length) merged.properties = properties;
+  if (required.size) merged.required = [...required];
+  return merged;
 }
 
-function toolParametersForProvider(provider: ApiKeyProvider, schema: unknown): Record<string, unknown> {
+function toolParametersForProvider(provider: ApiKeyProvider, schema: unknown): Record<string, unknown> | undefined {
   if (provider === "xai") return normalizeXaiSchema(schema);
   if (provider === "opencode-free") return normalizeZenSchema(schema);
-  return normalizeSchema(schema);
-}
-
-function requiredToolName(parsed: OcxParsedRequest): string | undefined {
-  const choice = parsed.options.toolChoice;
-  return choice && typeof choice === "object" && "name" in choice ? choice.name : undefined;
-}
-
-function maxToolsForProvider(provider: ApiKeyProvider): number {
-  // Keep external provider prompts lean: expose tool_search first, then loaded
-  // tools, then a small core set. Full catalog forwarding is too expensive for
-  // low-TPM providers and makes fresh chats fail before user text matters.
-  if (provider === "groq") return 2;
-  if (provider === "deepseek" || provider === "cerebras" || provider === "moonshot" || provider === "zai") return 12;
-  if (provider === "openai") return 64;
-  return 24;
+  return schema && typeof schema === "object" && !Array.isArray(schema) ? schema as Record<string, unknown> : { type: "object", properties: {} };
 }
 
 export function buildApiKeyRequest(provider: ApiKeyProvider, parsed: OcxParsedRequest, key: string): { url: string; headers: Record<string, string>; body: string } {
   const config = apiProviderConfig(provider);
   if (!config) throw new Error(`지원하지 않는 Provider입니다: ${provider}`);
+  if (config.adapter === "openai-responses") throw new Error(`${provider}는 Responses passthrough adapter를 사용해야 합니다.`);
   if (config.adapter === "openai-chat") {
     return {
       url: apiProviderUrl(provider, "/chat/completions"),
@@ -285,24 +357,16 @@ export function buildGoogleGenerateContentBody(parsed: OcxParsedRequest): Record
   if (parsed.options.stopSequences !== undefined) generationConfig.stopSequences = parsed.options.stopSequences;
   const tools = googleTools(parsed);
   const nudge = buildToolCatalogNudge(
-    selectedTools(parsed, 24).map(wireToolName),
+    selectedTools(parsed).map(wireToolName),
     parsed.options.toolChoice,
   );
-  const instructions = [parsed.context.instructions, nudge].filter(Boolean).join("\n\n");
+  const instructions = neutralizeIdentity([parsed.context.instructions, nudge, GOOGLE_BREVITY_INSTRUCTION].filter(Boolean).join("\n\n"));
   return {
     contents: googleContents(parsed),
     ...(instructions ? { systemInstruction: { parts: [{ text: instructions }] } } : {}),
     ...(tools ? { tools } : {}),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
   };
-}
-
-function supportsReasoningEffort(provider: ApiKeyProvider, model: string): boolean {
-  if (provider === "deepseek" && /^deepseek-chat$/i.test(model)) return false;
-  if (provider === "moonshot") return false;
-  if (provider === "groq" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "huggingface" || provider === "nvidia" || provider === "openrouter" || provider === "openrouter-free" || provider === "ollama" || provider === "vllm" || provider === "lm-studio") return false;
-  if (provider === "xai") return !/grok-build|composer/i.test(model);
-  return provider === "openai" || provider === "deepseek" || provider === "zai";
 }
 
 export async function* streamOpenAiCompatible(providerLabel: string, response: Response): AsyncGenerator<AdapterEvent> {
@@ -321,8 +385,65 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let usage: OcxUsage | undefined;
-  const tools = new Map<number, { started: boolean }>();
+  let pendingUsage: OcxUsage | undefined;
+  let sawFinish = false;
+  interface PendingToolCall { key: string; id: string; name: string; args: string }
+  const pendingToolCalls: PendingToolCall[] = [];
+  let callSequence = 0;
+  const flushToolCalls = function* (): Generator<AdapterEvent> {
+    for (const call of pendingToolCalls) {
+      yield { type: "tool_call_start", id: call.id || `call_${++callSequence}`, name: call.name };
+      if (call.args) yield { type: "tool_call_delta", arguments: call.args };
+      yield { type: "tool_call_end" };
+    }
+    pendingToolCalls.length = 0;
+  };
+  const handleDataLine = function* (line: string): Generator<AdapterEvent, "continue" | "terminate"> {
+    if (!line.startsWith("data:")) return "continue";
+    const payload = line.slice(5).trim();
+    if (!payload) return "continue";
+    if (payload === "[DONE]") {
+      yield* flushToolCalls();
+      yield { type: "done", usage: pendingUsage };
+      return "terminate";
+    }
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(payload) as Record<string, unknown>; }
+    catch {
+      yield { type: "error", status: 502, errorType: "upstream_invalid_sse", message: `${providerLabel}가 잘못된 SSE JSON 프레임을 반환했습니다.` };
+      return "terminate";
+    }
+    const err = data.error as { message?: string; code?: string; type?: string } | undefined;
+    if (err) {
+      yield* flushToolCalls();
+      yield { type: "error", status: 502, errorType: err.type ?? "upstream_error", message: `${providerLabel} 스트림 오류: ${err.message ?? err.code ?? "알 수 없는 오류"}` };
+      return "terminate";
+    }
+    if (data.usage) pendingUsage = openAiCompatibleUsage(data.usage as Record<string, unknown>);
+    const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
+    const finishReason = choice?.finish_reason;
+    if (typeof finishReason === "string" && finishReason) sawFinish = true;
+    const delta = choice?.delta as Record<string, unknown> | undefined;
+    if (delta) {
+      if (typeof delta.content === "string" && delta.content) yield { type: "text_delta", text: delta.content };
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content) yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
+      const toolCalls = delta.tool_calls as Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> | undefined;
+      for (const tool of toolCalls ?? []) {
+        const key = typeof tool.index === "number" ? `i:${tool.index}` : tool.id ? `id:${tool.id}` : pendingToolCalls[pendingToolCalls.length - 1]?.key;
+        let call = key ? pendingToolCalls.find((candidate) => candidate.key === key) : undefined;
+        if (!call && tool.id) call = pendingToolCalls.find((candidate) => candidate.id === tool.id);
+        if (!call) {
+          call = { key: key ?? `seq:${pendingToolCalls.length}`, id: "", name: "", args: "" };
+          pendingToolCalls.push(call);
+        }
+        if (tool.id && !call.id) call.id = tool.id;
+        if (tool.function?.name && !call.name) call.name = tool.function.name;
+        if (tool.function?.arguments) call.args += tool.function.arguments;
+      }
+    }
+    if (typeof finishReason === "string" && finishReason) yield* flushToolCalls();
+    return "continue";
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -330,38 +451,16 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6).trim();
-        if (!payload || payload === "[DONE]") continue;
-        let data: Record<string, unknown>;
-        try { data = JSON.parse(payload) as Record<string, unknown>; } catch { continue; }
-        const err = data.error as { message?: string; code?: string; type?: string } | undefined;
-        if (err) {
-          yield { type: "error", status: 502, errorType: err.type ?? "upstream_error", message: `${providerLabel} 스트림 오류: ${err.message ?? err.code ?? "알 수 없는 오류"}` };
-          return;
-        }
-        const u = data.usage as Record<string, number> | undefined;
-        if (u) usage = openAiCompatibleUsage(u);
-        const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
-        const delta = choice?.delta as Record<string, unknown> | undefined;
-        if (delta) {
-          if (typeof delta.content === "string" && delta.content) yield { type: "text_delta", text: delta.content };
-          const tcs = delta.tool_calls as Array<Record<string, unknown>> | undefined;
-          if (tcs) for (const tc of tcs) {
-            const idx = Number(tc.index ?? 0);
-            const fn = tc.function as { name?: string; arguments?: string } | undefined;
-            if (!tools.get(idx)?.started) {
-              tools.set(idx, { started: true });
-              yield { type: "tool_call_start", id: String(tc.id ?? `call_${idx}`), name: fn?.name ?? "" };
-            }
-            if (fn?.arguments) yield { type: "tool_call_delta", arguments: fn.arguments };
-          }
-        }
-        if (choice?.finish_reason && tools.size) yield { type: "tool_call_end" };
-      }
+      for (const line of lines) if ((yield* handleDataLine(line)) === "terminate") return;
     }
-    yield { type: "done", usage };
+    buffer += decoder.decode();
+    if (buffer.trim() && (yield* handleDataLine(buffer)) === "terminate") return;
+    yield* flushToolCalls();
+    if (!sawFinish && pendingUsage === undefined) {
+      yield { type: "error", status: 502, errorType: "upstream_truncated_stream", message: `${providerLabel} 스트림이 완료 신호 없이 종료되었습니다.` };
+      return;
+    }
+    yield { type: "done", usage: pendingUsage };
   } finally {
     reader.releaseLock();
   }
@@ -381,16 +480,23 @@ async function* parseOpenAiCompatibleJson(providerLabel: string, response: Respo
     return;
   }
   const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!choice) {
+    yield { type: "error", status: 502, errorType: "upstream_invalid_response", message: `${providerLabel} 응답에 choices가 없습니다.` };
+    return;
+  }
   const message = choice?.message as Record<string, unknown> | undefined;
-  if (message) {
-    if (typeof message.content === "string" && message.content) yield { type: "text_delta", text: message.content };
-    const toolCalls = message.tool_calls as Array<Record<string, unknown>> | undefined;
-    if (toolCalls) for (const [index, tc] of toolCalls.entries()) {
-      const fn = tc.function as { name?: string; arguments?: string } | undefined;
-      yield { type: "tool_call_start", id: String(tc.id ?? `call_${index}`), name: fn?.name ?? "" };
-      if (fn?.arguments) yield { type: "tool_call_delta", arguments: fn.arguments };
-      yield { type: "tool_call_end" };
-    }
+  if (!message) {
+    yield { type: "error", status: 502, errorType: "upstream_invalid_response", message: `${providerLabel} 응답 choice에 message가 없습니다.` };
+    return;
+  }
+  if (typeof message.content === "string" && message.content) yield { type: "text_delta", text: message.content };
+  if (typeof message.reasoning_content === "string" && message.reasoning_content) yield { type: "reasoning_raw_delta", text: message.reasoning_content };
+  const toolCalls = message.tool_calls as Array<Record<string, unknown>> | undefined;
+  if (toolCalls) for (const [index, tc] of toolCalls.entries()) {
+    const fn = tc.function as { name?: string; arguments?: string } | undefined;
+    yield { type: "tool_call_start", id: String(tc.id ?? `call_${index}`), name: fn?.name ?? "" };
+    if (fn?.arguments) yield { type: "tool_call_delta", arguments: fn.arguments };
+    yield { type: "tool_call_end" };
   }
   const usage = data.usage as Record<string, number> | undefined;
   yield { type: "done", usage: usage ? openAiCompatibleUsage(usage) : undefined };
@@ -400,15 +506,35 @@ async function* parseOpenAiCompatibleJson(providerLabel: string, response: Respo
 // prompt_tokens_details.cached_tokens (OpenAI-style) or prompt_cache_hit_tokens
 // (DeepSeek). Without this, proxied turns show cached=0 and Devil's usage/cost
 // summaries price the whole prompt at the uncached input rate.
-function openAiCompatibleUsage(u: Record<string, unknown>): { inputTokens: number; outputTokens: number; cachedInputTokens?: number } {
+function openAiCompatibleUsage(u: Record<string, unknown>): OcxUsage {
   const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
   const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
+  const completionDetails = u.completion_tokens_details as Record<string, unknown> | undefined;
   const cached = num(details?.cached_tokens) || num(u.prompt_cache_hit_tokens);
+  const reasoning = num(completionDetails?.reasoning_tokens);
   return {
     inputTokens: num(u.prompt_tokens),
     outputTokens: num(u.completion_tokens),
+    ...(typeof u.total_tokens === "number" ? { totalTokens: u.total_tokens } : {}),
     ...(cached ? { cachedInputTokens: cached } : {}),
+    ...(reasoning ? { reasoningOutputTokens: reasoning } : {}),
   };
+}
+
+function googleUsage(u: Record<string, number> | undefined): OcxUsage | undefined {
+  if (!u) return undefined;
+  return {
+    inputTokens: u.promptTokenCount ?? 0,
+    outputTokens: u.candidatesTokenCount ?? 0,
+    ...(u.cachedContentTokenCount !== undefined ? { cachedInputTokens: u.cachedContentTokenCount } : {}),
+    ...(u.thoughtsTokenCount !== undefined ? { reasoningOutputTokens: u.thoughtsTokenCount } : {}),
+  };
+}
+
+const GOOGLE_TRUNCATION_REASONS = new Set(["MAX_TOKENS", "MALFORMED_FUNCTION_CALL"]);
+
+function googleTruncationMessage(reason: string): string {
+  return `Google 응답이 도구 호출을 완료하기 전에 잘렸습니다. (${reason})`;
 }
 
 export async function* streamGoogle(response: Response, options: { label?: string; unwrapResponse?: boolean } = {}): AsyncGenerator<AdapterEvent> {
@@ -424,6 +550,58 @@ export async function* streamGoogle(response: Response, options: { label?: strin
   const decoder = new TextDecoder();
   let buffer = "";
   let usage: OcxUsage | undefined;
+  let lastFinishReason: string | undefined;
+  let toolCallsStarted = 0;
+  const parsePayload = function* (payload: string): Generator<AdapterEvent, "continue" | "terminate"> {
+    if (!payload) return "continue";
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(payload) as Record<string, unknown>; }
+    catch {
+      yield { type: "error", status: 502, errorType: "upstream_invalid_sse", message: `${label}가 잘못된 SSE JSON 프레임을 반환했습니다.` };
+      return "terminate";
+    }
+    const root = options.unwrapResponse ? (data.response as Record<string, unknown> | undefined) : data;
+    if (!root) {
+      yield { type: "error", status: 502, errorType: "upstream_invalid_response", message: `${label} 응답에 response wrapper가 없습니다.` };
+      return "terminate";
+    }
+    const error = (data.error ?? root.error) as { message?: string; code?: number; status?: string } | undefined;
+    if (error) {
+      yield { type: "error", status: error.code ?? 502, errorType: error.status ?? "upstream_error", message: providerErrorMessage(label, error.code ?? 502, error.message ?? error.status ?? "스트림 오류") };
+      return "terminate";
+    }
+    const candidate = (root.candidates as Array<Record<string, unknown>> | undefined)?.[0];
+    if (typeof candidate?.finishReason === "string") lastFinishReason = candidate.finishReason;
+    const parts = (candidate?.content as Record<string, unknown> | undefined)?.parts;
+    if (Array.isArray(parts)) {
+      for (const part of parts) {
+        const record = part as Record<string, unknown>;
+        const fn = record.functionCall as Record<string, unknown> | undefined;
+        if (fn?.name) {
+          const thoughtSignature = typeof record.thoughtSignature === "string"
+            ? record.thoughtSignature
+            : typeof record.thought_signature === "string"
+              ? record.thought_signature
+              : typeof fn.thoughtSignature === "string"
+                ? fn.thoughtSignature
+                : typeof fn.thought_signature === "string"
+                  ? fn.thought_signature
+                  : undefined;
+          const upstreamId = typeof fn.id === "string" ? geminiToolCallId(fn.id) : undefined;
+          const id = upstreamId ?? `call_${crypto.randomUUID().replace(/-/g, "")}`;
+          toolCallsStarted++;
+          yield { type: "tool_call_start", id, name: String(fn.name), ...(realThoughtSignature(thoughtSignature) ? { thoughtSignature } : {}) };
+          yield { type: "tool_call_delta", arguments: JSON.stringify(fn.args ?? {}) };
+          yield { type: "tool_call_end" };
+        }
+        const text = String(record.text ?? "");
+        if (text) yield record.thought === true ? { type: "thinking_delta", thinking: text } : { type: "text_delta", text };
+      }
+    }
+    const nextUsage = googleUsage(root.usageMetadata as Record<string, number> | undefined);
+    if (nextUsage) usage = nextUsage;
+    return "continue";
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -432,44 +610,20 @@ export async function* streamGoogle(response: Response, options: { label?: strin
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6).trim();
-        if (!payload) continue;
-        let data: Record<string, unknown>;
-        try { data = JSON.parse(payload) as Record<string, unknown>; } catch { continue; }
-        const root = options.unwrapResponse ? (data.response as Record<string, unknown> | undefined) ?? data : data;
-        const error = (data.error ?? root.error) as { message?: string; code?: number; status?: string } | undefined;
-        if (error) {
-          yield { type: "error", status: error.code ?? 502, errorType: error.status ?? "upstream_error", message: providerErrorMessage(label, error.code ?? 502, error.message ?? error.status ?? "스트림 오류") };
-          return;
-        }
-        const candidate = (root.candidates as Array<Record<string, unknown>> | undefined)?.[0];
-        const parts = (candidate?.content as Record<string, unknown> | undefined)?.parts;
-        if (Array.isArray(parts)) {
-          for (const part of parts) {
-            const record = part as Record<string, unknown>;
-            const fn = record.functionCall as Record<string, unknown> | undefined;
-            if (fn?.name) {
-              const thoughtSignature = typeof record.thoughtSignature === "string"
-                ? record.thoughtSignature
-                : typeof record.thought_signature === "string"
-                  ? record.thought_signature
-                  : typeof fn.thoughtSignature === "string"
-                    ? fn.thoughtSignature
-                    : typeof fn.thought_signature === "string"
-                      ? fn.thought_signature
-                      : undefined;
-              yield { type: "tool_call_start", id: `call_${crypto.randomUUID().replace(/-/g, "")}`, name: String(fn.name), ...(thoughtSignature ? { thoughtSignature } : {}) };
-              yield { type: "tool_call_delta", arguments: JSON.stringify(fn.args ?? {}) };
-              yield { type: "tool_call_end" };
-            }
-            const text = record.thought === true ? "" : String(record.text ?? "");
-            if (text) yield { type: "text_delta", text };
-          }
-        }
-        const u = root.usageMetadata as Record<string, number> | undefined;
-        if (u) usage = { inputTokens: u.promptTokenCount ?? 0, outputTokens: u.candidatesTokenCount ?? 0 };
+        if (!line.startsWith("data:")) continue;
+        const result = yield* parsePayload(line.slice(5).trim());
+        if (result === "terminate") return;
       }
+    }
+    buffer += decoder.decode();
+    const residual = buffer.trim();
+    if (residual.startsWith("data:")) {
+      const result = yield* parsePayload(residual.slice(5).trim());
+      if (result === "terminate") return;
+    }
+    if (toolCallsStarted > 0 && lastFinishReason && GOOGLE_TRUNCATION_REASONS.has(lastFinishReason)) {
+      yield { type: "error", status: 502, errorType: "upstream_truncated_tool_call", message: googleTruncationMessage(lastFinishReason), usage };
+      return;
     }
     yield { type: "done", usage };
   } finally {

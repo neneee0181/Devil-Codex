@@ -1,7 +1,9 @@
 // Slim Codex Responses request parser → neutral OcxParsedRequest.
 // Adapted from opencodex (MIT), minus zod / web-search / structured-output.
 import { Buffer } from "node:buffer";
-import { namespacedToolName, type OcxAssistantMessage, type OcxContentPart, type OcxMessage, type OcxParsedRequest, type OcxRequestOptions, type OcxTextContent, type OcxTool } from "./types.cjs";
+import { compactionItemToText } from "./compaction.cjs";
+import { decodeReasoningEnvelope } from "./reasoning-envelope.cjs";
+import { namespacedToolName, type OcxAssistantMessage, type OcxContentPart, type OcxMessage, type OcxParsedRequest, type OcxRequestOptions, type OcxTextContent, type OcxThinkingContent, type OcxTool } from "./types.cjs";
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -10,7 +12,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
 function hostedWebSearch(tools: unknown[] | undefined): Record<string, unknown> | undefined {
   if (!tools) return undefined;
   for (const tool of tools) {
-    if (isObj(tool) && tool.type === "web_search") return tool;
+    if (isObj(tool) && (tool.type === "web_search" || tool.type === "web_search_preview")) return tool;
   }
   return undefined;
 }
@@ -42,12 +44,6 @@ function fileText(raw: Record<string, unknown>): string {
   return `[file: ${name}]\n${data}`;
 }
 
-function imageSizeError(message: string): Error & { status: number } {
-  const error = new Error(message) as Error & { status: number };
-  error.status = 413;
-  return error;
-}
-
 function inputContentParts(blocks: unknown[] | string | undefined): OcxContentPart[] {
   if (typeof blocks === "string") return blocks ? [{ type: "text", text: blocks }] : [];
   if (!blocks) return [];
@@ -56,19 +52,13 @@ function inputContentParts(blocks: unknown[] | string | undefined): OcxContentPa
     if (!isObj(raw)) continue;
     if (raw.type === "input_text" || raw.type === "text") parts.push({ type: "text", text: String(raw.text ?? "") });
     else if (raw.type === "input_image" && typeof raw.image_url === "string") {
-      const data = raw.image_url.match(/^data:[^;]+;base64,(.*)$/i)?.[1];
-      if (data && data.length > 7_000_000) throw imageSizeError("이미지 하나가 너무 큽니다. 5MB 이하의 이미지를 사용해 주세요.");
-      parts.push({ type: "image", dataUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: raw.detail } : {}) });
+      parts.push({ type: "image", dataUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: raw.detail === "original" ? "high" : raw.detail } : {}) });
     } else if (raw.type === "input_image" && typeof raw.file_id === "string") {
       parts.push({ type: "text", text: `[image: ${raw.file_id}]` });
     } else if (raw.type === "input_file") {
       parts.push({ type: "text", text: fileText(raw) });
     }
   }
-  const imageCount = parts.filter((part) => part.type === "image").length;
-  if (imageCount > 20) throw imageSizeError("한 요청에 이미지는 최대 20개까지 사용할 수 있습니다.");
-  const imageBytes = parts.reduce((sum, part) => part.type === "image" && part.dataUrl.startsWith("data:") ? sum + Math.floor((part.dataUrl.length * 3) / 4) : sum, 0);
-  if (imageBytes > 40_000_000) throw imageSizeError("요청의 이미지 전체 크기가 너무 큽니다.");
   return parts;
 }
 
@@ -82,6 +72,25 @@ function outputTextOf(blocks: unknown[] | string | undefined): OcxTextContent[] 
     else if (raw.type === "refusal") out.push({ type: "text", text: `[refusal: ${String(raw.refusal ?? "")}]` });
   }
   return out;
+}
+
+function outputToToolResultContent(output: unknown): OcxContentPart[] {
+  if (typeof output === "string") return output ? [{ type: "text", text: output }] : [];
+  if (!Array.isArray(output)) return [];
+  const parts: OcxContentPart[] = [];
+  for (const raw of output) {
+    if (!isObj(raw)) continue;
+    if ((raw.type === "output_text" || raw.type === "text" || raw.type === "input_text") && typeof raw.text === "string") {
+      parts.push({ type: "text", text: raw.text });
+    } else if (raw.type === "refusal" && typeof raw.refusal === "string") {
+      parts.push({ type: "text", text: `[refusal: ${raw.refusal}]` });
+    } else if (raw.type === "input_image" && typeof raw.image_url === "string") {
+      parts.push({ type: "image", dataUrl: raw.image_url, ...(typeof raw.detail === "string" ? { detail: raw.detail === "original" ? "high" : raw.detail } : {}) });
+    } else if (raw.type === "encrypted_content") {
+      parts.push({ type: "text", text: "[encrypted content omitted]" });
+    }
+  }
+  return parts;
 }
 
 function ensureAssistant(messages: OcxMessage[]): OcxAssistantMessage {
@@ -217,6 +226,13 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   const messages: OcxMessage[] = [];
   const system: string[] = [];
   const loadedToolSpecs: unknown[] = [];
+  const pendingReasoning: OcxThinkingContent[] = [];
+  let compactionRequest = false;
+  const assistantWithReasoning = (): OcxAssistantMessage => {
+    const assistant = ensureAssistant(messages);
+    if (pendingReasoning.length) assistant.content.push(...pendingReasoning.splice(0));
+    return assistant;
+  };
   if (typeof data.instructions === "string" && data.instructions) system.push(data.instructions);
 
   const input = data.input;
@@ -226,81 +242,119 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     for (const item of input) {
       if (!isObj(item)) continue;
       const type = (item.type as string) ?? ("role" in item ? "message" : "");
-      if (type === "additional_tools") {
+      if (type === "compaction_trigger") {
+        compactionRequest = true;
+      } else if (type === "additional_tools") {
         // Codex Desktop's Responses WebSocket-lite transport places the active
         // tool catalog in input instead of the top-level `tools` field. Losing
         // this item leaves external models with no exec/read tools, so they
         // answer with a preamble and finish without doing the requested work.
         if (Array.isArray(item.tools)) loadedToolSpecs.push(...item.tools);
+      } else if (type === "compaction" || type === "compaction_summary" || type === "context_compaction") {
+        const encrypted = typeof item.encrypted_content === "string" ? item.encrypted_content : undefined;
+        if (type === "context_compaction" && !encrypted) continue;
+        pendingReasoning.length = 0;
+        messages.push({ role: "user", content: [{ type: "text", text: compactionItemToText(encrypted) }] });
+      } else if (type === "agent_message") {
+        pendingReasoning.length = 0;
+        const content = inputContentParts(item.content as unknown[] | string | undefined);
+        messages.push({ role: "user", content: content.length ? content : [{ type: "text", text: "(sub-agent message received)" }] });
       } else if (type === "message") {
         const role = item.role as string;
         if (role === "system") {
+          pendingReasoning.length = 0;
           const flat = inputContentParts(item.content as unknown[] | string | undefined).map((p) => (p.type === "text" ? p.text : "")).join("");
           if (flat) system.push(flat);
         } else if (role === "user" || role === "developer") {
+          pendingReasoning.length = 0;
           messages.push({ role, content: inputContentParts(item.content as unknown[] | string | undefined) });
         } else if (role === "assistant") {
-          messages.push({ role: "assistant", content: outputTextOf(item.content as unknown[] | string | undefined) });
+          messages.push({ role: "assistant", content: [...pendingReasoning.splice(0), ...outputTextOf(item.content as unknown[] | string | undefined)] });
         }
       } else if (type === "reasoning") {
         const summary = Array.isArray(item.summary) ? (item.summary as Array<{ text?: string }>).map((c) => c.text ?? "").join("") : "";
         const content = Array.isArray(item.content) ? (item.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("") : "";
         const text = summary || content;
         const encrypted = typeof item.encrypted_content === "string" ? item.encrypted_content : undefined;
-        let envelope: { sig?: string; red?: string[]; txt?: string } | undefined;
-        if (encrypted?.startsWith("ocxr1:")) {
-          try {
-            const value = JSON.parse(Buffer.from(encrypted.slice(6), "base64").toString("utf8")) as Record<string, unknown>;
-            envelope = { ...(typeof value.sig === "string" ? { sig: value.sig } : {}), ...(typeof value.txt === "string" ? { txt: value.txt } : {}), ...(Array.isArray(value.red) ? { red: value.red.filter((entry): entry is string => typeof entry === "string") } : {}) };
-          } catch { /* opaque/native encrypted content */ }
-        }
+        const envelope = encrypted ? decodeReasoningEnvelope(encrypted) : null;
         const thinkingText = envelope?.txt || text;
-        if (thinkingText || envelope?.sig || envelope?.red?.length) ensureAssistant(messages).content.push({ type: "thinking", text: thinkingText, ...(envelope?.sig ? { signature: envelope.sig } : {}), ...(envelope?.red ? { redacted: envelope.red } : {}) });
+        if (thinkingText || envelope?.sig || envelope?.red?.length) {
+          const part: OcxThinkingContent = {
+            type: "thinking",
+            text: thinkingText,
+            ...(envelope?.sig ? { signature: envelope.sig } : thinkingText && encrypted ? { signature: JSON.stringify(item) } : {}),
+            ...(envelope?.red ? { redacted: envelope.red } : {}),
+            ...(typeof item.id === "string" ? { itemId: item.id } : {}),
+          };
+          const previous = pendingReasoning[pendingReasoning.length - 1];
+          if (!envelope?.sig && previous && !previous.signature) previous.text += `\n${part.text}`;
+          else pendingReasoning.push(part);
+        }
       } else if (type === "function_call") {
-        const args = typeof item.arguments === "string" ? item.arguments : "{}";
-        ensureAssistant(messages).content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: args, ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}) });
+        let args = "{}";
+        const rawArgs = typeof item.arguments === "string" ? item.arguments.trim() : "";
+        if (rawArgs) {
+          try {
+            const decoded = JSON.parse(rawArgs) as unknown;
+            if (isObj(decoded)) args = JSON.stringify(decoded);
+          } catch {
+            console.warn(`[parser] function_call ${String(item.call_id ?? item.id ?? "")} has non-JSON arguments; defaulting to {}`);
+          }
+        }
+        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: args, ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}), ...(typeof item.id === "string" ? { thoughtSignature: item.id } : {}) });
       } else if (type === "custom_tool_call") {
-        ensureAssistant(messages).content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: JSON.stringify({ input: item.input ?? "" }) });
+        assistantWithReasoning().content.push({ type: "toolCall", id: String(item.call_id ?? item.id ?? ""), name: String(item.name ?? ""), arguments: JSON.stringify({ input: item.input ?? "" }), ...(typeof item.namespace === "string" ? { namespace: item.namespace } : {}), ...(typeof item.id === "string" ? { thoughtSignature: item.id } : {}) });
+      } else if (type === "local_shell_call") {
+        const callId = String(item.call_id ?? item.id ?? "");
+        const action = isObj(item.action) ? item.action : undefined;
+        const command = Array.isArray(action?.command) ? action.command.filter((part): part is string => typeof part === "string") : [];
+        if (callId) assistantWithReasoning().content.push({
+          type: "toolCall",
+          id: callId,
+          name: "shell",
+          arguments: JSON.stringify(command.length ? { command } : {}),
+        });
       } else if (type === "tool_search_call") {
         const callId = String(item.call_id ?? item.id ?? "");
         const args = isObj(item.arguments) ? JSON.stringify(item.arguments) : "{}";
-        ensureAssistant(messages).content.push({ type: "toolCall", id: callId, name: "tool_search", arguments: args });
+        assistantWithReasoning().content.push({ type: "toolCall", id: callId, name: "tool_search", arguments: args });
       } else if (type === "tool_search_output") {
+        pendingReasoning.length = 0;
         const callId = String(item.call_id ?? "");
         const specs = Array.isArray(item.tools) ? (item.tools as unknown[]).filter(isObj) : [];
         loadedToolSpecs.push(...specs);
         const wireNames = toolSearchWireNames(specs);
+        const failed = typeof item.status === "string" && item.status !== "completed" && item.status !== "success";
         messages.push({
           role: "toolResult",
           toolCallId: callId,
           toolName: "tool_search",
           content: [{
             type: "text",
-            text: wireNames.length
+            text: failed && !wireNames.length
+              ? `Tool search failed (status: ${String(item.status)}).`
+              : wireNames.length
               ? `Tool search loaded these tools. They are now available. Call one by its exact name: ${wireNames.join(", ")}.`
               : "Tool search returned no tools.",
           }],
-          isError: false,
+          isError: failed && !wireNames.length,
         });
       } else if (type === "function_call_output" || type === "custom_tool_call_output") {
+        pendingReasoning.length = 0;
         const callId = String(item.call_id ?? "");
-        const output = item.output;
-        const content: OcxContentPart[] = typeof output === "string"
-          ? [{ type: "text", text: output }]
-          : Array.isArray(output)
-            ? (output as unknown[]).flatMap((o) => isObj(o) && typeof o.text === "string" ? [{ type: "text", text: o.text } as OcxContentPart] : [])
-            : [];
+        const content = outputToToolResultContent(item.output);
         const tool = findTool(messages, callId);
         messages.push({ role: "toolResult", toolCallId: callId, toolName: tool.name, toolNamespace: tool.namespace, content });
       } else if (type === "web_search_call") {
         const action = isObj(item.action) && typeof item.action.query === "string" ? ` (${item.action.query})` : "";
-        ensureAssistant(messages).content.push({ type: "text", text: `[web search completed${action}]` });
+        assistantWithReasoning().content.push({ type: "text", text: `[web search completed${action}]` });
       }
     }
   }
 
   const reasoning = isObj(data.reasoning) ? data.reasoning : undefined;
-  const effort = reasoning && typeof reasoning.effort === "string" && EFFORTS.has(reasoning.effort) ? reasoning.effort : "medium";
+  const requestedEffort = reasoning?.effort === "ultra" ? "max" : reasoning?.effort;
+  const effort = typeof requestedEffort === "string" && EFFORTS.has(requestedEffort) ? requestedEffort : "medium";
   const declaredTools = buildTools(data.tools as unknown[] | undefined);
   const loadedTools = buildTools(loadedToolSpecs, true);
   const webSearch = hostedWebSearch(data.tools as unknown[] | undefined);
@@ -321,21 +375,17 @@ export function parseRequest(body: unknown): OcxParsedRequest {
   else if (Array.isArray(data.stop)) options.stopSequences = data.stop.filter((s): s is string => typeof s === "string");
   const toolChoice = mapToolChoice(data.tool_choice);
   if (toolChoice !== undefined) options.toolChoice = toolChoice;
-  if (reasoning && typeof reasoning.effort === "string" && EFFORTS.has(reasoning.effort)) options.reasoning = reasoning.effort;
+  if (typeof requestedEffort === "string" && EFFORTS.has(requestedEffort)) options.reasoning = requestedEffort;
+  if (!reasoning?.summary || reasoning.summary === "none") options.hideThinkingSummary = true;
+  if (typeof data.parallel_tool_calls === "boolean") options.parallelToolCalls = data.parallel_tool_calls;
+  if (typeof data.prompt_cache_key === "string") options.promptCacheKey = data.prompt_cache_key;
   if (serviceTier) options.serviceTier = serviceTier;
-
-  const requestImages: OcxContentPart[] = [];
-  for (const message of messages) {
-    if (message.role === "assistant") continue;
-    requestImages.push(...message.content);
-  }
-  const imageParts = requestImages.filter((part): part is Extract<OcxContentPart, { type: "image" }> => part.type === "image");
-  if (imageParts.length > 20) throw imageSizeError("한 요청에 이미지는 최대 20개까지 사용할 수 있습니다.");
-  const requestImageBytes = imageParts.reduce((sum, part) => part.dataUrl.startsWith("data:") ? sum + Math.floor((part.dataUrl.length * 3) / 4) : sum, 0);
-  if (requestImageBytes > 40_000_000) throw imageSizeError("요청의 이미지 전체 크기가 너무 큽니다.");
 
   return {
     model: String(data.model ?? ""),
+    ...(typeof data.previous_response_id === "string" ? { previousResponseId: data.previous_response_id } : {}),
+    _rawBody: body,
+    ...(compactionRequest ? { _compactionRequest: true } : {}),
     context: { ...(system.length ? { instructions: system.join("\n\n") } : {}), messages },
     tools: mergeTools(declaredTools, loadedTools),
     ...(webSearch ? { hostedWebSearch: webSearch } : {}),

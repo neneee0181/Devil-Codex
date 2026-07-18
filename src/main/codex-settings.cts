@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { writeTextFileAtomic } from "./atomic-file.cjs";
 import type { CodexSettings, RemoteControlMode } from "./contracts.cjs";
 import { codexHome } from "./codex-home.cjs";
 import { preserveDesktopAppearanceTheme, recoverDesktopAppearanceTheme } from "./codex-desktop-theme.cjs";
@@ -102,10 +103,7 @@ function stripKeyLine(source: string, key: string): string {
 // read makes those apps re-serialize their broken parse and permanently drop
 // the user's model/theme/speed settings.
 export async function writeCodexConfigAtomic(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.devil-tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temp, content, { encoding: "utf8", mode: 0o600 });
-  await rename(temp, path);
+  await writeTextFileAtomic(path, content);
 }
 
 export class CodexSettingsStore {

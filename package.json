@@ -1,6 +1,6 @@
 {
   "name": "devil-codex",
-  "version": "0.3.22",
+  "version": "0.3.23",
   "private": true,
   "description": "High-fidelity multi-provider Codex desktop client",
   "main": "dist-electron/main.cjs",
@@ -12,7 +12,7 @@
     "build:renderer": "vite build",
     "build:mobile": "vite build -c vite.mobile.config.ts",
     "build:main": "tsc -p tsconfig.electron.json",
-    "test:main": "npm run build:main && node --test dist-electron/unreal-mcp-relay.test.cjs",
+    "test:main": "npm run build:main && node --test dist-electron/unreal-mcp-relay.test.cjs dist-electron/proxy/proxy-compat.test.cjs",
     "start": "electron .",
     "icons": "node scripts/build-icons.cjs",
     "prepackage": "npm run icons && npm run build",

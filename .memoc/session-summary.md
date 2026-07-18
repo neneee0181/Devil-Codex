@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-18.
 
 ## Status
-- v0.3.18 fixed stale Bridge model selection synchronization.
-- Stock session `019f733f-7b48-7982-a467-69e0f76bfb0d` exposed zstd parsing failure; proxy now bounds/decodes request bodies.
-- OpenCodex parity: compact/retry/reasoning/tools/WebSocket, provider wire rules, and compact tool-contract nudges for external Google/Anthropic/OpenAI-compatible adapters.
-- `npm run build`, `npm run test:main`, and `git diff --check` pass.
+- OpenCodex `2bdeee8f` proxy behavior is ported to internal external-model and stock Bridge paths.
+- Responses continuity/compaction, full tools, provider translation, strict streams, compression, and Antigravity replay share one path.
+- Stock `/stock/v1` exposes ordered selections only; account filtering, legacy-ID healing, Windows task, and macOS LaunchAgent are covered.
+- `npm run build`, 23 main tests, and `git diff --check` pass.
 
 ## Resume
-- Restart/install and verify external turns, compact, images, and WebSocket. Preserve `.DS_Store`.
+- No version/commit. Preserve `.DS_Store`; installed-provider smoke remains.

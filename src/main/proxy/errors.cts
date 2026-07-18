@@ -9,11 +9,25 @@ export function rawMessage(message: string): string {
   if (!text) return "";
   try {
     const parsed = JSON.parse(text) as unknown;
-    if (parsed && typeof parsed === "object") {
+    if (typeof parsed === "string") return parsed.trim();
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const root = parsed as Record<string, unknown>;
-      const error = root.error as Record<string, unknown> | undefined;
-      const nested = error?.message ?? root.message ?? error?.code ?? error?.type;
-      if (nested) return String(nested);
+      if (typeof root.error === "string" && root.error.trim()) return root.error.trim();
+      const error = root.error && typeof root.error === "object" && !Array.isArray(root.error)
+        ? root.error as Record<string, unknown>
+        : undefined;
+      if (typeof error?.message === "string" && error.message.trim()) return error.message.trim();
+      if (typeof root.detail === "string" && root.detail.trim()) return root.detail.trim();
+      if (Array.isArray(root.detail)) {
+        const details = root.detail.flatMap((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+          const detail = item as Record<string, unknown>;
+          return typeof detail.msg === "string" && detail.msg.trim() ? [detail.msg.trim()] : [];
+        });
+        if (details.length) return details.join("; ");
+      }
+      const nested = root.message ?? root.title ?? error?.code ?? error?.type;
+      if (nested) return String(nested).trim();
     }
   } catch {
     // Plain-text upstream error.
@@ -127,15 +141,33 @@ export function classifyError(status: number, type: string, message: string): Oc
   }
   if (
     text.includes("insufficient_quota") ||
-    text.includes("exceeded your current quota")
+    text.includes("exceeded your current quota") ||
+    text.includes("quota exhausted") ||
+    text.includes("account quota exceeded") ||
+    text.includes("monthly quota exceeded") ||
+    text.includes("daily quota exceeded")
   ) {
     return { message, type: "insufficient_quota", code: "insufficient_quota" };
   }
-  if (status === 429 || text.includes("rate limit") || text.includes("too many requests")) {
+  if (
+    status === 429 ||
+    text.includes("rate limit") ||
+    text.includes("rate limited") ||
+    text.includes("too many requests") ||
+    text.includes("resource_exhausted") ||
+    text.includes("resource exhausted") ||
+    text.includes("throttlingexception") ||
+    text.includes("throttling")
+  ) {
     return { message, type: "rate_limit_error", code: "rate_limit_exceeded" };
   }
-  if (status === 401 || status === 403 || type === "authentication_error") {
-    return { message, type: "authentication_error", code: status === 403 ? "permission_denied" : "invalid_api_key" };
+  if (
+    status === 401 || status === 403 || type === "authentication_error" ||
+    text.includes("authentication failed") || text.includes("access denied") ||
+    text.includes("unauthorizedexception") || text.includes("unrecognizedclient") ||
+    text.includes("expired token") || text.includes("expiredtoken")
+  ) {
+    return { message, type: "authentication_error", code: "invalid_api_key" };
   }
   if (status === 404 || text.includes("model_not_found") || text.includes("model not found")) {
     return { message, type: "invalid_request_error", code: "model_not_found" };
@@ -152,6 +184,13 @@ export function classifyError(status: number, type: string, message: string): Oc
   }
   if (status >= 500) {
     return { message, type: "server_error", code: "upstream_server_error" };
+  }
+  if (
+    text.includes("validationexception") || text.includes("invalid request") ||
+    text.includes("model unavailable") || text.includes("unsupported model") ||
+    text.includes("profile arn") || text.includes("wrong region") || text.includes("invalid region")
+  ) {
+    return { message, type: "invalid_request_error", code: "invalid_request_error" };
   }
   if (status === 400 || type === "invalid_request_error") {
     return { message, type: "invalid_request_error", code: "invalid_request_error" };

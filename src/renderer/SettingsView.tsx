@@ -158,9 +158,13 @@ function DevilMcpStatusCard({ status, loading, onRefresh }: { status: DevilMcpSt
 
 type StockBridgeModelChoice = { id: string; provider: string; account: string; label: string };
 
+function bridgeAccounts(provider: ProviderSettings["providers"][number]): Array<ProviderSettings["providers"][number]["accounts"][number] | undefined> {
+  if (provider.id === "opencode-free") return provider.accounts.length ? provider.accounts : [undefined];
+  return provider.accounts.filter((account) => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop");
+}
+
 function hasConnectedCredential(provider: ProviderSettings["providers"][number]): boolean {
-  if (provider.id === "opencode-free") return true;
-  return provider.accounts.some((account) => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop");
+  return bridgeAccounts(provider).length > 0;
 }
 
 function mergeBridgeModels(...groups: Array<ProviderSettings["providers"][number]["models"] | undefined>): ProviderSettings["providers"][number]["models"] {
@@ -181,7 +185,7 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   const externalProviders = useMemo(() => providers.filter((provider) => provider.id !== "codex" && hasConnectedCredential(provider)), [providers]);
   const choices = useMemo(() => externalProviders.flatMap((provider) => {
-    const accounts = provider.accounts.length ? provider.accounts : [undefined];
+    const accounts = bridgeAccounts(provider);
     return accounts.flatMap((account) => {
       const models = mergeBridgeModels(account?.models, provider.models);
       return models.map((model) => ({
@@ -225,7 +229,7 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
         const providerChoices = choices.filter((choice) => choice.provider === provider.label && matches(choice));
         if (normalizedQuery && !providerChoices.length) return null;
         const providerOpen = expandedProviders.has(provider.id) || Boolean(normalizedQuery);
-        const accounts = provider.accounts.length ? provider.accounts : [undefined];
+        const accounts = bridgeAccounts(provider);
         return <div className="bridge-model-provider" key={provider.id}>
           <button type="button" className="bridge-model-provider-head" onClick={() => toggleProvider(provider.id)}>{providerOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<span><strong>{provider.label}</strong><small>{providerChoices.length}개 모델</small></span></button>
           {providerOpen && accounts.map((account) => {

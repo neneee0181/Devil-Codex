@@ -162,7 +162,10 @@ export async function registerDevilStockBridge(port: number, secret: string, cat
   }
   const block = [
     STOCK_BEGIN,
-    `openai_base_url = ${toml(`http://127.0.0.1:${port}/${secret}/v1`)}`,
+    // Keep stock model discovery separate from the bundled app-server's
+    // provider endpoint: stock sees only Bridge-selected models, while Devil
+    // can still address every connected model internally.
+    `openai_base_url = ${toml(`http://127.0.0.1:${port}/${secret}/stock/v1`)}`,
     `model_catalog_json = ${toml(catalogPath)}`,
     STOCK_END,
     "",

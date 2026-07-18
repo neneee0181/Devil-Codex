@@ -2,7 +2,18 @@ import type { ProviderId, ProviderInfo, ProviderSettings } from "./contracts.cjs
 import { apiProviderConfig, apiProviderUrl, ProviderSettingsStore } from "./provider-settings.cjs";
 
 type ExternalProvider = Exclude<ProviderId, "codex">;
-type ModelRow = { id?: unknown; display_name?: unknown; name?: unknown; supportedGenerationMethods?: unknown; pricing?: unknown };
+type ModelRow = {
+  id?: unknown;
+  display_name?: unknown;
+  name?: unknown;
+  supportedGenerationMethods?: unknown;
+  pricing?: unknown;
+  context_length?: unknown;
+  context_window?: unknown;
+  inputTokenLimit?: unknown;
+  architecture?: unknown;
+  supported_parameters?: unknown;
+};
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const modelCache = new Map<string, { models: ProviderInfo["models"]; fetchedAt: number }>();
 
@@ -16,7 +27,28 @@ function normalizeModels(rows: ModelRow[]): ProviderInfo["models"] {
     const id = String(row.id ?? row.name ?? "").replace(/^models\//, "");
     if (!id || ids.has(id)) return [];
     ids.add(id);
-    return [{ id, label: String(row.display_name ?? humanLabel(id)) }];
+    const context = [row.context_length, row.context_window, row.inputTokenLimit]
+      .find((value) => typeof value === "number" && Number.isFinite(value) && value > 0) as number | undefined;
+    const architecture = row.architecture && typeof row.architecture === "object" && !Array.isArray(row.architecture)
+      ? row.architecture as Record<string, unknown>
+      : undefined;
+    const rawModalities = architecture?.input_modalities;
+    const inputModalities = Array.isArray(rawModalities)
+      ? rawModalities.filter((value): value is "text" | "image" => value === "text" || value === "image")
+      : undefined;
+    const parameters = Array.isArray(row.supported_parameters)
+      ? row.supported_parameters.filter((value): value is string => typeof value === "string")
+      : undefined;
+    return [{
+      id,
+      label: String(row.display_name ?? humanLabel(id)),
+      ...(context ? { contextWindow: context } : {}),
+      ...(inputModalities?.length ? { inputModalities: [...new Set(inputModalities)] } : {}),
+      ...(parameters?.includes("reasoning") || parameters?.includes("reasoning_effort")
+        ? { reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] }
+        : {}),
+      ...(parameters?.includes("tools") ? { parallelToolCalls: true } : {}),
+    }];
   }).sort((left, right) => left.label.localeCompare(right.label));
 }
 

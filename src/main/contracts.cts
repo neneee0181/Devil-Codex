@@ -187,7 +187,15 @@ export interface ProviderModelCapability {
   diagnostics: "good" | "limited" | "experimental" | "unknown";
   notes?: string[];
 }
-export interface ProviderModel { id: string; label: string; capability?: ProviderModelCapability; }
+export interface ProviderModel {
+  id: string;
+  label: string;
+  capability?: ProviderModelCapability;
+  contextWindow?: number;
+  inputModalities?: Array<"text" | "image">;
+  reasoningEfforts?: string[];
+  parallelToolCalls?: boolean;
+}
 export type ProviderCredentialSource = "desktop" | "environment" | "keychain" | "none";
 export type ProviderCredentialKind = "desktop" | "environment" | "credential" | "oauth" | "local";
 export interface ProviderAccount {

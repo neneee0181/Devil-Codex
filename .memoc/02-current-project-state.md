@@ -3,13 +3,17 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-04T16:40:13+09:00
+updated: 2026-07-18T15:10:00+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- OpenCodex proxy parity completion (2026-07-18, uncommitted): both Devil-internal external-model turns and stock Bridge turns now share the same Responses state/compaction, complete tool catalogs, provider-specific schema/reasoning/image translation, strict stream lifecycle, compressed request handling, retry/error diagnostics, and Antigravity/Anthropic/OpenAI-compatible continuation behavior. Stock discovery is isolated at `/stock/v1`, exposes only the ordered Bridge selection, accepts unambiguous pre-account model IDs, and the settings picker excludes disconnected accounts. Packaged Windows uses its quoted ONLOGON task; packaged macOS uses an escaped LaunchAgent plus normal shutdown handoff. OpenCodex reference commit `2bdeee8f2252eecdc52a681358f7f98a1aad1f31`; `npm run build`, 23 main tests, and `git diff --check` pass.
+
+- OpenCodex response-chain parity (2026-07-18, uncommitted): external Bridge Responses requests now persist completed response `output` plus request `input`, expand `previous_response_id` on the next external request, and reload the state from a bounded 1-hour disk snapshot. Failed/incomplete responses are not stored; shutdown flushes pending state. Build, main test, and in-process/disk-reload smokes pass.
 
 - External tool-catalog nudge parity (2026-07-18, uncommitted): OpenCodex-style compact tool-contract guidance now accompanies the actual wire tool names for Google/Antigravity, Anthropic, and non-OpenAI OpenAI-compatible providers; official OpenAI is excluded and `tool_choice: none` suppresses it. Main build/test and provider-body smoke pass.
 

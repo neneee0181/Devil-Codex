@@ -4,13 +4,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
+import { gunzipSync, inflateRawSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { app } from "electron";
-import { bridgeToResponsesSSE } from "./bridge.cjs";
+import { bridgeToResponsesSSE, type ResponsesTerminalStatus } from "./bridge.cjs";
 import { parseRequest } from "./parser.cjs";
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
 import { buildCopilotRequest, streamCopilot } from "./copilot.cjs";
@@ -18,14 +18,28 @@ import { buildApiKeyRequest, streamGoogle, streamOpenAiCompatible } from "./api-
 import { buildAntigravityRequest, streamAntigravity } from "./antigravity.cjs";
 import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxUsage } from "./types.cjs";
 import { sanitizeName } from "./tool-sanitize.cjs";
-import { buildWebSearchTool, replayEvents, runWithWebSearchLoop, shouldExposeWebSearchTool, type SidecarStats } from "./web-search-sidecar.cjs";
+import { buildWebSearchTool, runWithWebSearchLoop, shouldExposeWebSearchTool, type SidecarStats } from "./web-search-sidecar.cjs";
 import { applyVisionSidecar } from "./vision-sidecar.cjs";
+import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./response-state.cjs";
+import { buildCompactV1Output, COMPACT_PROMPT, extractCompactUserMessages } from "./compaction.cjs";
+import { sanitizeEncryptedContentInPlace } from "./encrypted-content.cjs";
+import { providerNativeImageInput } from "./provider-policy.cjs";
+import {
+  buildOpenAiResponsesApiKeyRequest,
+  FORWARDED_OPENAI_HEADERS,
+  inspectResponsesPayload,
+  nextSseBlock,
+  prepareOpenAiResponsesBody,
+  sanitizePassthroughHeaders,
+  sseDataPayload,
+} from "./openai-responses.cjs";
 import { claudeAuth, copilotAuth, oauthModels } from "../provider-oauth.cjs";
 import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
-import { apiProviderConfig, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
+import { apiProviderConfig, apiProviderUrl, capabilityFor, ProviderSettingsStore } from "../provider-settings.cjs";
 import { CodexSettingsStore } from "../codex-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
 import { getStoredAccount } from "../provider-accounts.cjs";
+import { selectConfiguredModelRows } from "../codex-stock-catalog.cjs";
 
 const CHATGPT_CODEX_RESPONSES = "https://chatgpt.com/backend-api/codex/responses";
 export const DEVIL_PROXY_PORT = 49873;
@@ -53,9 +67,6 @@ let reportProxyError: ((message: string) => void) | undefined;
 let reportRequestLogChanged: ((event: { provider: ProviderRequestLogEntry["provider"]; completed: boolean }) => void) | undefined;
 const sidecarSettingsByThread = new Map<string, SidecarSettings>();
 const sidecarStatsByThread = new Map<string, SidecarStats>();
-const antigravityToolSignaturesByThread = new Map<string, Map<string, string>>();
-let antigravityToolSignaturesLoaded = false;
-let antigravityToolSignaturesWrite = Promise.resolve();
 const requestLog: ProviderRequestLogEntry[] = [];
 let requestLogLoaded = false;
 let requestLogWrite = Promise.resolve();
@@ -89,25 +100,68 @@ function ssePayloads(buffer: string): { payloads: string[]; rest: string } {
   }
   return { payloads, rest };
 }
-const FORWARDED_OPENAI_HEADERS = [
-  "authorization",
-  "chatgpt-account-id",
-  "openai-beta",
-  "originator",
-  "session_id",
-  "session-id",
-  "thread-id",
-  "x-client-request-id",
-  "x-codex-beta-features",
-  "x-codex-installation-id",
-  "x-codex-parent-thread-id",
-  "x-codex-turn-metadata",
-  "x-codex-turn-state",
-  "x-codex-window-id",
-  "x-oai-attestation",
-  "x-responsesapi-include-timing-metrics",
-];
 
+function terminalResponseType(payload: string): "completed" | "failed" | "incomplete" | undefined {
+  try {
+    const type = (JSON.parse(payload) as { type?: unknown }).type;
+    if (type === "response.completed") return "completed";
+    if (type === "response.failed") return "failed";
+    if (type === "response.incomplete") return "incomplete";
+  } catch { /* caller reports malformed frames */ }
+  return undefined;
+}
+
+function sendWsProtocolError(ws: WebSocket, message: string): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "error", status: 502, error: { type: "protocol_error", code: "websocket_protocol_error", message } }));
+}
+
+async function pumpResponsesSseToWebSocket(
+  ws: WebSocket,
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminalSeen = false;
+  try {
+    while (!signal.aborted && isCurrent() && !terminalSeen) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = ssePayloads(buffer);
+      buffer = parsed.rest;
+      for (const payload of parsed.payloads) {
+        if (signal.aborted || !isCurrent()) break;
+        let valid = true;
+        try { JSON.parse(payload); } catch { valid = false; }
+        if (!valid) {
+          sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame");
+          terminalSeen = true;
+          break;
+        }
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(payload);
+        if (terminalResponseType(payload)) { terminalSeen = true; break; }
+      }
+    }
+    buffer += decoder.decode();
+    if (!terminalSeen && buffer.trim() && !signal.aborted && isCurrent()) {
+      const parsed = ssePayloads(`${buffer}\n\n`);
+      for (const payload of parsed.payloads) {
+        try { JSON.parse(payload); } catch { sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame"); terminalSeen = true; break; }
+        if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+        if (terminalResponseType(payload)) { terminalSeen = true; break; }
+      }
+    }
+    if (!terminalSeen && !signal.aborted && isCurrent()) sendWsProtocolError(ws, "Upstream stream ended before response terminal event");
+  } finally {
+    if (terminalSeen || signal.aborted || !isCurrent()) await reader.cancel().catch(() => undefined);
+    else reader.releaseLock();
+  }
+}
 type ProxyProvider = Exclude<ProviderId, "codex">;
 
 function providerLabel(provider: ProxyProvider): string {
@@ -152,15 +206,27 @@ function splitModel(id: string): { provider: ProxyProvider; accountId?: string; 
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
 }
 
-const MAX_COMPRESSED_BODY_BYTES = 96 * 1024 * 1024;
-const MAX_DECOMPRESSED_BODY_BYTES = 128 * 1024 * 1024;
-const UPSTREAM_TIMEOUT_MS = 120_000;
+const MAX_COMPRESSED_BODY_BYTES = 256 * 1024 * 1024;
+const MAX_DECOMPRESSED_BODY_BYTES = 256 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 200_000;
 
 class ProxyRequestError extends Error {
   constructor(public readonly status: number, message: string) { super(message); this.name = "ProxyRequestError"; }
 }
 
-function decodeRequestBody(raw: Buffer, encoding: string | string[] | undefined): Buffer {
+function inflateDeflateBody(raw: Buffer): Buffer {
+  const options = { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES };
+  try {
+    return inflateSync(raw, options);
+  } catch (error) {
+    // HTTP `deflate` is used for both zlib-wrapped and raw streams. Preserve
+    // the size guard, but retry format errors with the raw decoder.
+    if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") throw error;
+    return inflateRawSync(raw, options);
+  }
+}
+
+export function decodeRequestBody(raw: Buffer, encoding: string | string[] | undefined): Buffer {
   const value = Array.isArray(encoding) ? encoding.join(",") : encoding ?? "";
   const encodings = value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
   if (encodings.length > 1) throw new ProxyRequestError(415, "다중 Content-Encoding 요청은 지원하지 않습니다.");
@@ -170,10 +236,13 @@ function decodeRequestBody(raw: Buffer, encoding: string | string[] | undefined)
     try {
       if (item === "zstd") decoded = zstdDecompressSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
       else if (item === "gzip" || item === "x-gzip") decoded = gunzipSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
-      else if (item === "deflate") decoded = inflateSync(decoded, { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES });
+      else if (item === "deflate") decoded = inflateDeflateBody(decoded);
       else throw new ProxyRequestError(415, `지원하지 않는 요청 Content-Encoding입니다: ${item}`);
     } catch (error) {
       if (error instanceof ProxyRequestError) throw error;
+      if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") {
+        throw new ProxyRequestError(413, "요청 본문이 너무 큽니다.");
+      }
       throw new ProxyRequestError(400, "요청 본문의 압축을 해제할 수 없습니다.");
     }
   }
@@ -299,9 +368,8 @@ function requestPartStats(parsed: OcxParsedRequest): { tools: number; images: nu
   return { tools: parsed.tools.length, images, files };
 }
 
-function usesNativeImages(provider: ProxyProvider): boolean {
-  if (provider === "openai" || provider === "anthropic" || provider === "google" || provider === "antigravity") return true;
-  return Boolean(apiProviderConfig(provider)?.allowImages);
+function usesNativeImages(provider: ProxyProvider, model: string): boolean {
+  return providerNativeImageInput(provider, model) ?? Boolean(apiProviderConfig(provider)?.allowImages);
 }
 export async function readDevilProxySecret(): Promise<string> { return loadProxySecret(); }
 
@@ -328,69 +396,6 @@ async function waitForNvidiaRateLimit(rpm: number | undefined, signal?: AbortSig
   });
   nvidiaRateLimitQueue = task.catch(() => undefined);
   await task;
-}
-
-function antigravityToolSignaturesPath(): string {
-  return join(app.getPath("userData"), "providers", "antigravity-tool-signatures.json");
-}
-
-async function loadAntigravityToolSignatures(): Promise<void> {
-  if (antigravityToolSignaturesLoaded) return;
-  antigravityToolSignaturesLoaded = true;
-  try {
-    const parsed = JSON.parse(await readFile(antigravityToolSignaturesPath(), "utf8")) as Record<string, Record<string, string>>;
-    for (const [threadId, signatures] of Object.entries(parsed)) {
-      const entries = Object.entries(signatures).filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      if (entries.length) antigravityToolSignaturesByThread.set(threadId, new Map(entries.slice(-200)));
-    }
-  } catch {
-    // Missing cache is normal; signatures are relearned from future Antigravity streams.
-  }
-}
-
-function persistAntigravityToolSignatures(): void {
-  if (!antigravityToolSignaturesLoaded) return;
-  antigravityToolSignaturesWrite = antigravityToolSignaturesWrite.then(async () => {
-    const threads = Array.from(antigravityToolSignaturesByThread.entries()).slice(-100);
-    const out: Record<string, Record<string, string>> = {};
-    for (const [threadId, signatures] of threads) {
-      out[threadId] = Object.fromEntries(Array.from(signatures.entries()).slice(-200));
-    }
-    const path = antigravityToolSignaturesPath();
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify(out, null, 2), { mode: 0o600 });
-  }).catch(() => undefined);
-}
-
-function applyAntigravityToolSignatures(threadId: string, parsed: OcxParsedRequest): void {
-  if (!threadId) return;
-  const signatures = antigravityToolSignaturesByThread.get(threadId);
-  if (!signatures?.size) return;
-  for (const message of parsed.context.messages) {
-    if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "toolCall" && !part.thoughtSignature) {
-        const signature = signatures.get(part.id);
-        if (signature) part.thoughtSignature = signature;
-      }
-    }
-  }
-}
-
-async function* rememberAntigravityToolSignatures(threadId: string, stream: AsyncGenerator<AdapterEvent>): AsyncGenerator<AdapterEvent> {
-  for await (const event of stream) {
-    if (threadId && event.type === "tool_call_start" && event.thoughtSignature) {
-      let signatures = antigravityToolSignaturesByThread.get(threadId);
-      if (!signatures) {
-        signatures = new Map<string, string>();
-        antigravityToolSignaturesByThread.set(threadId, signatures);
-      }
-      signatures.set(event.id, event.thoughtSignature);
-      if (signatures.size > 200) signatures.delete(signatures.keys().next().value as string);
-      persistAntigravityToolSignatures();
-    }
-    yield event;
-  }
 }
 
 function startRequestLog(entry: ProviderRequestLogEntry): void {
@@ -454,30 +459,225 @@ function forwardedHeaders(req: IncomingMessage): Record<string, string> {
   return headers;
 }
 
-async function handleNativeResponses(req: IncomingMessage, raw: string, res: ServerResponse): Promise<void> {
-  const controller = new AbortController();
-  res.on("close", () => controller.abort());
-  const upstream = await fetchUpstream(CHATGPT_CODEX_RESPONSES, {
-    method: "POST",
-    headers: forwardedHeaders(req),
-    body: raw,
-  }, controller.signal);
-  res.writeHead(upstream.status, {
-    "Content-Type": upstream.headers.get("content-type") ?? "application/json",
-    "Cache-Control": upstream.headers.get("cache-control") ?? "no-cache",
-    Connection: "keep-alive",
-  });
-  if (!upstream.body) { res.end(); return; }
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function finiteToken(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function responsesUsage(response: Record<string, unknown>): ProviderRequestLogEntry["usage"] | undefined {
+  if (!isPlainObject(response.usage)) return undefined;
+  const inputTokens = finiteToken(response.usage.input_tokens);
+  const outputTokens = finiteToken(response.usage.output_tokens);
+  if (inputTokens === undefined && outputTokens === undefined) return undefined;
+  const inputDetails = isPlainObject(response.usage.input_tokens_details) ? response.usage.input_tokens_details : undefined;
+  const outputDetails = isPlainObject(response.usage.output_tokens_details) ? response.usage.output_tokens_details : undefined;
+  const cachedInputTokens = finiteToken(inputDetails?.cached_tokens);
+  const reasoningOutputTokens = finiteToken(outputDetails?.reasoning_tokens);
+  return {
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+  };
+}
+
+function responsesError(value: unknown): { message?: string; type?: string } {
+  if (!isPlainObject(value)) return {};
+  const error = isPlainObject(value.error) ? value.error : isPlainObject(value.last_error) ? value.last_error : undefined;
+  const message = typeof error?.message === "string" ? error.message
+    : typeof value.message === "string" ? value.message
+    : undefined;
+  const type = typeof error?.type === "string" ? error.type
+    : typeof error?.code === "string" ? error.code
+    : typeof value.type === "string" ? value.type
+    : undefined;
+  return {
+    ...(message ? { message: redactSensitiveText(message) } : {}),
+    ...(type ? { type } : {}),
+  };
+}
+
+interface PassthroughRelayResult {
+  terminal: ResponsesTerminalStatus;
+  upstreamStatus: number;
+  response?: Record<string, unknown>;
+  usage?: ProviderRequestLogEntry["usage"];
+  error?: string;
+  errorType?: string;
+}
+
+async function relayResponsesPassthrough(
+  upstream: Response,
+  res: ServerResponse,
+  controller: AbortController,
+  options: { expectStream: boolean; onCompletedResponse?: (response: Record<string, unknown>) => void },
+): Promise<PassthroughRelayResult> {
+  const headers = sanitizePassthroughHeaders(upstream.headers);
+  const contentTypeKey = Object.keys(headers).find((key) => key.toLowerCase() === "content-type");
+  const contentType = contentTypeKey ? headers[contentTypeKey]!.toLowerCase() : "";
+  const isEventStream = contentType.includes("text/event-stream")
+    || (upstream.ok && Boolean(upstream.body) && !contentType && options.expectStream);
+  if (isEventStream && !contentTypeKey) headers["content-type"] = "text/event-stream";
+  if (isEventStream && !Object.keys(headers).some((key) => key.toLowerCase() === "cache-control")) headers["cache-control"] = "no-cache";
+  res.writeHead(upstream.status, headers);
+
+  if (!upstream.body) {
+    res.end();
+    return {
+      terminal: upstream.ok ? "incomplete" : "failed",
+      upstreamStatus: upstream.status,
+      ...(!upstream.ok ? { error: `OpenAI upstream returned HTTP ${upstream.status}`, errorType: "upstream_http_error" } : {}),
+    };
+  }
+
+  if (!isEventStream) {
+    let text: string;
+    try {
+      text = await upstream.text();
+    } catch (caught) {
+      if (!res.writableEnded) res.end();
+      return {
+        terminal: "failed",
+        upstreamStatus: upstream.status,
+        errorType: "upstream_reset",
+        error: `Upstream response terminated unexpectedly: ${redactSensitiveText(caught instanceof Error ? caught.message : String(caught))}`,
+      };
+    }
+    res.end(text);
+    let response: Record<string, unknown> | undefined;
+    let terminal: ResponsesTerminalStatus = upstream.ok ? "incomplete" : "failed";
+    let error: string | undefined;
+    let errorType: string | undefined;
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (isPlainObject(parsed)) {
+        response = parsed;
+        if (parsed.status === "completed") terminal = "completed";
+        else if (parsed.status === "failed") terminal = "failed";
+        else if (parsed.status === "incomplete") terminal = "incomplete";
+        const detail = responsesError(parsed);
+        error = detail.message;
+        errorType = detail.type;
+      }
+    } catch {
+      if (!upstream.ok) error = redactSensitiveText(text.slice(0, 4_096));
+    }
+    if (terminal === "completed" && response) {
+      try { options.onCompletedResponse?.(response); } catch { /* continuation storage is best effort */ }
+    }
+    const usage = response ? responsesUsage(response) : undefined;
+    return {
+      terminal,
+      upstreamStatus: upstream.status,
+      ...(response ? { response } : {}),
+      ...(usage ? { usage } : {}),
+      ...(error ? { error } : {}),
+      ...(errorType ? { errorType } : {}),
+    };
+  }
+
   const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminal: ResponsesTerminalStatus | undefined;
+  let completedResponse: Record<string, unknown> | undefined;
+  let error: string | undefined;
+  let errorType: string | undefined;
+  let remembered = false;
+  const inspect = (payload: string | null) => {
+    if (!payload) return;
+    const result = inspectResponsesPayload(payload);
+    if (result.terminal) terminal = result.terminal;
+    if (result.response) {
+      completedResponse = result.response;
+      if (!remembered) {
+        remembered = true;
+        try { options.onCompletedResponse?.(result.response); } catch { /* continuation storage is best effort */ }
+      }
+    }
+    if (payload === "[DONE]") return;
+    try {
+      const event = JSON.parse(payload) as unknown;
+      if (!isPlainObject(event)) return;
+      const detail = responsesError(isPlainObject(event.response) ? event.response : event);
+      if (detail.message) error = detail.message;
+      if (detail.type) errorType = detail.type;
+    } catch { /* malformed inspection data must not alter the relayed stream */ }
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       res.write(Buffer.from(value));
+      buffer += decoder.decode(value, { stream: true });
+      let next: { block: string; rest: string } | null;
+      while ((next = nextSseBlock(buffer))) {
+        buffer = next.rest;
+        inspect(sseDataPayload(next.block));
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) inspect(sseDataPayload(buffer));
+    terminal ??= upstream.ok ? "incomplete" : "failed";
+  } catch (caught) {
+    terminal = "failed";
+    errorType = "upstream_reset";
+    error = `Upstream stream terminated unexpectedly: ${redactSensitiveText(caught instanceof Error ? caught.message : String(caught))}`;
+    if (!controller.signal.aborted && !res.destroyed && !res.writableEnded) {
+      const failure = { type: "upstream_error", code: "upstream_reset", message: error };
+      const payload = JSON.stringify({ type: "response.failed", response: { status: "failed", error: failure, last_error: failure } });
+      res.write(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`);
     }
   } finally {
-    res.end();
+    reader.releaseLock();
+    if (!res.writableEnded) res.end();
   }
+  const usage = completedResponse ? responsesUsage(completedResponse) : undefined;
+  return {
+    terminal: terminal ?? "incomplete",
+    upstreamStatus: upstream.status,
+    ...(completedResponse ? { response: completedResponse } : {}),
+    ...(usage ? { usage } : {}),
+    ...(error ? { error } : {}),
+    ...(errorType ? { errorType } : {}),
+  };
+}
+
+function sendResponsesFailure(res: ServerResponse, stream: boolean, status: number, message: string): void {
+  const safe = redactSensitiveText(message);
+  if (stream) {
+    const failure = { type: "upstream_error", code: "upstream_error", message: safe };
+    const payload = JSON.stringify({ type: "response.failed", response: { status: "failed", error: failure, last_error: failure } });
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    res.end(`event: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`);
+    return;
+  }
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: { type: "upstream_error", message: safe } }));
+}
+
+async function handleNativeResponses(req: IncomingMessage, body: unknown, res: ServerResponse, previousResponseInputExpanded: boolean): Promise<void> {
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  const previousId = isPlainObject(body) && typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
+  const responseStateEligible = !previousId || previousResponseInputExpanded;
+  if (previousId && !previousResponseInputExpanded) {
+    console.warn(`[devil-proxy] previous_response_id ${previousId} was not found; forwarding native GPT turn without earlier replay state`);
+  }
+  const requestBody = prepareOpenAiResponsesBody(body, { forward: true, previousResponseInputExpanded });
+  const upstream = await fetchUpstream(CHATGPT_CODEX_RESPONSES, {
+    method: "POST",
+    headers: forwardedHeaders(req),
+    body: JSON.stringify(requestBody),
+  }, controller.signal);
+  await relayResponsesPassthrough(upstream, res, controller, {
+    expectStream: isPlainObject(body) && body.stream === true,
+    ...(responseStateEligible ? { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(body, response) } : {}),
+  });
 }
 
 async function handleNativeCompact(req: IncomingMessage, raw: string, res: ServerResponse): Promise<void> {
@@ -492,20 +692,6 @@ async function handleNativeCompact(req: IncomingMessage, raw: string, res: Serve
   res.end();
 }
 
-const COMPACT_PROMPT = "대화 컨텍스트를 압축하십시오. 다음 작업자가 즉시 이어서 작업할 수 있도록 목표, 완료된 작업, 변경 파일, 중요한 결정, 오류와 남은 작업을 간결하고 구체적으로 정리하십시오.";
-
-function compactUserMessages(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  return input.flatMap((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-    const value = item as Record<string, unknown>;
-    if (value.type !== "message" || value.role !== "user") return [];
-    const content = Array.isArray(value.content) ? value.content : [];
-    const text = content.flatMap((part) => part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? [(part as Record<string, unknown>).text as string] : []).join("");
-    return text ? [text] : [];
-  });
-}
-
 async function handleCompactResponses(req: IncomingMessage, body: unknown, res: ServerResponse): Promise<void> {
   if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as Record<string, unknown>).model !== "string") {
     throw new ProxyRequestError(400, "compact 요청에는 model이 필요합니다.");
@@ -513,13 +699,23 @@ async function handleCompactResponses(req: IncomingMessage, body: unknown, res: 
   const parsed = parseRequest(body);
   const { provider, accountId, model } = splitModel(parsed.model);
   parsed.model = model;
+  const controller = new AbortController();
+  res.on("close", () => controller.abort());
+  if (provider === "openai") {
+    const key = await providerSettings.readApiKey(provider, accountId);
+    const upstream = await fetchUpstream(apiProviderUrl(provider, "/responses/compact"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ...(body as Record<string, unknown>), model }),
+    }, controller.signal);
+    await relayResponsesPassthrough(upstream, res, controller, { expectStream: false });
+    return;
+  }
   parsed.tools = [];
   // Adapters are streaming transports; compact consumes the stream internally and
   // returns a unary Responses replacement to Codex.
   parsed.stream = true;
   parsed.context.messages.push({ role: "user", content: [{ type: "text", text: COMPACT_PROMPT }] });
-  const controller = new AbortController();
-  res.on("close", () => controller.abort());
   let summary = "";
   let failure = "";
   try {
@@ -530,9 +726,8 @@ async function handleCompactResponses(req: IncomingMessage, body: unknown, res: 
     }
   } catch (error) { failure = error instanceof Error ? error.message : String(error); }
   if (failure) throw new ProxyRequestError(502, redactSensitiveText(failure));
-  const messages = compactUserMessages((body as Record<string, unknown>).input);
-  const retained = messages.slice(-12);
-  const output = [...retained.map((text) => ({ type: "message", role: "user", content: [{ type: "input_text", text }] })), { type: "message", role: "user", content: [{ type: "input_text", text: `작업 재개 요약:\n${summary.trim() || "요약을 생성하지 못했습니다."}` }] }];
+  const messages = extractCompactUserMessages((body as Record<string, unknown>).input);
+  const output = buildCompactV1Output(messages, summary.trim());
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ output }));
 }
@@ -545,11 +740,12 @@ async function providerEventStream(
   nvidiaRateLimitRpm?: number,
 ): Promise<AsyncGenerator<AdapterEvent>> {
   let upstream: Response;
+  if (provider === "openai") throw new Error("OpenAI 모델은 Responses passthrough 경로로 요청해야 합니다.");
   if (provider === "nvidia") await waitForNvidiaRateLimit(nvidiaRateLimitRpm, signal);
   if (provider === "claude-code") {
     const auth = await claudeAuth(accountId);
     if (!auth) throw new Error("Claude Code 로그인이 필요합니다.");
-    const reqInit = buildAnthropicRequest(parsed, auth);
+    const reqInit = await buildAnthropicRequest(parsed, auth);
     upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
     return streamAnthropic(upstream);
   }
@@ -565,10 +761,10 @@ async function providerEventStream(
     if (!auth) throw new Error("Antigravity 로그인이 필요합니다.");
     const reqInit = buildAntigravityRequest(parsed, auth);
     upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
-    return streamAntigravity(upstream);
+    return streamAntigravity(upstream, parsed);
   }
   const key = await providerSettings.readApiKey(provider, accountId);
-  const reqInit = provider === "anthropic" ? buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
+  const reqInit = provider === "anthropic" ? await buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
   upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
   return provider === "google" ? streamGoogle(upstream) : provider === "anthropic" ? streamAnthropic(upstream) : streamOpenAiCompatible(providerLabel(provider), upstream);
 }
@@ -583,31 +779,37 @@ async function streamForProvider(input: {
 }): Promise<AsyncGenerator<AdapterEvent>> {
   const { provider, accountId, parsed, req, sidecars, signal } = input;
   const invoke = (next: OcxParsedRequest) => providerEventStream(provider, accountId, next, signal, sidecars.settings?.nvidiaRateLimitRpm);
-  if (sidecars.settings?.vision && (sidecars.settings.visionLimit || 0) > 0 && !usesNativeImages(provider)) {
+  if (sidecars.settings?.vision && (sidecars.settings.visionLimit || 0) > 0 && !usesNativeImages(provider, parsed.model)) {
     await applyVisionSidecar({ parsed, req, sidecars: sidecars.settings, stats: sidecars.stats, signal });
   }
   if (sidecars.settings?.webSearch && (sidecars.settings.webSearchLimit || 0) > 0 && shouldExposeWebSearchTool(parsed)) {
     if (!parsed.tools.some((tool) => tool.webSearch || tool.name === "web_search")) {
       parsed.tools = [...parsed.tools, buildWebSearchTool()];
     }
-    const events = await runWithWebSearchLoop({ parsed, req, sidecars: sidecars.settings, stats: sidecars.stats, signal, invoke });
-    return replayEvents(events);
+    return runWithWebSearchLoop({ parsed, req, sidecars: sidecars.settings, stats: sidecars.stats, signal, invoke });
   }
   return invoke(parsed);
 }
 
-async function handleExternalResponses(req: IncomingMessage, body: unknown, res: ServerResponse): Promise<void> {
+async function handleExternalResponses(req: IncomingMessage, body: unknown, res: ServerResponse, previousResponseInputExpanded = false): Promise<void> {
   const parsed = parseRequest(body);
+  parsed._previousResponseInputExpanded = previousResponseInputExpanded;
   const { provider, accountId, model } = splitModel(parsed.model);
   parsed.model = model;
+  const routedCompaction = parsed._compactionRequest === true && provider !== "openai";
+  if (routedCompaction) {
+    parsed.tools = [];
+    delete parsed.hostedWebSearch;
+    delete parsed.options.toolChoice;
+    delete parsed.options.parallelToolCalls;
+    parsed.context.messages.push({ role: "user", content: [{ type: "text", text: COMPACT_PROMPT }] });
+  }
   const controller = new AbortController();
   res.on("close", () => controller.abort());
   const threadId = threadIdFromRequest(req, body);
-  if (provider === "antigravity") {
-    await loadAntigravityToolSignatures();
-    applyAntigravityToolSignatures(threadId, parsed);
-  }
-  const sidecars = await sidecarState(threadId);
+  const sidecars = routedCompaction || provider === "openai"
+    ? { stats: { webSearchRequests: 0, webSearchEvents: [], visionRequests: 0, failures: [] } as SidecarStats }
+    : await sidecarState(threadId);
   const stats = requestPartStats(parsed);
   const startedAt = Date.now();
   const requestId = crypto.randomUUID();
@@ -629,13 +831,52 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     sidecar: sidecarSnapshot(sidecars.stats),
   });
 
+  if (provider === "openai") {
+    const responseStateEligible = parsed._compactionRequest !== true && (!parsed.previousResponseId || previousResponseInputExpanded);
+    if (parsed.previousResponseId && !previousResponseInputExpanded) {
+      console.warn(`[devil-proxy] previous_response_id ${parsed.previousResponseId} was not found; forwarding OpenAI API turn without earlier replay state`);
+    }
+    let result: PassthroughRelayResult | undefined;
+    let failureMessage = "";
+    let failureType = "";
+    try {
+      const key = await providerSettings.readApiKey(provider, accountId);
+      const request = buildOpenAiResponsesApiKeyRequest(parsed, key);
+      const upstream = await fetchUpstream(request.url, { method: "POST", headers: request.headers, body: request.body }, controller.signal);
+      result = await relayResponsesPassthrough(upstream, res, controller, {
+        expectStream: parsed.stream,
+        ...(responseStateEligible ? { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response) } : {}),
+      });
+      failureMessage = result.error ?? (result.terminal === "incomplete" ? "OpenAI Responses 응답이 완료 전에 종료되었습니다." : "");
+      failureType = result.errorType ?? (result.terminal === "incomplete" ? "upstream_incomplete" : "");
+    } catch (error) {
+      failureMessage = redactSensitiveText(error instanceof Error ? error.message : String(error));
+      failureType = controller.signal.aborted ? "request_aborted" : "upstream_connect_error";
+      if (!res.headersSent) sendResponsesFailure(res, parsed.stream, 502, failureMessage);
+      else if (!res.writableEnded) res.end();
+    }
+    if (failureMessage) reportProxyError?.(failureMessage);
+    const completedAt = Date.now();
+    const failed = !result || result.terminal !== "completed" || result.upstreamStatus < 200 || result.upstreamStatus >= 300;
+    finishRequestLog(requestId, {
+      status: failed ? "failed" : "completed",
+      completedAt,
+      durationMs: completedAt - startedAt,
+      ...(failureMessage ? { error: failureMessage } : {}),
+      ...(failureType ? { errorType: failureType } : {}),
+      ...(result?.usage ? { usage: result.usage } : {}),
+      sidecar: sidecarSnapshot(sidecars.stats),
+    });
+    return;
+  }
+
   let stream: AsyncGenerator<AdapterEvent>;
   let failureMessage = "";
   let failureType = "";
+  let terminalStatus: ResponsesTerminalStatus | undefined;
   let usage: ProviderRequestLogEntry["usage"] | undefined;
   try {
     stream = await streamForProvider({ provider, accountId, parsed, req, sidecars, signal: controller.signal });
-    if (provider === "antigravity") stream = rememberAntigravityToolSignatures(threadId, stream);
   } catch (error) {
     failureMessage = redactSensitiveText(error instanceof Error ? error.message : String(error));
     stream = (async function* () { yield { type: "error", message: failureMessage } as AdapterEvent; })();
@@ -647,7 +888,25 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   const toolMaps = bridgeToolMaps(parsed);
-  const sse = bridgeToResponsesSSE(stream, parsed.model, toolMaps.toolNsMap, toolMaps.freeformToolNames, toolMaps.toolSearchToolNames, () => controller.abort());
+  const responseStateEligible = !routedCompaction && (!parsed.previousResponseId || previousResponseInputExpanded);
+  if (parsed.previousResponseId && !previousResponseInputExpanded) {
+    console.warn(`[devil-proxy] previous_response_id ${parsed.previousResponseId} was not found; skipping continuation-state storage for this truncated turn`);
+  }
+  const sse = bridgeToResponsesSSE(
+    stream,
+    parsed.model,
+    toolMaps.toolNsMap,
+    toolMaps.freeformToolNames,
+    toolMaps.toolSearchToolNames,
+    () => controller.abort(),
+    2_000,
+    {
+      hideThinkingSummary: parsed.options.hideThinkingSummary,
+      onTerminal: (status) => { terminalStatus = status; },
+      ...(routedCompaction ? { compaction: true } : {}),
+      ...(responseStateEligible ? { onCompletedResponse: (response: Record<string, unknown>) => rememberResponseState(parsed._rawBody, response) } : {}),
+    },
+  );
   const reader = sse.getReader();
   try {
     while (true) {
@@ -657,12 +916,14 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     }
   } finally {
     const completedAt = Date.now();
+    const incomplete = terminalStatus === "incomplete";
+    const failed = Boolean(failureMessage) || terminalStatus === "failed" || incomplete;
     finishRequestLog(requestId, {
-      status: failureMessage ? "failed" : "completed",
+      status: failed ? "failed" : "completed",
       completedAt,
       durationMs: completedAt - startedAt,
-      ...(failureMessage ? { error: failureMessage } : {}),
-      ...(failureType ? { errorType: failureType } : {}),
+      ...(failureMessage ? { error: failureMessage } : incomplete ? { error: "프록시 응답이 완료 전에 종료되었습니다." } : {}),
+      ...(failureType ? { errorType: failureType } : incomplete ? { errorType: "upstream_incomplete" } : {}),
       ...(usage ? { usage } : {}),
       sidecar: sidecarSnapshot(sidecars.stats),
     });
@@ -703,7 +964,7 @@ async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: {
   }
 }
 
-async function handleModels(res: ServerResponse): Promise<void> {
+async function handleModels(res: ServerResponse, selectedOnly: boolean): Promise<void> {
   const settings = await providerSettings.load();
   const routedId = (provider: ProviderId, accountId: string | undefined, model: string): string => `${provider}${accountId ? `@${encodeURIComponent(accountId)}` : ""}/${model}`;
   const connected = (account: { credentialSource?: string }): boolean => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
@@ -729,7 +990,13 @@ async function handleModels(res: ServerResponse): Promise<void> {
     const accounts = provider.accounts.filter((account) => provider.id === "opencode-free" || connected(account));
     return accounts.flatMap((account) => (account.models?.length ? account.models : provider.models).map((model) => ({ id: routedId(provider.id, account.id, model.id), object: "model", owned_by: provider.id })));
   });
-  const data = [...loginRows, ...apiRows];
+  const availableRows = [...loginRows, ...apiRows];
+  // The stock catalog is already selected-only. Filtering its dedicated
+  // discovery route as well prevents Codex from merging every connected model
+  // back into the picker, without constraining Devil's internal app-server.
+  const data = selectedOnly
+    ? selectConfiguredModelRows(availableRows, (await stockSettingsStore.load()).stockBridgeModels)
+    : availableRows;
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ object: "list", data }));
 }
@@ -781,7 +1048,7 @@ export class CodexProxyServer {
     if (this.server) return this.port;
     await loadRequestLog();
     this.secret = await loadProxySecret();
-    const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
+    const websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_DECOMPRESSED_BODY_BYTES });
     const server = createServer((req, res) => {
       void (async () => {
         try {
@@ -798,14 +1065,26 @@ export class CodexProxyServer {
           if (!this.secret || !(rawUrl === prefix || rawUrl.startsWith(`${prefix}/`))) {
             res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"error":"not found"}'); return;
           }
-          const url = rawUrl.slice(prefix.length) || "/";
-          if (req.method === "GET" && url.startsWith("/v1/models")) { await handleModels(res); return; }
+          const requestedUrl = rawUrl.slice(prefix.length) || "/";
+          const stockRoute = requestedUrl === "/stock/v1" || requestedUrl.startsWith("/stock/v1/");
+          const url = stockRoute ? requestedUrl.slice("/stock".length) : requestedUrl;
+          if (req.method === "GET" && url.startsWith("/v1/models")) { await handleModels(res, stockRoute); return; }
           if (req.method === "POST" && (url === "/v1/responses" || url === "/v1/responses/compact")) {
             const { raw, body } = await readBody(req);
-            if (url === "/v1/responses/compact" && isExternalModel(modelId(body))) await handleCompactResponses(req, body, res);
-            else if (url === "/v1/responses/compact") await handleNativeCompact(req, raw, res);
-            else if (isExternalModel(modelId(body))) await handleExternalResponses(req, body, res);
-            else await handleNativeResponses(req, raw, res);
+            // Both native ChatGPT passthrough and routed providers need the local replay cache:
+            // stock Codex chains WS turns with previous_response_id, while ChatGPT's Codex REST
+            // endpoint rejects that parameter. Expanding every normal Responses turn preserves the
+            // second/third-turn context before either route strips the id for its upstream.
+            const routedBody = url === "/v1/responses" ? expandPreviousResponseInput(body) : body;
+            const previousResponseInputExpanded = routedBody !== body;
+            const rewritten = routedBody && typeof routedBody === "object" && !Array.isArray(routedBody)
+              ? sanitizeEncryptedContentInPlace((routedBody as { input?: unknown }).input)
+              : 0;
+            const routedRaw = previousResponseInputExpanded || rewritten > 0 ? JSON.stringify(routedBody) : raw;
+            if (url === "/v1/responses/compact" && isExternalModel(modelId(body))) await handleCompactResponses(req, routedBody, res);
+            else if (url === "/v1/responses/compact") await handleNativeCompact(req, routedRaw, res);
+            else if (isExternalModel(modelId(body))) await handleExternalResponses(req, routedBody, res, previousResponseInputExpanded);
+            else await handleNativeResponses(req, routedBody, res, previousResponseInputExpanded);
             return;
           }
           res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"error":"not found"}');
@@ -819,7 +1098,8 @@ export class CodexProxyServer {
     server.on("upgrade", (req, socket, head) => {
       const prefix = `/${this.secret}`;
       const rawUrl = req.url ?? "/";
-      const path = rawUrl.slice(prefix.length).split("?", 1)[0];
+      const requestedPath = rawUrl.slice(prefix.length).split("?", 1)[0];
+      const path = requestedPath.startsWith("/stock/v1/") ? requestedPath.slice("/stock".length) : requestedPath;
       if (!this.secret || !(rawUrl === prefix || rawUrl.startsWith(`${prefix}/`))) {
         rejectWebSocketUpgrade(socket, 403, "forbidden");
         return;
@@ -836,12 +1116,15 @@ export class CodexProxyServer {
     });
     websocketServer.on("connection", (ws, req) => {
       let activeAbort: AbortController | undefined;
+      let turnSequence = 0;
       ws.on("message", (raw: RawData) => {
         let frame: Record<string, unknown>;
         try { frame = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
         if (frame.type === "response.processed") return;
         if (frame.type !== "response.create") return;
         activeAbort?.abort();
+        const turnId = ++turnSequence;
+        const isCurrent = () => turnSequence === turnId;
         const turnAbort = new AbortController();
         activeAbort = turnAbort;
         const payload = { ...frame };
@@ -863,26 +1146,16 @@ export class CodexProxyServer {
               method: "POST", headers, body: JSON.stringify({ ...payload, stream: true }), signal: turnAbort.signal,
             });
             if (!response.ok || !response.body) {
-              ws.send(JSON.stringify({ type: "error", status: response.status, error: { message: await response.text() } }));
+              if (isCurrent() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: response.status, error: { message: redactSensitiveText(await response.text()) } }));
               return;
             }
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-            while (!turnAbort.signal.aborted) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, { stream: true });
-              const parsed = ssePayloads(buffer);
-              buffer = parsed.rest;
-              for (const event of parsed.payloads) if (ws.readyState === WebSocket.OPEN) ws.send(event);
-            }
+            await pumpResponsesSseToWebSocket(ws, response.body, turnAbort.signal, isCurrent);
           } catch (error) {
-            if (!turnAbort.signal.aborted && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: 502, error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
+            if (!turnAbort.signal.aborted && isCurrent() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: 502, error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
           }
         })();
       });
-      ws.on("close", () => activeAbort?.abort());
+      ws.on("close", () => { turnSequence += 1; activeAbort?.abort(); });
     });
     // Keep the provider URL stable across Devil restarts. Codex stores the
     // provider name in a rollout, and a fixed URL lets stock Codex recognise
@@ -902,6 +1175,7 @@ export class CodexProxyServer {
 
   async stop(): Promise<void> {
     const server = this.server;
+    flushResponseState();
     if (!server) return;
     this.server = undefined;
     await new Promise<void>((resolve) => server.close(() => resolve()));

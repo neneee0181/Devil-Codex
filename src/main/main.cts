@@ -23,7 +23,7 @@ import { ProviderTranscriptStore } from "./provider-transcript.cjs";
 import { CodexProviderReconciler } from "./codex-provider-reconcile.cjs";
 import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./proxy/proxy-server.cjs";
 import { UnrealMcpRelay, unrealMcpRelayOptionsFromEnv } from "./unreal-mcp-relay.cjs";
-import { syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
+import { selectConfiguredModelRows, syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
@@ -2299,7 +2299,10 @@ async function startCodexProxy(): Promise<void> {
 
 async function syncStockCodexCatalogOnly(): Promise<{ path: string; added: number }> {
   const [providerSettings, codexSettings] = await Promise.all([providerSettingsStore.load(), settingsStore.load()]);
-  return syncStockCodexCatalog(providerSettings.providers, undefined, codexSettings.stockBridgeModels);
+  return syncStockCodexCatalog(providerSettings.providers, undefined, codexSettings.stockBridgeModels, {
+    webSearch: codexSettings.stockBridgeWebSearch,
+    vision: codexSettings.stockBridgeVision,
+  });
 }
 
 async function activateDevilNativeCatalog(): Promise<void> {
@@ -2314,12 +2317,12 @@ async function syncStockCodexBridge(): Promise<void> {
   const catalog = await syncStockCodexCatalogOnly();
   await registerDevilStockBridge(port, codexProxy.secretToken(), catalog.path);
   const expectedModels = (await settingsStore.load()).stockBridgeModels;
-  const baseUrl = `http://127.0.0.1:${port}/${codexProxy.secretToken()}/v1`;
+  const baseUrl = `http://127.0.0.1:${port}/${codexProxy.secretToken()}/stock/v1`;
   const response = await fetch(`${baseUrl}/models`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Stock Codex Bridge health check failed (${response.status}).`);
   const body = await response.json() as { data?: Array<{ id?: unknown }> };
-  const available = new Set((body.data ?? []).flatMap((item) => typeof item.id === "string" ? [item.id] : []));
-  const missing = expectedModels.filter((model) => !available.has(model));
+  const available = (body.data ?? []).flatMap((item) => typeof item.id === "string" ? [{ id: item.id }] : []);
+  const missing = expectedModels.filter((model) => selectConfiguredModelRows(available, [model]).length === 0);
   if (missing.length) throw new Error(`Stock Codex Bridge did not expose selected models: ${missing.join(", ")}`);
   console.log(`[devil-codex stock bridge] ${catalog.added} external models injected into ${catalog.path}`);
 }

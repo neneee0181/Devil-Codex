@@ -23,6 +23,7 @@ const FORWARDED_OPENAI_HEADERS = [
   "x-codex-turn-state",
   "x-codex-window-id",
   "x-oai-attestation",
+  "x-openai-subagent",
   "x-responsesapi-include-timing-metrics",
 ];
 
@@ -291,22 +292,18 @@ async function collectEvents(stream: AsyncGenerator<AdapterEvent>): Promise<Adap
   return out;
 }
 
-export async function* replayEvents(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
-  for (const event of events) yield event;
-}
-
 function normalizedQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export async function runWithWebSearchLoop(input: {
+export async function* runWithWebSearchLoop(input: {
   parsed: OcxParsedRequest;
   req: IncomingMessage;
   sidecars?: SidecarSettings;
   stats: SidecarStats;
   signal: AbortSignal;
   invoke: (parsed: OcxParsedRequest) => Promise<AsyncGenerator<AdapterEvent>>;
-}): Promise<AdapterEvent[]> {
+}): AsyncGenerator<AdapterEvent> {
   const { parsed, req, sidecars, stats, signal, invoke } = input;
   const maxSearches = Math.max(0, sidecars?.webSearchLimit || 0);
   const allTools = parsed.tools;
@@ -340,6 +337,7 @@ export async function runWithWebSearchLoop(input: {
 
     for (const call of calls) {
       stats.webSearchToolCalls = (stats.webSearchToolCalls ?? 0) + 1;
+      yield { type: "web_search_call_begin", id: call.id };
       let result: WebSearchResult;
       if (!call.query) {
         result = { text: "", sources: [], error: "model called web_search with an empty query" };
@@ -357,6 +355,13 @@ export async function runWithWebSearchLoop(input: {
         }
       }
       recordWebSearchEvent(stats, call.query, result);
+      yield {
+        type: "web_search_call_end",
+        id: call.id,
+        queries: call.query ? [call.query] : [],
+        status: result.error ? "failed" : "completed",
+        sources: result.sources.slice(0, 8),
+      };
       messages.push({
         role: "assistant",
         content: [{ type: "toolCall", id: call.id, name: WEB_SEARCH_TOOL_NAME, arguments: JSON.stringify({ query: call.query }) }],
@@ -372,14 +377,15 @@ export async function runWithWebSearchLoop(input: {
   }
 
   if (!finalEvents.length) {
-    return [{
+    yield {
       type: "error",
       status: 502,
       errorType: "web_search_sidecar_no_final_answer",
       message: "웹 검색 sidecar가 최종 응답을 만들지 못했습니다. 검색 결과는 실행됐지만 외부 모델이 답변으로 마무리하지 못했습니다.",
-    }];
+    };
+    return;
   }
-  return finalEvents;
+  for (const event of finalEvents) yield event;
 }
 
 export async function applyWebSearchSidecar(input: {
