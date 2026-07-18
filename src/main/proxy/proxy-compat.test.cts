@@ -7,6 +7,7 @@ import { deflateRawSync, deflateSync } from "node:zlib";
 import { renameAtomicFile, renameAtomicFileSync } from "../atomic-file.cjs";
 import { buildStockCatalog, selectConfiguredModelRows } from "../codex-stock-catalog.cjs";
 import type { ProviderInfo } from "../contracts.cjs";
+import { providerAccountReady } from "../provider-settings.cjs";
 import { buildMacStockProxyPlist, stockProxyTaskArgs } from "../stock-proxy-autostart.cjs";
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
 import { applyAntigravityReplay, observeAntigravityReplayCall, resetAntigravityReplayForTests } from "./antigravity-replay.cjs";
@@ -137,6 +138,24 @@ test("Bridge discovery exposes only configured models in configured order", () =
     { id: "claude-code@a/claude-sonnet-5" },
     { id: "claude-code@b/claude-sonnet-5" },
   ], ["claude-code/claude-sonnet-5"]), []);
+});
+
+test("keyless local providers become available only after a successful model refresh", () => {
+  const local = connectedProvider("ollama", "qwen2.5-coder");
+  local.credentialSource = "none";
+  local.accounts[0] = {
+    ...local.accounts[0]!,
+    credentialSource: "none",
+    credentialKind: "local",
+    modelsLoaded: false,
+  };
+  assert.equal(providerAccountReady(local, local.accounts[0]!), false);
+  const route = "ollama@acct/qwen2.5-coder";
+  const native = { models: [{ slug: "gpt-native", display_name: "GPT" }] };
+  assert.equal(buildStockCatalog(native, [local], [route]).models?.some((model) => model.slug === route), false);
+  local.accounts[0]!.modelsLoaded = true;
+  assert.equal(providerAccountReady(local, local.accounts[0]!), true);
+  assert.equal(buildStockCatalog(native, [local], [route]).models?.some((model) => model.slug === route), true);
 });
 
 test("routed catalog strips native-only metadata and advertises the real provider policy", () => {

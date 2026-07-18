@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-18T15:10:00+09:00
+updated: 2026-07-18T19:35:00+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- Internal provider/Bridge UX hardening (2026-07-18, uncommitted): settings persistence and MCP/Bridge/remote runtime effects now run in a serialized transaction and restore the prior config/runtime on failure; startup Bridge failure safely disables Bridge without blocking the app. Renderer settings share one authoritative controller, show exact cross-platform errors, and reconcile optimistic state. Local Ollama/vLLM/LM Studio accounts become selectable only after a successful current-session model refresh; provider readiness is shared by the internal picker, stock catalog, and proxy discovery. Model-specific reasoning/speed controls, external-turn preparation feedback, and an in-composer Bridge-off action were added. Full build, 26 main tests, and `git diff --check` pass.
 
 - OpenCodex proxy parity completion (2026-07-18, uncommitted): both Devil-internal external-model turns and stock Bridge turns now share the same Responses state/compaction, complete tool catalogs, provider-specific schema/reasoning/image translation, strict stream lifecycle, compressed request handling, retry/error diagnostics, and Antigravity/Anthropic/OpenAI-compatible continuation behavior. Stock discovery is isolated at `/stock/v1`, exposes only the ordered Bridge selection, accepts unambiguous pre-account model IDs, and the settings picker excludes disconnected accounts. Packaged Windows uses its quoted ONLOGON task; packaged macOS uses an escaped LaunchAgent plus normal shutdown handoff. OpenCodex reference commit `2bdeee8f2252eecdc52a681358f7f98a1aad1f31`; `npm run build`, 23 main tests, and `git diff --check` pass.
 

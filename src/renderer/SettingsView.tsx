@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Bell, Check, ChevronDown, ChevronRight, Copy, CreditCard, Globe2, QrCode, RefreshCw, Search, TerminalSquare, Wifi, X } from "lucide-react";
-import { useCodexSettings } from "./hooks/useCodexSettings";
+import type { CodexSettingsController } from "./hooks/useCodexSettings";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
 import { estimateProviderUsageCost } from "./providerPricing";
+import { providerAccountReady } from "./providerReadiness";
 import type { AgentRuntimeId, AppInfo, DevilMcpStatus, ProviderId, ProviderRequestLogEntry, ProviderSettings, ProviderTokenUsage, ProviderUsageEntry, RemoteClient, RemoteControlMode, RemoteControlStatus, RemoteDevice, TerminalShellId, TerminalShellProfile, ThreadSummary } from "../shared/contracts";
 
 type Config = {
@@ -42,17 +43,18 @@ const groups = [
   { label: "설정", items: [["구성", TerminalSquare], ["연결", Globe2], ["알림", Bell], ["사용량 및 청구", CreditCard]] },
 ] as const;
 
-export function SettingsView({ active, appInfo, onSelect, onBack, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; onSelect: (value: string) => void; onBack: () => void; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
+export function SettingsView({ active, appInfo, onSelect, onBack, codex, providerSettings, providerState, providerError, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; onSelect: (value: string) => void; onBack: () => void; codex: CodexSettingsController; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; providerError: string; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<Config>(() => {
     try { return { ...defaults, ...JSON.parse(localStorage.getItem("devil-codex:settings") ?? "{}") }; } catch { return defaults; }
   });
   const [terminalShells, setTerminalShells] = useState<TerminalShellProfile[]>([]);
-  const codex = useCodexSettings();
   useEffect(() => {
     const settings = codex.settings;
     if (!settings) return;
-    setConfig((current) => ({ ...current, approval: approvalLabel(settings.approvalPolicy), sandbox: sandboxLabel(settings.sandboxMode), devilMcpEnabled: settings.devilMcpEnabled, askUserMcpEnabled: settings.askUserMcpEnabled, subagentMcpEnabled: settings.subagentMcpEnabled, englishOutput: settings.englishOutput, stockBridgeEnabled: settings.stockBridgeEnabled, stockBridgeWebSearch: settings.stockBridgeWebSearch, stockBridgeVision: settings.stockBridgeVision }));
+    setConfig((current) => {
+      return { ...current, approval: approvalLabel(settings.approvalPolicy), sandbox: sandboxLabel(settings.sandboxMode), devilMcpEnabled: settings.devilMcpEnabled, askUserMcpEnabled: settings.askUserMcpEnabled, subagentMcpEnabled: settings.subagentMcpEnabled, englishOutput: settings.englishOutput, stockBridgeEnabled: settings.stockBridgeEnabled, stockBridgeWebSearch: settings.stockBridgeWebSearch, stockBridgeVision: settings.stockBridgeVision };
+    });
   }, [codex.settings]);
   useEffect(() => {
     let active = true;
@@ -68,15 +70,15 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
     window.dispatchEvent(new CustomEvent("devil-codex:settings-changed", { detail: { key, value } }));
     const settings = codex.settings;
     if (!settings) return;
-    if (key === "approval") codex.save({ ...settings, approvalPolicy: approvalValue(String(value)) });
-    if (key === "sandbox") codex.save({ ...settings, sandboxMode: sandboxValue(String(value)) });
-    if (key === "devilMcpEnabled") codex.save({ ...settings, devilMcpEnabled: Boolean(value) });
-    if (key === "askUserMcpEnabled") codex.save({ ...settings, askUserMcpEnabled: Boolean(value) });
-    if (key === "subagentMcpEnabled") codex.save({ ...settings, subagentMcpEnabled: Boolean(value) });
-    if (key === "englishOutput") codex.save({ ...settings, englishOutput: Boolean(value) });
-    if (key === "stockBridgeEnabled") codex.save({ ...settings, stockBridgeEnabled: Boolean(value) });
-    if (key === "stockBridgeWebSearch") codex.save({ ...settings, stockBridgeWebSearch: Boolean(value) });
-    if (key === "stockBridgeVision") codex.save({ ...settings, stockBridgeVision: Boolean(value) });
+    if (key === "approval") void codex.save({ ...settings, approvalPolicy: approvalValue(String(value)) });
+    if (key === "sandbox") void codex.save({ ...settings, sandboxMode: sandboxValue(String(value)) });
+    if (key === "devilMcpEnabled") void codex.save({ ...settings, devilMcpEnabled: Boolean(value) });
+    if (key === "askUserMcpEnabled") void codex.save({ ...settings, askUserMcpEnabled: Boolean(value) });
+    if (key === "subagentMcpEnabled") void codex.save({ ...settings, subagentMcpEnabled: Boolean(value) });
+    if (key === "englishOutput") void codex.save({ ...settings, englishOutput: Boolean(value) });
+    if (key === "stockBridgeEnabled") void codex.save({ ...settings, stockBridgeEnabled: Boolean(value) });
+    if (key === "stockBridgeWebSearch") void codex.save({ ...settings, stockBridgeWebSearch: Boolean(value) });
+    if (key === "stockBridgeVision") void codex.save({ ...settings, stockBridgeVision: Boolean(value) });
   };
 
   return <div className="settings-view">
@@ -87,19 +89,19 @@ export function SettingsView({ active, appInfo, onSelect, onBack, providerSettin
     </aside>
     <section className="settings-content">
       <AnimatePresence mode="wait"><motion.div key={active} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: .16 }} className="settings-page">
-        <SettingsPage active={active} appInfo={appInfo} config={config} update={update} backendState={codex.state} terminalShells={terminalShells} providerSettings={providerSettings} providerState={providerState} onProviderSelect={onProviderSelect} onProviderSaveKey={onProviderSaveKey} onProviderClearKey={onProviderClearKey} onProviderRefreshModels={onProviderRefreshModels} />
+        <SettingsPage active={active} appInfo={appInfo} config={config} update={update} codex={codex} terminalShells={terminalShells} providerSettings={providerSettings} providerState={providerState} providerError={providerError} onProviderSelect={onProviderSelect} onProviderSaveKey={onProviderSaveKey} onProviderClearKey={onProviderClearKey} onProviderRefreshModels={onProviderRefreshModels} />
       </motion.div></AnimatePresence>
     </section>
   </div>;
 }
 
-function SettingsPage({ active, appInfo, config, update, backendState, terminalShells, providerSettings, providerState, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
+function SettingsPage({ active, appInfo, config, update, codex, terminalShells, providerSettings, providerState, providerError, onProviderSelect, onProviderSaveKey, onProviderClearKey, onProviderRefreshModels }: { active: string; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; codex: CodexSettingsController; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null; providerState: "loading" | "saved" | "error"; providerError: string; onProviderSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onProviderSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onProviderClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onProviderRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const usage = useProviderUsage(active === "사용량 및 청구");
   const [configurationTab, setConfigurationTab] = useState<ConfigurationTab>("기본");
-  if (active === "구성") return <ConfigurationSettings tab={configurationTab} onTabChange={setConfigurationTab} appInfo={appInfo} config={config} update={update} backendState={backendState} terminalShells={terminalShells} providerSettings={providerSettings} />;
+  if (active === "구성") return <ConfigurationSettings tab={configurationTab} onTabChange={setConfigurationTab} appInfo={appInfo} config={config} update={update} codex={codex} terminalShells={terminalShells} providerSettings={providerSettings} />;
   if (active === "알림") return <><h1>알림</h1><p className="page-lead">Devil Codex 창이 숨겨져 있거나 포커스가 없을 때만 시스템 알림을 표시합니다. 창을 보고 있는 동안에는 기존 화면 표시만 사용합니다.</p><section><h2>데스크톱 알림</h2><div className="setting-card"><Row title="백그라운드 알림" detail="끄면 아래 세부 항목과 무관하게 모든 시스템 알림을 보내지 않습니다."><Toggle value={config.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} /></Row><Row title="작업 완료" detail="AI 작업이 완료되거나 실패했을 때 알려줍니다. 대기열에 다음 메시지가 있으면 마지막 작업이 끝날 때 알려줍니다."><Toggle value={config.notifyOnTurnComplete} onChange={(v) => update("notifyOnTurnComplete", v)} /></Row><Row title="승인 요청" detail="명령 실행 또는 파일 변경 승인이 필요할 때 알려줍니다."><Toggle value={config.notifyOnApproval} onChange={(v) => update("notifyOnApproval", v)} /></Row><Row title="질문 요청" detail="AI가 선택지 질문 모달을 띄워 사용자 입력을 기다릴 때 알려줍니다."><Toggle value={config.notifyOnAsk} onChange={(v) => update("notifyOnAsk", v)} /></Row></div></section></>;
   if (active === "사용량 및 청구") return <ProviderUsagePage report={usage.report} requestLog={usage.requestLog} providerSettings={providerSettings} state={usage.state} onRefresh={() => void usage.refresh()} />;
-  if (active === "연결") return <ProviderSettingsPanel settings={providerSettings} state={providerState} onSelect={onProviderSelect} onSaveKey={onProviderSaveKey} onClearKey={onProviderClearKey} onRefreshModels={onProviderRefreshModels} />;
+  if (active === "연결") return <ProviderSettingsPanel settings={providerSettings} state={providerState} error={providerError} onSelect={onProviderSelect} onSaveKey={onProviderSaveKey} onClearKey={onProviderClearKey} onRefreshModels={onProviderRefreshModels} />;
   return <><h1>{active}</h1><p>준비 중입니다.</p></>;
 }
 
@@ -112,8 +114,7 @@ const configurationTabs: Array<{ id: ConfigurationTab; detail: string }> = [
   { id: "Sidecar", detail: "외부 모델 보조 기능" },
 ];
 
-function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, backendState, terminalShells, providerSettings }: { tab: ConfigurationTab; onTabChange: (tab: ConfigurationTab) => void; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; backendState: "loading" | "saved" | "error"; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null }): React.JSX.Element {
-  const codex = useCodexSettings();
+function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, codex, terminalShells, providerSettings }: { tab: ConfigurationTab; onTabChange: (tab: ConfigurationTab) => void; appInfo: AppInfo | null; config: Config; update: <K extends keyof Config>(key: K, value: Config[K]) => void; codex: CodexSettingsController; terminalShells: TerminalShellProfile[]; providerSettings: ProviderSettings | null }): React.JSX.Element {
   const [devilMcpStatus, setDevilMcpStatus] = useState<DevilMcpStatus | null>(null);
   const [devilMcpStatusLoading, setDevilMcpStatusLoading] = useState(false);
   const refreshDevilMcpStatus = useCallback((): void => {
@@ -125,14 +126,20 @@ function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, back
   }, []);
   useEffect(() => {
     if (tab === "도구") refreshDevilMcpStatus();
-  }, [tab, config.devilMcpEnabled, config.stockBridgeEnabled, backendState, refreshDevilMcpStatus]);
+  }, [tab, config.devilMcpEnabled, config.stockBridgeEnabled, codex.state, refreshDevilMcpStatus]);
   const stockBridgeModels = codex.settings?.stockBridgeModels ?? [];
   const saveStockBridgeModels = (models: string[]): void => {
-    if (codex.settings) codex.save({ ...codex.settings, stockBridgeModels: models });
+    if (codex.settings) void codex.save({ ...codex.settings, stockBridgeModels: models });
   };
+  const saveLabel = codex.state === "loading"
+    ? tab === "Bridge" && config.stockBridgeEnabled ? "Bridge 적용 중…" : "저장 중…"
+    : codex.state === "saved"
+      ? tab === "Bridge" && config.stockBridgeEnabled ? "Bridge 준비 완료" : "config.toml 저장됨"
+      : "적용 실패 · 이전 상태로 복구됨";
   return <>
     <h1>구성</h1>
-    <p className="page-lead">설정을 목적별로 나눴습니다. <span className={`settings-save-state ${backendState}`}>{backendState === "loading" ? "저장 중…" : backendState === "saved" ? "config.toml 저장됨" : "저장 실패"}</span></p>
+    <p className="page-lead">설정을 목적별로 나눴습니다. <span className={`settings-save-state ${codex.state}`}>{saveLabel}</span></p>
+    {codex.state === "error" && <p className="settings-save-error" role="alert">{codex.error}</p>}
     <div className="configuration-tabs" role="tablist" aria-label="구성 설정 탭">
       {configurationTabs.map((item) => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={tab === item.id ? "active" : ""} onClick={() => onTabChange(item.id)}><strong>{item.id}</strong><small>{item.detail}</small></button>)}
     </div>
@@ -142,7 +149,7 @@ function ConfigurationSettings({ tab, onTabChange, appInfo, config, update, back
       <section><h2>작업 환경</h2><div className="setting-card"><Row title="기본 터미널 Shell" detail="새 터미널 탭을 열 때 사용할 shell입니다. 자동은 WSL, Git Bash, PowerShell 7, Windows PowerShell, cmd 순서로 선택합니다."><ShellSelect value={config.terminalShell} profiles={terminalShells} onChange={(v) => update("terminalShell", v)} /></Row><Row title="브라우저 프로필 저장" detail="켜면 쿠키와 로그인 상태를 앱 재시작 후에도 유지합니다. 변경 시 열린 브라우저 탭은 새 세션으로 다시 만들어집니다."><Toggle value={config.browserPersistentSession} onChange={(v) => update("browserPersistentSession", v)} /></Row><Row title="모델 영어 응답" detail="켜면 한글로 질문해도 모델은 영어로 답하고, 각 응답의 번역 토글로 한글을 볼 수 있습니다."><Toggle value={config.englishOutput} onChange={(v) => update("englishOutput", v)} /></Row></div></section>
     </>}
     {tab === "도구" && <section><h2>Devil MCP 도구</h2><p className="section-help">작업 중에만 필요한 기능을 켜 두면 모델이 알맞은 MCP 도구를 선택할 수 있습니다.</p><div className="setting-card"><Row title="AI 질문 모달 MCP" detail="모델이 애매한 요구사항이나 중요한 트레이드오프를 객관식으로 물을 때 사용합니다."><Toggle value={config.askUserMcpEnabled} onChange={(v) => update("askUserMcpEnabled", v)} /></Row><Row title="하위 에이전트 MCP" detail="등록된 provider/model에 독립 작업을 위임합니다. 위임된 작업도 현재 Codex 권한 설정을 넘지 않습니다."><Toggle value={config.subagentMcpEnabled} onChange={(v) => update("subagentMcpEnabled", v)} /></Row><Row title="브라우저/컴퓨터 제어 MCP" detail="켜면 브라우저와 컴퓨터 제어 도구를 MCP 목록에 등록합니다."><Toggle value={config.devilMcpEnabled} onChange={(v) => update("devilMcpEnabled", v)} /></Row></div><DevilMcpStatusCard status={devilMcpStatus} loading={devilMcpStatusLoading} onRefresh={refreshDevilMcpStatus} /></section>}
-    {tab === "원격" && <section><h2>원격 제어</h2><p className="section-help">휴대폰이나 다른 브라우저에서 Devil Codex에 접속할 수 있게 합니다.</p><RemoteControlSection /></section>}
+    {tab === "원격" && <section><h2>원격 제어</h2><p className="section-help">휴대폰이나 다른 브라우저에서 Devil Codex에 접속할 수 있게 합니다.</p><RemoteControlSection codex={codex} /></section>}
     {tab === "Bridge" && <section><h2>순정 Codex Bridge</h2><p className="section-help">순정 GPT 모델은 항상 먼저 보이고, 아래에서 고른 외부 모델만 그 뒤에 순서대로 표시됩니다. Bridge를 끄면 선택 목록은 보존하지만 순정 Codex에는 외부 모델을 노출하지 않습니다.</p><div className="setting-card"><Row title="순정 Codex에서 외부 모델 사용" detail="끄면 관리 config와 자동실행 브릿지를 제거하고 순정 Codex 기본 상태로 되돌립니다."><Toggle value={config.stockBridgeEnabled} onChange={(v) => update("stockBridgeEnabled", v)} /></Row><Row title="순정 Codex에 표시할 모델" detail="추가한 외부 모델만 순정 Codex 선택기에 표시합니다. 위·아래 버튼으로 표시 순서를 정합니다."><StockBridgeModelPicker providers={providerSettings?.providers ?? []} selected={stockBridgeModels} onChange={saveStockBridgeModels} /></Row><Row title="웹 검색 sidecar" detail="외부 모델의 web_search 호출을 Codex 검색으로 실행하고 결과를 다시 전달합니다."><Toggle value={config.stockBridgeWebSearch} onChange={(v) => update("stockBridgeWebSearch", v)} disabled={!config.stockBridgeEnabled} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 못 보는 외부 모델에 Codex vision 설명을 전달합니다."><Toggle value={config.stockBridgeVision} onChange={(v) => update("stockBridgeVision", v)} disabled={!config.stockBridgeEnabled} /></Row></div></section>}
     {tab === "Sidecar" && <section><h2>외부 모델 Sidecar</h2><p className="section-help">Devil Codex 앱 안에서 외부 모델이 사용하는 보조 기능입니다. Codex 모델은 항상 직접 경로를 유지합니다.</p><div className="setting-card"><Row title="웹 검색 sidecar" detail="외부 모델이 web_search 도구를 호출하면 실제 검색을 실행하고 결과를 다시 전달합니다."><Toggle value={config.sidecarWebSearch} onChange={(v) => update("sidecarWebSearch", v)} /></Row><Row title="웹 검색 최대 요청 수" detail="한 요청에서 검색이 반복될 때의 폭주를 막습니다."><Select value={String(config.sidecarWebSearchLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarWebSearchLimit", Number(v))} /></Row><Row title="이미지 설명 sidecar" detail="이미지를 볼 수 없는 외부 모델에 텍스트 설명을 전달합니다."><Toggle value={config.sidecarVision} onChange={(v) => update("sidecarVision", v)} /></Row><Row title="이미지 설명 최대 요청 수" detail="여러 이미지나 반복 설명의 비용과 지연을 제한합니다."><Select value={String(config.sidecarVisionLimit)} options={["1", "2", "3", "5"]} onChange={(v) => update("sidecarVisionLimit", Number(v))} /></Row><Row title="NVIDIA NIM RPM 제한" detail="NVIDIA hosted endpoint의 429를 줄이기 위한 분당 요청 제한입니다. 0은 제한을 끕니다."><NumberInput value={config.nvidiaRateLimitRpm} min={0} max={240} onChange={(v) => update("nvidiaRateLimitRpm", v)} /></Row></div></section>}
   </>;
@@ -159,8 +166,8 @@ function DevilMcpStatusCard({ status, loading, onRefresh }: { status: DevilMcpSt
 type StockBridgeModelChoice = { id: string; provider: string; account: string; label: string };
 
 function bridgeAccounts(provider: ProviderSettings["providers"][number]): Array<ProviderSettings["providers"][number]["accounts"][number] | undefined> {
-  if (provider.id === "opencode-free") return provider.accounts.length ? provider.accounts : [undefined];
-  return provider.accounts.filter((account) => account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop");
+  if (provider.id === "opencode-free" && !provider.accounts.length) return [undefined];
+  return provider.accounts.filter((account) => providerAccountReady(provider, account));
 }
 
 function hasConnectedCredential(provider: ProviderSettings["providers"][number]): boolean {
@@ -254,17 +261,16 @@ function StockBridgeModelPicker({ providers, selected, onChange }: { providers: 
   </div>;
 }
 
-function RemoteControlSection(): React.JSX.Element {
+function RemoteControlSection({ codex }: { codex: CodexSettingsController }): React.JSX.Element {
   const [status, setStatus] = useState<RemoteControlStatus | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [action, setAction] = useState<"enable" | "disable" | "apply" | "regenerate" | "revoke" | "tailscale-up" | null>(null);
   const [selectedMode, setSelectedMode] = useState<RemoteControlMode>("funnel");
   const [error, setError] = useState<string | null>(null);
-  const scopeCodex = useCodexSettings();
-  const allowedThreadIds = scopeCodex.settings?.remoteAllowedThreadIds ?? [];
+  const allowedThreadIds = codex.settings?.remoteAllowedThreadIds ?? [];
   const setAllowedThreadIds = (ids: string[]): void => {
-    if (!scopeCodex.settings) return;
-    scopeCodex.save({ ...scopeCodex.settings, remoteAllowedThreadIds: ids });
+    if (!codex.settings) return;
+    void codex.save({ ...codex.settings, remoteAllowedThreadIds: ids });
   };
 
   const reload = async (): Promise<void> => {

@@ -6,7 +6,7 @@ import type { ProviderAccount, ProviderId, ProviderInfo, ProviderModel, Provider
 import { ANTIGRAVITY_MODELS } from "./provider-antigravity.cjs";
 import { codexAuthSubject, readCurrentCodexAuth } from "./provider-codex-accounts.cjs";
 import { createAccountId, defaultAccountId, deleteStoredAccount, envAccountId, getStoredAccount, listStoredAccounts, localAccountId, migrateLegacySecret, readEncryptedText, upsertStoredAccount, virtualAccount, writeEncryptedText } from "./provider-accounts.cjs";
-import { providerNativeImageInput } from "./proxy/provider-policy.cjs";
+import { providerNativeImageInput, providerReasoningEfforts } from "./proxy/provider-policy.cjs";
 
 export type ProviderAdapterKind = "openai-chat" | "openai-responses" | "anthropic" | "google";
 export interface ApiProviderConfig {
@@ -156,8 +156,19 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
   };
 }
 
+export function providerAccountReady(provider: ProviderInfo, account: ProviderAccount): boolean {
+  const hasModels = (account.models?.length ?? provider.models.length) > 0;
+  if (provider.id === "opencode-free") return hasModels;
+  if (account.credentialKind === "local") return Boolean(account.modelsLoaded) && hasModels;
+  return account.credentialSource !== "none" && hasModels;
+}
+
 function withCapabilities(provider: ProviderId, models: ProviderModel[]): ProviderModel[] {
-  return models.map((model) => ({ ...model, capability: model.capability ?? capabilityFor(provider, model.id) }));
+  return models.map((model) => ({
+    ...model,
+    capability: model.capability ?? capabilityFor(provider, model.id),
+    reasoningEfforts: model.reasoningEfforts ?? providerReasoningEfforts(provider, model.id),
+  }));
 }
 
 function humanLabel(value: string): string {

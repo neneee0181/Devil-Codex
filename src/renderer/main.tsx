@@ -34,6 +34,7 @@ import { useCodexSettings } from "./hooks/useCodexSettings";
 import { approvalPromptFromEvent } from "./approvalRequests";
 import { applyTimelineEvent } from "./threadTimeline";
 import { estimateProviderUsageCost } from "./providerPricing";
+import { selectableApiProvider } from "./providerReadiness";
 import { isPrimaryModifier, shortcut } from "./shortcuts";
 import "./styles.css";
 
@@ -463,7 +464,7 @@ function responseSpeedLabel(value: ResponseSpeed): string {
 function providerReady(provider: ProviderInfo | null, runtimeState: RuntimeStatus["state"]): boolean {
   if (!provider) return false;
   if (provider.id === "codex") return runtimeState === "connected";
-  if (provider.id === "opencode-free") return provider.models.length > 0;
+  if (provider.kind === "apikey") return selectableApiProvider(provider);
   return provider.accounts.some((account) => account.credentialSource !== "none") && provider.modelsLoaded;
 }
 
@@ -1916,6 +1917,7 @@ function App(): React.JSX.Element {
   const runtimeBrandIcon = agentRuntime === "claude-code" ? claudeRuntimeIcon : codexRuntimeIcon;
   const canOpenWorkspace = Boolean(workspace && !isGeneralChatWorkspace && openTargets.length > 0);
   const activeThreadBusy = Boolean(thread?.id && runningTurns[thread.id]);
+  const externalTurnPreparing = Boolean(activeThreadBusy && thread?.id && !runningTurns[thread.id]?.turnId && composerRuntime === "codex" && composerProviderId !== "codex");
   // Lock manual file editing while the model is running a turn in this
   // workspace (main chat or any side chat) so a human save never races an
   // AI-driven file write. Live fs updates keep the panel current meanwhile.
@@ -3969,6 +3971,14 @@ function App(): React.JSX.Element {
     navigate({ view: "settings", settingsSection: section });
   }
 
+  function disableBridgeFromComposer(): void {
+    const current = codexSettings.settings;
+    if (!current || codexSettings.state === "loading") return;
+    void codexSettings.save({ ...current, stockBridgeEnabled: false }).then((result) => {
+      if (!result.ok) setExternalError(`Bridge 해제 실패: ${result.error}`);
+    });
+  }
+
   function openCodexWeb(): void {
     closePopovers();
     void window.devilCodex.openExternalUrl({ url: "https://chatgpt.com/ko-KR/codex/?no_universal_links=1" }).catch((error) => setExternalError(`Codex 웹 열기 실패: ${String(error)}`));
@@ -4413,7 +4423,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} agentRuntime={composerRuntime} threadId={thread?.id} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} preparing={externalTurnPreparing} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} bridgeActionBusy={codexSettings.state === "loading"} onDisableBridge={disableBridgeFromComposer} agentRuntime={composerRuntime} threadId={thread?.id} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -4422,7 +4432,7 @@ function App(): React.JSX.Element {
         ) : view === "archive" ? (
           <ArchivedThreadsView threads={archivedThreads} loading={archivedBusy} onBack={() => openView("thread")} onOpen={(summary) => void resumeThread(summary)} onRestore={(summary) => void unarchiveThread(summary)} relativeTime={relativeTime} />
         ) : view === "settings" ? (
-          <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} providerSettings={providers.settings} providerState={providers.state} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider, accountId) => providers.clearKey(provider, accountId)} onProviderRefreshModels={(provider, accountId) => providers.refreshModels(provider, accountId)} />
+          <SettingsView active={settingsSection} appInfo={appInfo} onSelect={(section) => { if (section === "보관된 채팅") void showAllArchivedThreads(); else setSettingsSection(section); }} onBack={goBack} codex={codexSettings} providerSettings={providers.settings} providerState={providers.state} providerError={providers.error} onProviderSelect={(input) => providers.select(input)} onProviderSaveKey={(input) => providers.saveKey(input)} onProviderClearKey={(provider, accountId) => providers.clearKey(provider, accountId)} onProviderRefreshModels={(provider, accountId) => providers.refreshModels(provider, accountId)} />
         ) : view === "sites" ? (
           <SitesView servers={availableMcpServers} threadId={thread?.id ?? null} knownSites={siteCardsFromResult(items.filter((item) => item.kind === "agent").map((item) => item.text))} onLoadKnown={window.devilCodex.listKnownSites} onCall={(input) => window.devilCodex.callMcpTool(input)} onOpen={(url) => openBrowserTab("right", url)} onCreate={() => { setView("thread"); setComposerInject({ text: "Sites를 사용해 새 웹사이트를 만들고 비공개로 배포해줘. 필요한 초기화, 빌드, 저장, 배포 상태 확인까지 진행해줘.", nonce: Date.now() }); }} />
         ) : view === "plugins" ? (

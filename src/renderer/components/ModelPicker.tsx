@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, ChevronDown, ChevronRight, LogIn, LogOut, Zap } from "lucide-react";
 import type { ContextUsage, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
+import { selectableApiProvider } from "../providerReadiness";
 
 const efforts: Array<{ value: ReasoningEffort; label: string }> = [
   { value: "low", label: "낮음" },
@@ -53,14 +54,16 @@ function contextLimit(contextUsage: ContextUsage | undefined): number | undefine
   return contextUsage.maxTokens;
 }
 
-function selectableApiProvider(provider: ProviderInfo): boolean {
-  // Hosted API providers ship valid default models in the catalog, so a usable
-  // credential is enough — don't also require a live model refresh, which can
-  // fail (offline) or get wiped, hiding a perfectly working provider. Local
-  // providers (ollama/vllm/lm-studio) have no fixed models, so they still need
-  // a successfully loaded list.
-  if (provider.id === "opencode-free") return provider.models.length > 0;
-  return provider.accounts.some((account) => account.credentialSource !== "none" && (account.models?.length ?? provider.models.length) > 0);
+function reasoningChoicesFor(model: ProviderModel | undefined): Array<{ value: ReasoningEffort; label: string }> {
+  if (model?.reasoningEfforts === undefined) return efforts;
+  const mapped = new Set<ReasoningEffort>();
+  for (const effort of model.reasoningEfforts) {
+    if (effort === "minimal" || effort === "low") mapped.add("low");
+    if (effort === "medium") mapped.add("medium");
+    if (effort === "high") mapped.add("high");
+    if (effort === "xhigh" || effort === "max" || effort === "ultra") mapped.add("xhigh");
+  }
+  return efforts.filter((effort) => mapped.has(effort.value));
 }
 
 function accountModels(provider: ProviderInfo, account: ProviderAccount | undefined): ProviderModel[] {
@@ -121,7 +124,10 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
   const active = providers.find((provider) => provider.id === providerId);
   const activeAccount = active?.accounts.find((account) => account.id === accountId) ?? active?.accounts[0];
   const selected = active ? accountModels(active, activeAccount).find((item) => item.id === model) : undefined;
-  const effortLabel = efforts.find((item) => item.value === reasoningEffort)?.label ?? "중간";
+  const reasoningChoices = reasoningChoicesFor(selected);
+  const supportsSpeed = runtime !== "claude-code" && (providerId === "codex" || providerId === "openai");
+  const showReasoning = runtime !== "claude-code" && reasoningChoices.length > 0;
+  const effortLabel = showReasoning ? efforts.find((item) => item.value === reasoningEffort)?.label ?? "중간" : "추론 없음";
   const speedLabel = speeds.find((item) => item.value === responseSpeed)?.label ?? "표준";
   const contextLimitTokens = contextLimit(contextUsage);
   const contextPercent = contextUsage && contextLimitTokens ? Math.min(100, Math.max(0, Math.round((contextUsage.usedTokens / contextLimitTokens) * 100))) : 0;
@@ -130,6 +136,17 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
   const connected = providers.filter((provider) => provider.kind === "login"
     ? authedFor(provider) && provider.modelsLoaded
     : selectableApiProvider(provider));
+
+  useEffect(() => {
+    if (!showReasoning || reasoningChoices.some((item) => item.value === reasoningEffort)) return;
+    const currentIndex = efforts.findIndex((item) => item.value === reasoningEffort);
+    const fallback = reasoningChoices.find((item) => efforts.findIndex((candidate) => candidate.value === item.value) >= currentIndex) ?? reasoningChoices.at(-1);
+    if (fallback) onReasoningEffortChange(fallback.value);
+  }, [model, providerId, accountId, reasoningEffort, showReasoning, reasoningChoices.map((item) => item.value).join("\u0000"), onReasoningEffortChange]);
+
+  useEffect(() => {
+    if (!supportsSpeed && submenu === "speed") setSubmenu(null);
+  }, [submenu, supportsSpeed]);
 
   useEffect(() => {
     if (!open) return;
@@ -305,17 +322,17 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
               </div>
             );
           })}
-          {runtime !== "claude-code" && <>
+          {(showReasoning || supportsSpeed) && <>
             {/* 추론/속도 map to Codex app-server turn params; Claude Code turns
                 ignore them, so the menu hides them there to avoid dead controls. */}
             <div className="menu-divider" />
-            <div className="model-section-label">추론</div>
-            {efforts.map((item) => <button type="button" className="model-option" key={item.value} onClick={() => onReasoningEffortChange(item.value)}><span>{item.label}</span>{item.value === reasoningEffort && <Check size={15} />}</button>)}
-            <button ref={speedButtonRef} type="button" className={submenu === "speed" ? "model-option sub active" : "model-option sub"} onClick={() => {
+            {showReasoning && <><div className="model-section-label">추론</div>
+            {reasoningChoices.map((item) => <button type="button" className="model-option" key={item.value} onClick={() => onReasoningEffortChange(item.value)}><span>{item.label}</span>{item.value === reasoningEffort && <Check size={15} />}</button>)}</>}
+            {supportsSpeed && <button ref={speedButtonRef} type="button" className={submenu === "speed" ? "model-option sub active" : "model-option sub"} onClick={() => {
               if (submenu === "speed") { setSubmenu(null); return; }
               updateSpeedSubmenuPosition();
               setSubmenu("speed");
-            }}><span>속도 · {speedLabel}</span><ChevronRight size={14} /></button>
+            }}><span>속도 · {speedLabel}</span><ChevronRight size={14} /></button>}
           </>}
         </motion.div>
       )}</AnimatePresence>

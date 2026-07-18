@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProviderId, ProviderModel, ProviderSettings } from "../../shared/contracts";
 
+function errorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, "").trim() || "알 수 없는 오류";
+}
+
 export function useProviders(): {
   settings: ProviderSettings | null;
   state: "loading" | "saved" | "error";
+  error: string;
   select: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>;
   saveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>;
   clearKey: (provider: ProviderId, accountId?: string) => Promise<void>;
@@ -13,19 +19,28 @@ export function useProviders(): {
   const [codexModels, setCodexModels] = useState<ProviderModel[]>([]);
   const [oauthModels, setOauthModels] = useState<Record<string, ProviderModel[]>>({});
   const [state, setState] = useState<"loading" | "saved" | "error">("loading");
+  const [error, setError] = useState("");
 
   const hideUnverifiedLocalProviders = useCallback((value: ProviderSettings): ProviderSettings => ({
     ...value,
     providers: value.providers.map((provider) => provider.kind === "apikey" && !provider.keyRequired ? { ...provider, modelsLoaded: false } : provider),
   }), []);
 
-  const run = useCallback(async (request: () => Promise<ProviderSettings>): Promise<void> => {
-    setState("loading");
-    try { setSettings(await request()); setState("saved"); }
-    catch { setState("error"); }
-  }, []);
-
   const loadVisibleSettings = useCallback(async (): Promise<ProviderSettings> => hideUnverifiedLocalProviders(await window.devilCodex.loadProviderSettings()), [hideUnverifiedLocalProviders]);
+
+  const run = useCallback(async (request: () => Promise<ProviderSettings>): Promise<void> => {
+    setError("");
+    setState("loading");
+    try {
+      setSettings(await request());
+      setState("saved");
+    } catch (reason) {
+      const restored = await loadVisibleSettings().catch(() => null);
+      if (restored) setSettings(restored);
+      setError(errorMessage(reason));
+      setState("error");
+    }
+  }, [loadVisibleSettings]);
 
   const accountCount = (source: ProviderSettings | null, provider: ProviderId): number => source?.providers.find((item) => item.id === provider)?.accounts.length ?? 0;
 
@@ -60,6 +75,7 @@ export function useProviders(): {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     void (async () => {
       setState("loading");
+      setError("");
       try {
         const loaded = await window.devilCodex.loadProviderSettings();
         setSettings(hideUnverifiedLocalProviders(loaded));
@@ -81,7 +97,10 @@ export function useProviders(): {
               .catch(() => window.devilCodex.loadProviderSettings().then((next) => setSettings(hideUnverifiedLocalProviders(next))).catch(() => undefined)));
           }
         }
-      } catch { setState("error"); }
+      } catch (reason) {
+        setError(errorMessage(reason));
+        setState("error");
+      }
     })();
     const dispose = window.devilCodex.onProviderAuth((status) => {
       setOauthModels((prev) => {
@@ -134,6 +153,7 @@ export function useProviders(): {
   return {
     settings: merged,
     state,
+    error,
     select: async (input) => {
       const next: { provider: ProviderId; accountId?: string; model: string } = input.provider === "codex" ? { provider: input.provider, model: input.model } : input;
       setSettings((current) => current ? { ...current, provider: next.provider, accountId: next.accountId, model: next.model } : current);
@@ -142,17 +162,19 @@ export function useProviders(): {
     saveKey: async (input) => {
       const previousCount = accountCount(settings, input.provider);
       setState("loading");
+      setError("");
       try {
         await window.devilCodex.saveProviderKey(input);
         setSettings(await loadVisibleSettings());
         setState("saved");
-      } catch {
+      } catch (reason) {
         const loaded = await loadVisibleSettings().catch(() => null);
         if (loaded && accountCount(loaded, input.provider) > previousCount) {
           setSettings(loaded);
           setState("saved");
           return;
         }
+        setError(errorMessage(reason));
         setState("error");
       }
     },

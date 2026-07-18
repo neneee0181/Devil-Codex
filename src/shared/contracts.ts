@@ -179,7 +179,7 @@ export interface CodexSettings { model: string; approvalPolicy: string; sandboxM
 export type ProviderId =
   | "codex" | "claude-code" | "copilot" | "antigravity"
   | "openai" | "anthropic" | "google" | "deepseek"
-  | "xai" | "openrouter" | "openrouter-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks" | "zai"
+  | "xai" | "openrouter" | "openrouter-free" | "opencode-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks" | "zai"
   | "moonshot" | "huggingface" | "nvidia" | "ollama" | "vllm" | "lm-studio";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ResponseSpeed = "standard" | "fast";
@@ -190,7 +190,15 @@ export interface ProviderModelCapability {
   diagnostics: "good" | "limited" | "experimental" | "unknown";
   notes?: string[];
 }
-export interface ProviderModel { id: string; label: string; capability?: ProviderModelCapability; }
+export interface ProviderModel {
+  id: string;
+  label: string;
+  capability?: ProviderModelCapability;
+  contextWindow?: number;
+  inputModalities?: Array<"text" | "image">;
+  reasoningEfforts?: string[];
+  parallelToolCalls?: boolean;
+}
 export type ProviderCredentialSource = "desktop" | "environment" | "keychain" | "none";
 export type ProviderCredentialKind = "desktop" | "environment" | "credential" | "oauth" | "local";
 export interface ProviderAccount {
@@ -472,6 +480,7 @@ export interface DevilCodexApi {
   listKnownSites: () => Promise<Array<{ name: string; url: string; access?: string }>>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
+  onSettingsChanged: (listener: (settings: CodexSettings) => void) => () => void;
   devilMcpStatus: () => Promise<DevilMcpStatus>;
   remoteStatus: () => Promise<RemoteControlStatus>;
   remoteEnable: (input: { mode: RemoteControlMode }) => Promise<RemoteControlStatus>;

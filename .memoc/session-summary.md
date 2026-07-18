@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 status: active
-updated: 2026-07-18T03:42:37
+updated: 2026-07-18T19:35:00+09:00
 created: 2026-07-18T03:42:37
 tags:
   - memoc
@@ -13,10 +13,10 @@ tags:
 Last: 2026-07-18.
 
 ## Status
-- OpenCodex `2bdeee8f` proxy behavior is ported to internal external-model and stock Bridge paths.
-- Responses continuity/compaction, full tools, provider translation, strict streams, compression, and Antigravity replay share one path.
-- Stock `/stock/v1` exposes ordered selections only; account filtering, legacy-ID healing, Windows task, and macOS LaunchAgent are covered.
-- `npm run build`, 23 main tests, and `git diff --check` pass.
+- OpenCodex parity remains shared by internal external-model and stock Bridge paths.
+- Settings transitions are serialized and rollback persisted/runtime state on failure; startup Bridge failure no longer blocks the app.
+- Local providers require successful model discovery; exact provider errors, model capability controls, preparation feedback, and Bridge-off UX are implemented.
+- Full build, 26 main tests, and `git diff --check` pass.
 
 ## Resume
 - No version/commit. Preserve `.DS_Store`; installed-provider smoke remains.

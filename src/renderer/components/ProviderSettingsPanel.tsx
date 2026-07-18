@@ -1,6 +1,7 @@
 import { Check, KeyRound, LogIn, LogOut, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
+import { providerAccountModelCount, providerAccountReady, selectableApiProvider } from "../providerReadiness";
 
 const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
 const notifyProviderAuthChanged = (): void => { window.dispatchEvent(new Event("devil-codex:provider-auth-changed")); };
@@ -22,8 +23,11 @@ function loginStatusLabel(provider: ProviderInfo, auth: ProviderAuthStatus): str
 }
 
 function keyStatusLabel(provider: ProviderInfo): string {
-  if (provider.id === "opencode-free") return provider.modelsLoaded ? "API 키 없이 사용 가능 · 무료 모델 확인됨" : "API 키 없이 사용 가능 · 모델 확인 필요";
-  if (!provider.keyRequired) return "API 키 필요 없음 · 로컬 endpoint";
+  if (provider.id === "opencode-free") return selectableApiProvider(provider) ? "API 키 없이 사용 가능 · 무료 모델 확인됨" : "API 키 없이 사용 가능 · 모델 확인 필요";
+  if (!provider.keyRequired) {
+    const account = provider.accounts.find((item) => providerAccountReady(provider, item));
+    return account ? `로컬 endpoint 연결됨 · ${providerAccountModelCount(provider, account)}개 모델` : "로컬 endpoint 확인 필요 · 모델 새로고침을 실행하세요";
+  }
   const suffix = provider.modelsLoaded ? "모델 확인됨" : "모델 확인 필요";
   if (provider.credentialSource === "keychain") return `API 키 ${provider.accounts.length || 1}개 · Keychain · ${suffix}`;
   if (provider.credentialSource === "environment") return `API 키 · .env.local · ${suffix}`;
@@ -62,7 +66,7 @@ function compatibilityFor(provider: ProviderId, model: string, requestLog: Provi
   return { tone: "good", label: "동작 확인", detail: `성공 ${successes} / 실패 ${failures}` };
 }
 
-export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, onClearKey, onRefreshModels }: { settings: ProviderSettings | null; state: "loading" | "saved" | "error"; onSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
+export function ProviderSettingsPanel({ settings, state, error, onSelect, onSaveKey, onClearKey, onRefreshModels }: { settings: ProviderSettings | null; state: "loading" | "saved" | "error"; error: string; onSelect: (input: { provider: ProviderId; accountId?: string; model: string }) => Promise<void>; onSaveKey: (input: { provider: ProviderId; key: string; accountId?: string; label?: string }) => Promise<void>; onClearKey: (provider: ProviderId, accountId?: string) => Promise<void>; onRefreshModels: (provider: Exclude<ProviderId, "codex">, accountId?: string) => Promise<void> }): React.JSX.Element {
   const [keys, setKeys] = useState<Partial<Record<ProviderId, string>>>({});
   const [labels, setLabels] = useState<Partial<Record<ProviderId, string>>>({});
   const [auth, setAuth] = useState<ProviderAuthStatus>(emptyAuth);
@@ -121,7 +125,7 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
     const keyValue = keys[provider.id] ?? "";
     const labelValue = labels[provider.id] ?? "";
     const loginAccounts = provider.kind === "login" ? visibleLoginAccounts(provider, auth) : [];
-    const connected = provider.id === "opencode-free" ? true : provider.kind === "login" ? authedFor(provider, auth) : provider.accounts.length > 0 || provider.credentialSource !== "none";
+    const connected = provider.kind === "login" ? authedFor(provider, auth) : selectableApiProvider(provider);
     return <article key={provider.id} className={`provider-card ${activeCard ? "active" : ""} ${connected ? "connected" : ""}`}>
       <button type="button" className="provider-choice" onClick={() => { setViewingId(provider.id); setNotice(""); }}>
         <span><strong>{provider.label}</strong><small><i className="provider-dot" />{sub}</small></span>
@@ -216,6 +220,6 @@ export function ProviderSettingsPanel({ settings, state, onSelect, onSaveKey, on
       </div>
     </section>
 
-    {state === "error" && <p className="provider-error">설정 저장에 실패했습니다. macOS Keychain 접근 권한을 확인하세요.</p>}
+    {state === "error" && <p className="provider-error" role="alert">작업을 완료하지 못했습니다. {error || "Provider 연결과 OS 자격 증명 저장소 상태를 확인하세요."}</p>}
   </>;
 }

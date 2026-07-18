@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { writeTextFileAtomic } from "./atomic-file.cjs";
 import { codexHome } from "./codex-home.cjs";
 import type { ProviderId, ProviderInfo, ProviderModel } from "./contracts.cjs";
+import { providerAccountReady } from "./provider-settings.cjs";
 import { neutralizeIdentity } from "./proxy/identity.cjs";
 import { providerContextWindow, providerNativeImageInput, providerParallelToolCalls, providerReasoningEfforts } from "./proxy/provider-policy.cjs";
 
@@ -47,8 +48,7 @@ function mergeModels(...groups: Array<ProviderModel[] | undefined>): ProviderMod
 
 function connectedAccount(provider: ProviderInfo, account: ProviderInfo["accounts"][number]): boolean {
   if (provider.id === "codex") return false;
-  if (provider.id === "opencode-free") return true;
-  return account.credentialSource === "keychain" || account.credentialSource === "environment" || account.credentialSource === "desktop";
+  return providerAccountReady(provider, account);
 }
 
 function providerModels(provider: ProviderInfo): RoutedModel[] {

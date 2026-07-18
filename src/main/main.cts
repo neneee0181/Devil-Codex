@@ -25,6 +25,7 @@ import { CodexProxyServer, DEVIL_PROXY_PORT, readDevilProxySecret } from "./prox
 import { UnrealMcpRelay, unrealMcpRelayOptionsFromEnv } from "./unreal-mcp-relay.cjs";
 import { selectConfiguredModelRows, syncNativeCodexCatalog, syncStockCodexCatalog } from "./codex-stock-catalog.cjs";
 import { disableStockProxyAutostart, ensureStockProxyAutostart } from "./stock-proxy-autostart.cjs";
+import { AsyncSerialQueue, persistAndApplyWithRollback } from "./settings-transaction.cjs";
 import { ClaudeCodeRuntime } from "./claude-runtime.cjs";
 import { enrichDocumentAttachments } from "./document-attachments.cjs";
 import { initAutoUpdate, checkForUpdatesNow, installUpdate } from "./auto-update.cjs";
@@ -440,7 +441,8 @@ function buildRemoteIpcHandlers(): Map<string, IpcHandler> {
   remote.set("remote:scope", () => ({ restricted: true }));
   remote.set("providers:select", async (input) => {
     const saved = await providerSettingsStore.select(input as { provider: ProviderId; model: string; accountId?: string });
-    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
+    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider)
+      .catch((error) => console.warn("[devil-codex providers] remote selection notification failed:", error instanceof Error ? error.message : error));
     return saved;
   });
   remote.set("settings:update-permissions", async (input) => {
@@ -625,6 +627,8 @@ async function maybeStartContextCompaction(instance: CodexAppServer, input: { th
 let terminalManager: TerminalManager | undefined;
 const execFileAsync = promisify(execFile);
 const settingsStore = new CodexSettingsStore();
+const settingsTransitionQueue = new AsyncSerialQueue();
+let startupBridgeFailure = "";
 const providerSettingsStore = new ProviderSettingsStore();
 const providerRuntime = new ProviderRuntime(providerSettingsStore, (event) => { sendToRenderer("app-server:event", event); handleAppServerEvent(event); });
 const providerModels = new ProviderModelCatalog(providerSettingsStore);
@@ -2305,6 +2309,12 @@ async function syncStockCodexCatalogOnly(): Promise<{ path: string; added: numbe
   });
 }
 
+async function syncStockCodexCatalogAfterProviderChange(action: string): Promise<void> {
+  await syncStockCodexCatalogOnly().catch((error) => {
+    console.warn(`[devil-codex providers] stock catalog sync after ${action} failed:`, error instanceof Error ? error.message : error);
+  });
+}
+
 async function activateDevilNativeCatalog(): Promise<void> {
   const catalog = await syncNativeCodexCatalog();
   await registerDevilNativeCatalog(catalog.path);
@@ -2352,6 +2362,50 @@ async function deactivateStockCodexBridge(): Promise<void> {
   }
 }
 
+function stockBridgeCatalogChanged(previous: CodexSettings, next: CodexSettings): boolean {
+  return previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000")
+    || previous.stockBridgeWebSearch !== next.stockBridgeWebSearch
+    || previous.stockBridgeVision !== next.stockBridgeVision;
+}
+
+function ensureStockProxyAutostartBestEffort(): void {
+  void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
+    .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
+}
+
+async function applySettingsRuntime(previous: CodexSettings, next: CodexSettings): Promise<void> {
+  // In Bridge mode these preferences remain saved, but are intentionally not
+  // materialized in shared Codex config where stock Codex could see them.
+  if (!next.stockBridgeEnabled) {
+    if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
+    if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
+    if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
+  }
+
+  const bridgeChanged = previous.stockBridgeEnabled !== next.stockBridgeEnabled;
+  const catalogChanged = stockBridgeCatalogChanged(previous, next);
+  if (bridgeChanged) {
+    if (next.stockBridgeEnabled) {
+      await disableDevilExclusiveMcps();
+      await syncStockCodexBridge();
+      ensureStockProxyAutostartBestEffort();
+    } else {
+      await deactivateStockCodexBridge();
+      await restoreDevilExclusiveMcps(next);
+    }
+  } else if (next.stockBridgeEnabled && catalogChanged) {
+    await syncStockCodexBridge();
+  }
+  if (bridgeChanged || (next.stockBridgeEnabled && catalogChanged)) await restartStockCodexIfRunning();
+
+  if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
+    if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
+    else await stopRemoteControl();
+  } else if (remoteServer && previous.remoteAllowedThreadIds.join(",") !== next.remoteAllowedThreadIds.join(",")) {
+    remoteServer.setHandlers(buildRemoteIpcHandlers());
+  }
+}
+
 function launchStockProxyService(): void {
   if (stockProxyServiceMode) return;
   const args = app.isPackaged ? ["--devil-stock-proxy"] : [app.getAppPath(), "--devil-stock-proxy"];
@@ -2393,13 +2447,30 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   // A prior desktop exit leaves a headless owner behind for stock Codex. Take
   // ownership back now so a Bridge toggle is immediately actionable without
   // asking the user to fully terminate Devil Codex first.
-  await deactivateStockCodexBridge();
+  await deactivateStockCodexBridge().catch((error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn("[devil-codex stock bridge] startup cleanup failed:", detail);
+    startupBridgeFailure = `기존 Bridge 상태 일부를 정리하지 못했습니다. 앱은 계속 시작합니다.\n\n${detail}`;
+  });
   const settings = await settingsStore.load().catch(() => null);
   await startCodexProxy();
-  if (settings?.stockBridgeEnabled !== false) {
-    await syncStockCodexBridge();
-    void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
-      .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
+  if (settings?.stockBridgeEnabled === true) {
+    try {
+      await syncStockCodexBridge();
+      ensureStockProxyAutostartBestEffort();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("[devil-codex stock bridge] startup activation failed:", detail);
+      startupBridgeFailure = [startupBridgeFailure, `Bridge를 시작하지 못해 안전하게 껐습니다.\n\n${detail}\n\n설정의 Bridge 탭에서 다시 시도할 수 있습니다.`].filter(Boolean).join("\n\n");
+      try {
+        const restored = await settingsStore.save({ ...settings, stockBridgeEnabled: false });
+        applyRemoteAllowlistCache(restored);
+        await deactivateStockCodexBridge();
+        await restoreDevilExclusiveMcps(restored);
+      } catch (rollbackError) {
+        startupBridgeFailure += `\n\n복구 중 추가 오류: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+      }
+    }
   }
   configureMenu();
   // Provider/MCP registration can touch config, sockets, and named pipes. Keep
@@ -2534,45 +2605,31 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   ipcMain.handle("translate:text", (_event, input: { text: string; to?: string; from?: string }) => translateText(input));
   handle("settings:load", () => settingsStore.load());
   ipcMain.handle("devil-mcp:status", () => devilMcpStatus());
-  ipcMain.handle("settings:save", async (_event, input) => {
+  ipcMain.handle("settings:save", (_event, input: CodexSettings) => settingsTransitionQueue.run(async () => {
     const previous = await settingsStore.load();
-    const next = await settingsStore.save(input);
-    applyRemoteAllowlistCache(next);
-    // In Bridge mode these preferences remain saved, but are intentionally not
-    // materialized in shared Codex config where stock Codex could see them.
-    if (!next.stockBridgeEnabled) {
-      if (previous.devilMcpEnabled !== next.devilMcpEnabled) await setDevilMcpEnabled(next.devilMcpEnabled);
-      if (previous.askUserMcpEnabled !== next.askUserMcpEnabled) await setAskUserMcpEnabled(next.askUserMcpEnabled);
-      if (previous.subagentMcpEnabled !== next.subagentMcpEnabled) await setSubagentMcpEnabled(next.subagentMcpEnabled);
-    }
-    const stockBridgeModelsChanged = previous.stockBridgeModels.join("\u0000") !== next.stockBridgeModels.join("\u0000");
-    if (previous.stockBridgeEnabled !== next.stockBridgeEnabled) {
-      if (next.stockBridgeEnabled) {
-        await disableDevilExclusiveMcps();
-        await syncStockCodexBridge();
-        void ensureStockProxyAutostart({ packaged: app.isPackaged, executable: process.execPath })
-          .catch((error) => console.warn("[devil-codex stock bridge] autostart registration failed:", error instanceof Error ? error.message : error));
-      } else {
-        await deactivateStockCodexBridge();
-        await restoreDevilExclusiveMcps(next);
-      }
-    }
-    if (next.stockBridgeEnabled && stockBridgeModelsChanged) await syncStockCodexBridge();
-    if (previous.stockBridgeEnabled !== next.stockBridgeEnabled || (next.stockBridgeEnabled && stockBridgeModelsChanged)) {
-      await restartStockCodexIfRunning();
-    }
-    if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
-      if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
-      else await stopRemoteControl();
-    } else if (remoteServer && previous.remoteAllowedThreadIds.join(",") !== next.remoteAllowedThreadIds.join(",")) {
-      // Allowlist changed while already running: rebuild the gated handler
-      // map so the next remote call sees the new scope immediately (no
-      // server bounce needed - existing WS connections stay open).
-      remoteServer.setHandlers(buildRemoteIpcHandlers());
-    }
+    const next = await persistAndApplyWithRollback({
+      previous,
+      next: input,
+      persist: (value) => settingsStore.save(value),
+      apply: async (before, saved) => {
+        applyRemoteAllowlistCache(saved);
+        await applySettingsRuntime(before, saved);
+      },
+      restore: async (failed, restored) => {
+        applyRemoteAllowlistCache(restored);
+        try {
+          await applySettingsRuntime(failed, restored);
+        } finally {
+          // The persisted rollback is authoritative even if one best-effort
+          // runtime cleanup step also fails. Never leave the renderer locked
+          // to the optimistic Bridge state.
+          sendToRenderer("settings:changed", restored);
+        }
+      },
+    });
     sendToRenderer("settings:changed", next);
     return next;
-  });
+  }));
   ipcMain.handle("remote:status", () => remoteStatus());
   ipcMain.handle("remote:enable", async (_event, input: { mode?: RemoteControlMode }) => startRemoteControl(input?.mode === "tailnet" ? "tailnet" : "funnel"));
   ipcMain.handle("remote:disable", () => stopRemoteControl());
@@ -2594,8 +2651,9 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   handle("providers:load", () => providerSettingsStore.load());
   ipcMain.handle("providers:select", async (_event, input) => {
     const saved = await providerSettingsStore.select(input);
-    await syncStockCodexCatalogOnly();
-    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider);
+    await syncStockCodexCatalogAfterProviderChange("selection");
+    await notifyProviderStateChanged((input as { provider?: ProviderId } | undefined)?.provider)
+      .catch((error) => console.warn("[devil-codex providers] selection notification failed:", error instanceof Error ? error.message : error));
     return saved;
   });
   ipcMain.handle("providers:save-key", async (_event, input) => {
@@ -2607,19 +2665,19 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
       const message = error instanceof Error ? error.message : String(error);
       console.warn("[devil-codex providers] model refresh after key save failed:", message);
     }
-    await syncStockCodexCatalogOnly();
+    await syncStockCodexCatalogAfterProviderChange("key save");
     sendToRenderer("providers:changed", result);
     return result;
   });
   ipcMain.handle("providers:clear-key", async (_event, input) => {
     const saved = await providerSettingsStore.clearKey(input.provider, input.accountId);
-    await syncStockCodexCatalogOnly();
+    await syncStockCodexCatalogAfterProviderChange("key removal");
     sendToRenderer("providers:changed", saved);
     return saved;
   });
   ipcMain.handle("providers:refresh-models", async (_event, input) => {
     const saved = await refreshProviderModels(input.provider, input.accountId);
-    await syncStockCodexCatalogOnly();
+    await syncStockCodexCatalogAfterProviderChange("model refresh");
     return saved;
   });
   ipcMain.handle("providers:auth-status", () => combinedAuthStatus());
@@ -2654,8 +2712,9 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
       await oauthLogout(provider, input.accountId);
       changedProvider = provider;
     }
-    await syncStockCodexCatalogOnly();
-    await notifyProviderStateChanged(changedProvider);
+    await syncStockCodexCatalogAfterProviderChange("logout");
+    await notifyProviderStateChanged(changedProvider)
+      .catch((error) => console.warn("[devil-codex providers] logout notification failed:", error instanceof Error ? error.message : error));
     return combinedAuthStatus();
   });
   ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
@@ -3342,6 +3401,13 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
   createBackgroundTray();
   if (showMainWindowWhenReady) showMainWindow();
   else createWindow();
+  if (startupBridgeFailure && windowRef) {
+    const message = startupBridgeFailure;
+    startupBridgeFailure = "";
+    setTimeout(() => {
+      if (windowRef && !windowRef.isDestroyed()) void dialog.showMessageBox(windowRef, { type: "error", title: "Bridge 시작 실패", message });
+    }, 450);
+  }
   initAutoUpdate(() => windowRef);
   app.on("activate", () => showMainWindow());
 });

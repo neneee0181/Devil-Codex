@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-06-23T15:45:00
+updated: 2026-07-18T19:35:00+09:00
 status: active
 tags:
   - memoc
@@ -14,6 +14,11 @@ tags:
 Durable project decisions live here. Keep entries short, dated, and useful to future agents.
 
 ## Decision Log
+
+### 2026-07-18 — Settings save includes runtime transition and rollback
+
+- A settings change is successful only after both durable persistence and its MCP/Bridge/remote runtime effects succeed. Serialize transitions; on failure restore the prior persisted snapshot and reverse the runtime transition before reporting an exact error.
+- Keyless local providers are not considered connected solely from cached model IDs. The internal UI requires a successful model refresh in the current renderer session; Bridge/proxy exposure requires a previously successful account model discovery and a non-empty list.
 
 ### 2026-07-06 — Remote control: Tailscale 기반, tailnet 기본 + Funnel opt-in, 모바일 핵심 UI만
 

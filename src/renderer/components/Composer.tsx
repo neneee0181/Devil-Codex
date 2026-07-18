@@ -1,6 +1,6 @@
 import { type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent, type Ref, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "motion/react";
-import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Hand, Laptop, PanelRight, Pencil, Plus, Square, Target, X } from "lucide-react";
+import { ArrowRight, CornerDownLeft, FolderTree, GitBranch, Hand, Laptop, Loader2, PanelRight, Pencil, Plus, Square, Target, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ProviderId, ProviderInfo, ReasoningEffort, ResponseSpeed, ThreadAttachment } from "../../shared/contracts";
 import { ApprovalPicker, type ApprovalMode } from "./ApprovalPicker";
@@ -99,6 +99,7 @@ export type ComposerInput = {
 export function Composer({
   draftKey,
   busy,
+  preparing = false,
   queued = [],
   onEditQueued,
   onRemoveQueued,
@@ -125,12 +126,15 @@ export function Composer({
   onSlashCommand,
   petVisible,
   disabled = false,
+  bridgeActionBusy = false,
+  onDisableBridge,
   agentRuntime = "codex",
   threadId,
   wrapRef,
 }: {
   draftKey: string;
   busy: boolean;
+  preparing?: boolean;
   queued?: Array<{ id: string; text: string }>;
   onEditQueued?: (id: string, text: string) => void;
   onRemoveQueued?: (id: string) => void;
@@ -157,6 +161,8 @@ export function Composer({
   onSlashCommand: (command: SlashCommandId) => void;
   petVisible: boolean;
   disabled?: boolean;
+  bridgeActionBusy?: boolean;
+  onDisableBridge?: () => void;
   agentRuntime?: "codex" | "claude-code";
   threadId?: string;
   wrapRef?: Ref<HTMLFormElement>;
@@ -529,7 +535,8 @@ export function Composer({
     <form ref={wrapRef} className="composer-wrap" onSubmit={(event) => { event.preventDefault(); submit(); }}>
       {queued.length > 0 && <QueuedMessages items={queued} onEdit={onEditQueued} onRemove={onRemoveQueued} onSteer={onSteerQueued} />}
       <div className={`${attachments.length > 0 ? "composer has-attachments" : "composer"}${disabled ? " composer-bridge-locked" : ""}`} onDragOver={(event) => { if (!disabled) event.preventDefault(); }} onDrop={(event) => { if (!disabled) onComposerDrop(event); }}>
-        {disabled && <div className="composer-bridge-lock" role="status">순정 Codex Bridge 사용 중 · Devil Codex 채팅과 전용 MCP가 잠겨 있습니다</div>}
+        {disabled && <div className="composer-bridge-lock" role="status"><span>순정 Codex Bridge 사용 중 · Devil Codex 채팅과 전용 MCP가 잠겨 있습니다</span>{onDisableBridge && <button type="button" onClick={onDisableBridge} disabled={bridgeActionBusy}>{bridgeActionBusy ? "해제 중…" : "Bridge 끄기"}</button>}</div>}
+        {preparing && !disabled && <div className="composer-preparing" role="status"><Loader2 size={14} />외부 모델 연결과 대화 상태를 준비하고 있습니다…</div>}
         {attachments.length > 0 && (
           <AttachmentGallery attachments={attachments} onRemove={removeAttachment} />
         )}
@@ -540,7 +547,7 @@ export function Composer({
           role="textbox"
           aria-multiline="true"
           data-empty={composerEmpty ? "true" : "false"}
-          data-placeholder={disabled ? "Bridge를 끄면 Devil Codex 채팅을 다시 사용할 수 있습니다" : busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
+          data-placeholder={disabled ? "Bridge를 끄면 Devil Codex 채팅을 다시 사용할 수 있습니다" : preparing ? "외부 모델 준비 중 — 잠시 후 작업이 시작됩니다" : busy ? "실행 중 — 입력하면 끝난 뒤 이어서 보냅니다" : "작업을 설명하거나 질문하세요"}
           onInput={(event) => {
             const next = editorSnapshot(event.currentTarget);
             setDraft(next.text);
