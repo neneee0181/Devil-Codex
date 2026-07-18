@@ -469,6 +469,7 @@ export interface DevilCodexApi {
   listKnownSites: () => Promise<Array<{ name: string; url: string; access?: string }>>;
   loadCodexSettings: () => Promise<CodexSettings>;
   saveCodexSettings: (input: CodexSettings) => Promise<CodexSettings>;
+  onSettingsChanged: (listener: (settings: CodexSettings) => void) => () => void;
   devilMcpStatus: () => Promise<DevilMcpStatus>;
   remoteStatus: () => Promise<RemoteControlStatus>;
   remoteEnable: (input: { mode: RemoteControlMode }) => Promise<RemoteControlStatus>;

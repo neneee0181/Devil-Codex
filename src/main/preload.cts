@@ -127,6 +127,11 @@ const api: DevilCodexApi = {
   },
   loadCodexSettings: () => ipcRenderer.invoke("settings:load"),
   saveCodexSettings: (input) => ipcRenderer.invoke("settings:save", input),
+  onSettingsChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as never);
+    ipcRenderer.on("settings:changed", handler);
+    return () => ipcRenderer.removeListener("settings:changed", handler);
+  },
   devilMcpStatus: () => ipcRenderer.invoke("devil-mcp:status"),
   remoteStatus: () => ipcRenderer.invoke("remote:status"),
   remoteEnable: (input) => ipcRenderer.invoke("remote:enable", input),

@@ -13,6 +13,8 @@ tags:
 
 - Bridge multi-selection persistence fix (2026-07-18, uncommitted): stock model picker clicks could issue concurrent `settings:save` IPC calls; `CodexSettingsStore` now serializes read-modify-write cycles so a stale shorter selection cannot overwrite the final list. Concurrent 12-selection smoke test and Electron main build pass. Current local config still contains only the previously persisted two models and requires re-selection for models that were never saved.
 
+- Bridge stale-model overwrite fix (2026-07-18, v0.3.18): separate `useCodexSettings()` instances in the main view and Bridge picker could keep different snapshots; the main view could save an old external-model list after the picker removed it, leaving `devil-codex-catalog.json` stale. Added a renderer IPC listener for authoritative `settings:changed` events so all hooks converge on the saved list. Full build, main test, and diff check pass.
+
 - OpenCode Free provider (2026-07-18, uncommitted): added keyless `opencode-free` using `https://opencode.ai/zen/v1`, `x-opencode-client: desktop`, live `/models` discovery filtered to `big-pickle` and `*-free`, and Bridge/main/side model-picker exposure. Added privacy warning because OpenCode documents data-use exceptions for free models. Main/renderer builds, diff check, live endpoint model-list check, and provider config smoke pass.
 
 Last synced: 2026-07-11
