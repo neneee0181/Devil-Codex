@@ -226,7 +226,13 @@ export function parseRequest(body: unknown): OcxParsedRequest {
     for (const item of input) {
       if (!isObj(item)) continue;
       const type = (item.type as string) ?? ("role" in item ? "message" : "");
-      if (type === "message") {
+      if (type === "additional_tools") {
+        // Codex Desktop's Responses WebSocket-lite transport places the active
+        // tool catalog in input instead of the top-level `tools` field. Losing
+        // this item leaves external models with no exec/read tools, so they
+        // answer with a preamble and finish without doing the requested work.
+        if (Array.isArray(item.tools)) loadedToolSpecs.push(...item.tools);
+      } else if (type === "message") {
         const role = item.role as string;
         if (role === "system") {
           const flat = inputContentParts(item.content as unknown[] | string | undefined).map((p) => (p.type === "text" ? p.text : "")).join("");
