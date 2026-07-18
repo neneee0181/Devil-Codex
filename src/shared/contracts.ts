@@ -29,6 +29,7 @@ export interface ThreadRef {
 export interface ThreadSummary {
   id: string;
   cwd: string;
+  projectless?: boolean;
   model: string;
   runtime?: AgentRuntimeId;
   provider?: ProviderId;

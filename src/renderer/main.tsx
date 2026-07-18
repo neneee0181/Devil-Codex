@@ -310,6 +310,10 @@ function basenamePath(value: string): string {
   return normalized.split(/[\\/]/).filter(Boolean).at(-1) || normalized || "프로젝트 선택";
 }
 
+function isProjectlessThread(summary: Pick<ThreadSummary, "cwd" | "projectless">): boolean {
+  return summary.projectless === true || !cwdKey(summary.cwd) || basenamePath(summary.cwd) === "new-chat";
+}
+
 function cwdKey(value: string | undefined): string {
   return String(value ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
@@ -509,6 +513,12 @@ function removeAgentMessagesForTurn(items: ThreadHistoryItem[], turnId: string):
   return next.length === items.length ? items : next;
 }
 
+function removeInterruptedTurnItems(items: ThreadHistoryItem[], turnId: string): ThreadHistoryItem[] {
+  if (!turnId) return items;
+  const next = items.filter((item) => !((item.kind === "activity" || item.kind === "agent") && item.turnId === turnId));
+  return next.length === items.length ? items : next;
+}
+
 function latestInterruptibleTurnId(items: ThreadHistoryItem[]): string {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
@@ -588,6 +598,15 @@ function mergeUserText(current: string, incoming: string): string {
   return current.length >= incoming.length ? current : incoming;
 }
 
+function isAttachmentModelContext(text: string, attachments: ThreadAttachment[] | undefined): boolean {
+  if (!text || !attachments?.length || !text.includes("첨부 파일:")) return false;
+  return attachments.some((attachment) => {
+    const label = attachment.path || attachment.name;
+    return Boolean(label && text.includes(`- ${label}`))
+      || (attachment.kind === "file" && text.includes(`첨부 텍스트 파일 ${attachment.name} 내용:`));
+  });
+}
+
 function mergeTimelineItem(current: ThreadHistoryItem, item: ThreadHistoryItem): ThreadHistoryItem {
   if (current.kind === "activity" && item.kind === "activity") {
     return {
@@ -602,10 +621,14 @@ function mergeTimelineItem(current: ThreadHistoryItem, item: ThreadHistoryItem):
     };
   }
   if (current.kind === "user" && item.kind === "user") {
+    const incomingIsAttachmentContext = isAttachmentModelContext(item.text, current.attachments);
     return {
       ...current,
       ...item,
-      text: mergeUserText(current.text, item.text),
+      // The app-server echoes the model-bound attachment context after a turn.
+      // Keep the compact attachment-card presentation instead of replacing the
+      // user's visible message with the entire pasted file body.
+      text: incomingIsAttachmentContext ? current.text : mergeUserText(current.text, item.text),
       attachments: mergeAttachments(current.attachments, item.attachments),
       runtime: item.runtime ?? current.runtime,
       provider: item.provider ?? current.provider,
@@ -703,7 +726,10 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
   const indexes = new Map(result.map((item, index) => [timelineItemKey(item), index]));
   for (const item of overlay) {
     const key = timelineItemKey(item);
-    const index = indexes.get(key);
+    const attachmentContextIndex = item.kind === "user"
+      ? result.findIndex((current) => current.kind === "user" && isAttachmentModelContext(item.text, current.attachments))
+      : -1;
+    const index = indexes.get(key) ?? (attachmentContextIndex >= 0 ? attachmentContextIndex : undefined);
     if (index == null) { indexes.set(key, result.length); result.push(item); continue; }
     result[index] = mergeTimelineItem(result[index]!, item);
   }
@@ -2145,7 +2171,8 @@ function App(): React.JSX.Element {
     return [...map.values()]
       .filter(({ cwd }) => cwd && !hiddenProjectKeys.has(cwdKey(cwd)) && basenamePath(cwd) !== "new-chat")
       // Side-chat / subagent threads are not standalone conversations.
-      .map(({ cwd, threads: all }) => ({ cwd, list: sortThreadList([...new Map(all.map((thread) => [thread.id, thread])).values()].filter((t) => !sideThreadSet.has(t.id))) }))
+      .map(({ cwd, threads: all }) => ({ cwd, list: sortThreadList([...new Map(all.map((thread) => [thread.id, thread])).values()].filter((t) => !sideThreadSet.has(t.id) && !isProjectlessThread(t))) }))
+      .filter(({ cwd, list }) => list.length > 0 || localProjectCwds.some((projectCwd) => cwdKey(projectCwd) === cwdKey(cwd)))
       .map(({ cwd, list }) => ({ cwd, name: projectAliases[cwd] || basenamePath(cwd), threads: list, recency: list.reduce((max, t) => Math.max(max, t.updatedAt), 0) }))
       .sort((a, b) => {
         const pinDelta = (pinnedProjects.includes(b.cwd) ? 1 : 0) - (pinnedProjects.includes(a.cwd) ? 1 : 0);
@@ -2156,8 +2183,8 @@ function App(): React.JSX.Element {
   }, [workspace, threads, projects, localProjectCwds, hiddenProjects, hiddenThreadIds, pinnedProjects, pinnedThreads, projectAliases, sideThreadSet, projectSortMode, sidebarLayoutMode]);
 
   const generalChats = useMemo(() => {
-    const fromProjects = projects.filter((group) => basenamePath(group.cwd) === "new-chat").flatMap((group) => group.threads);
-    const fromActive = threads.filter((summary) => basenamePath(summary.cwd) === "new-chat");
+    const fromProjects = projects.flatMap((group) => group.threads.filter(isProjectlessThread));
+    const fromActive = threads.filter(isProjectlessThread);
     const byId = new Map<string, ThreadSummary>();
     for (const summary of [...fromActive, ...fromProjects]) if (!sideThreadSet.has(summary.id) && !hiddenThreadIds.includes(summary.id)) byId.set(summary.id, summary);
     return [...byId.values()].sort((a, b) => Number(pinnedThreads.includes(b.id)) - Number(pinnedThreads.includes(a.id)) || b.updatedAt - a.updatedAt);
@@ -2457,8 +2484,14 @@ function App(): React.JSX.Element {
       && (entry.pending.attachmentDetails ?? []).length === 0;
     if (canNativeSteer && activeTurnId) {
       const modelNotice = modelChangeItemForThread(threadId, entry.pending.provider ?? "codex", entry.pending.model, entry.pending.accountId);
+      // Native `turn/steer` completes the current turn asynchronously, just
+      // like the interrupt-and-queue fallback. Mark that turn immediately so
+      // late events from the old response cannot overwrite the optimistic user
+      // message before the steered turn starts.
+      steeringInterruptedTurns.current.add(activeTurnId);
       insertItemsAfterTurn(threadId, activeTurnId, [modelNotice, entry.userItem].filter((item): item is ThreadHistoryItem => Boolean(item)));
       void window.devilCodex.steerTurn({ threadId, text: entry.pending.text, expectedTurnId: activeTurnId, runtime: "codex" }).catch((error) => {
+        steeringInterruptedTurns.current.delete(activeTurnId);
         if (modelNotice) removeItemFromThread(threadId, modelNotice.id);
         removeItemFromThread(threadId, entry.userItem.id);
         appendItemToThread(threadId, { id: crypto.randomUUID(), kind: "system", title: "스티어링 실패", text: `${String(error)}\n대기열 중단 방식으로 다시 시도합니다.` });
@@ -2641,12 +2674,19 @@ function App(): React.JSX.Element {
       && (event.method.startsWith("item/") || event.method === "response.failed")
     );
     if (suppressInterruptedTurnEvent) return;
+    const suppressInterruptedTurnTimeline = Boolean(
+      eventTurnId
+      && steeringInterruptedTurns.current.has(eventTurnId)
+      && event.method === "turn/completed"
+    );
     const pendingForEvent = pendingForThread(eventThreadId);
     if (eventThreadId && eventThreadId !== visibleThreadId) {
-      const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], timelineEvent), eventTurnId, pendingForEvent ?? undefined);
-      threadHistoryCache.current.set(eventThreadId, next);
+      if (!suppressInterruptedTurnTimeline) {
+        const next = annotateAgentMessages(applyTimelineEvent(threadHistoryCache.current.get(eventThreadId) ?? [], timelineEvent), eventTurnId, pendingForEvent ?? undefined);
+        threadHistoryCache.current.set(eventThreadId, next);
+      }
     } else {
-      queueVisibleTimelineEvent(eventThreadId, timelineEvent, eventTurnId, pendingForEvent ?? undefined);
+      if (!suppressInterruptedTurnTimeline) queueVisibleTimelineEvent(eventThreadId, timelineEvent, eventTurnId, pendingForEvent ?? undefined);
     }
     if (event.method === "response.failed" && eventThreadId) {
       if (!eventTurnId || activeTurn.current?.turnId === eventTurnId || activeTurn.current?.threadId === eventThreadId) activeTurn.current = null;
@@ -2689,13 +2729,17 @@ function App(): React.JSX.Element {
       }
       const steeringInterrupted = turnId ? steeringInterruptedTurns.current.delete(turnId) : false;
       const completedPending = pendingForThread(threadId);
+      const activeTurnIdForThread = threadId ? activeTurnsByThread.current.get(threadId) : undefined;
+      const finishingActiveTurn = !turnId || !activeTurnIdForThread || activeTurnIdForThread === turnId;
       if (activeTurn.current?.turnId === turnId) activeTurn.current = null;
-      if (threadId) activeTurnsByThread.current.delete(threadId);
-      if (threadId) pendingTurns.current.delete(threadId);
-      if (pendingTurn.current?.threadId === threadId) pendingTurn.current = null;
+      if (finishingActiveTurn && threadId) activeTurnsByThread.current.delete(threadId);
+      if (finishingActiveTurn && threadId) pendingTurns.current.delete(threadId);
+      if (finishingActiveTurn && pendingTurn.current?.threadId === threadId) pendingTurn.current = null;
       if (threadId) compactionRetries.current.delete(threadId);
-      clearThreadRunning(threadId);
-      setBusy(false);
+      if (finishingActiveTurn) {
+        clearThreadRunning(threadId);
+        if (visibleThreadId === threadId) setBusy(false);
+      }
       const hasQueuedFollowUp = Boolean(threadId && (queuedTurns.current.get(threadId)?.length ?? 0) > 0);
       if (!hasQueuedFollowUp) {
         const failed = turnStatus === "failed";
@@ -2703,10 +2747,10 @@ function App(): React.JSX.Element {
       }
       if (steeringInterrupted && threadId && turnId) {
         const cached = threadHistoryCache.current.get(threadId);
-        if (cached) threadHistoryCache.current.set(threadId, removeAgentMessagesForTurn(cached, turnId));
+        if (cached) threadHistoryCache.current.set(threadId, removeInterruptedTurnItems(cached, turnId));
         if (threadRef.current?.id === threadId) {
           setItems((current) => {
-            const next = removeAgentMessagesForTurn(current, turnId);
+            const next = removeInterruptedTurnItems(current, turnId);
             itemsRef.current = next;
             threadHistoryCache.current.set(threadId, next);
             return next;
@@ -3145,10 +3189,12 @@ function App(): React.JSX.Element {
 
   async function resumeThread(summary: ThreadSummary): Promise<void> {
     activeResume.current = summary.id;
+    const projectless = isProjectlessThread(summary);
+    const chatWorkspace = projectless ? await generalChatCwd() : summary.cwd || workspace;
     const cachedHistory = threadHistoryCache.current.get(summary.id);
     const needsHistoryLoad = !cachedHistory;
     setLoadingThreadId(needsHistoryLoad ? summary.id : null);
-    navigate({ view: "thread", thread: { id: summary.id, cwd: summary.cwd, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: summary.cwd || workspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
+    navigate({ view: "thread", thread: { id: summary.id, cwd: chatWorkspace, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, provider: summary.provider, accountId: summary.accountId }, workspace: chatWorkspace, projectDraft: false, items: cachedHistory ?? [], environmentOpen: false });
     setInitializingThreadId(needsHistoryLoad ? null : summary.id);
     const running = Boolean(runningTurnsRef.current[summary.id]);
     const historyPromise = running && hasConversationItems(cachedHistory)
@@ -3158,8 +3204,9 @@ function App(): React.JSX.Element {
     try {
       const next = await window.devilCodex.resumeThread({ id: summary.id, model: summary.model || composerModel, runtime: summary.runtime ?? agentRuntime, accountId: summary.accountId });
       if (activeResume.current !== summary.id) return;
-      setThread(next);
-      setWorkspace(next.cwd);
+      const nextWorkspace = projectless ? chatWorkspace : next.cwd;
+      setThread(projectless ? { ...next, cwd: nextWorkspace } : next);
+      setWorkspace(nextWorkspace);
       setProjectDraft(false);
       void historyPromise.then((history) => {
         const liveHistory = threadHistoryCache.current.get(summary.id) ?? [];
@@ -3182,7 +3229,7 @@ function App(): React.JSX.Element {
           setItems((current) => [...current, { id: crypto.randomUUID(), kind: "system", title: "대화 불러오기 실패", text: String(error) }]);
         }
       });
-      if (next.cwd && next.cwd !== workspace) void Promise.all([refreshThreads(next.cwd), refreshChanges(next.cwd)]);
+      if (!projectless && next.cwd && next.cwd !== workspace) void Promise.all([refreshThreads(next.cwd), refreshChanges(next.cwd)]);
     } catch (error) {
       if (activeResume.current === summary.id) {
         setLoadingThreadId(null);
@@ -4357,9 +4404,9 @@ function App(): React.JSX.Element {
               {loadingThreadId === thread?.id ? <div className="thread-loading-state"><span><Loader2 size={18} /></span><strong>대화 불러오는 중</strong><p>이전 메시지를 정리해서 표시하고 있습니다.</p></div> : timelineItems.length === 0 ? <div className="new-thread-empty"><h1>{thread ? threadTitle : projectDraft ? `${projectName}에서 무엇을 빌드할까요?` : "무엇을 만들까요?"}</h1><p>{basenamePath(workspace) === "new-chat" ? "새 채팅을 시작하세요." : workspace ? `${projectName}에서 ${runtimeLabel} 작업을 시작하세요.` : "왼쪽 위 새 채팅 또는 프로젝트 열기로 시작하세요."}</p></div> : <div className="timeline">{timelineItems.map((item) => {
                 const changeMeta = item.turnId ? turnChangeMeta.get(item.turnId) : undefined;
                 const itemChanges = changeMeta?.changes ?? timelineDefaultChanges;
-                const showItemChanges = item.kind === "agent" && itemChanges.files.length > 0;
                 const canRollbackTurn = changeMeta?.canRollback ?? false;
                 const streaming = item.kind === "agent" && Boolean(item.turnId && runningTurnIds.has(item.turnId));
+                const showItemChanges = item.kind === "agent" && itemChanges.files.length > 0 && !streaming;
                 return <TimelineCard key={item.id} item={item} changes={itemChanges} showChanges={showItemChanges} canRollback={canRollbackTurn} rollbackBusy={showItemChanges && rollbackBusy} translatable={englishOutput} streaming={streaming} agentLabel={runtimeAgentLabel(item.runtime ?? thread?.runtime ?? activeSummary?.runtime ?? agentRuntime, item.provider ?? thread?.provider ?? activeSummary?.provider ?? composerProviderId, providers.settings?.providers ?? [])} onRollback={onTimelineRollback} onReview={onTimelineReview} onOpenFile={onTimelineOpenFile} onOpenSite={(url) => openBrowserTab("right", url)} />;
               })}{threadFindQuery && visibleItems.length === 0 && <div className="thread-find-empty">일치하는 메시지 없음</div>}</div>}
             </div>

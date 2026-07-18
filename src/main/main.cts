@@ -44,6 +44,7 @@ import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.c
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
+import { codexHome } from "./codex-home.cjs";
 import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, DevilMcpStatus, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
@@ -680,6 +681,21 @@ function annotateCodexSummaries<T extends ThreadSummary>(threads: T[], stored: T
       ...(meta?.planMode !== undefined ? { planMode: meta.planMode } : {}),
     };
   });
+}
+
+async function projectlessThreadIds(): Promise<Set<string>> {
+  try {
+    const state = JSON.parse(await readFile(join(codexHome(), ".codex-global-state.json"), "utf8")) as Record<string, unknown>;
+    const atom = state["electron-persisted-atom-state"];
+    const ids = atom && typeof atom === "object" ? (atom as Record<string, unknown>)["projectless-thread-ids"] : undefined;
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && id.length > 0) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function markProjectlessThreads<T extends ThreadSummary>(threads: T[], ids: Set<string>): T[] {
+  return threads.map((thread) => ids.has(thread.id) ? { ...thread, projectless: true } : thread);
 }
 
 interface SidecarDiagnosticsSnapshot {
@@ -2725,12 +2741,13 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     }
     // Codex can still be booting while the renderer asks for a sidebar refresh.
     // Devil's own durable index must remain visible in that short window.
-    const [codex, external] = await Promise.all([server().listThreads(request).catch(() => []), providerTranscripts.summaries()]);
+    const [codex, external, projectlessIds] = await Promise.all([server().listThreads(request).catch(() => []), providerTranscripts.summaries(), projectlessThreadIds()]);
+    const markedCodex = markProjectlessThreads(codex, projectlessIds);
     const requestedCwd = cwdKey(request.cwd);
-    const codexIds = new Set(codex.map((summary) => summary.id));
+    const codexIds = new Set(markedCodex.map((summary) => summary.id));
     const extra = filterRuntime(external, "codex").filter((summary) => !codexIds.has(summary.id) && cwdKey(summary.cwd) === requestedCwd && summary.archived === (request.archived ?? false));
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), external)];
+    const merged = [...extra, ...annotateCodexSummaries(markedCodex.filter((summary) => !ids.has(summary.id)), external)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
@@ -2752,7 +2769,8 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
         .filter((summary) => summary.archived === (request.archived ?? false))
         .filter((summary) => `${summary.title}\n${summary.preview}\n${summary.cwd}`.toLowerCase().includes(query));
     }
-    return applySessionIndexTitles(annotateCodexSummaries(await server().searchThreads(request), await providerTranscripts.summaries()));
+    const [codex, stored, projectlessIds] = await Promise.all([server().searchThreads(request), providerTranscripts.summaries(), projectlessThreadIds()]);
+    return applySessionIndexTitles(annotateCodexSummaries(markProjectlessThreads(codex, projectlessIds), stored));
   });
   handle("thread:resume", async (input) => {
     const request = input as any;
@@ -2911,11 +2929,12 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     const archived = request.archived ?? false;
     const runtime = requestedRuntime(request.runtime);
     if (runtime === "claude-code") return filterRuntime(await providerTranscripts.summaries(), "claude-code").filter((summary) => summary.archived === archived);
-    const [codex, external] = await Promise.all([server().listProjects(request).catch(() => []), providerTranscripts.summaries()]);
-    const codexIds = new Set(codex.map((summary) => summary.id));
+    const [codex, external, projectlessIds] = await Promise.all([server().listProjects(request).catch(() => []), providerTranscripts.summaries(), projectlessThreadIds()]);
+    const markedCodex = markProjectlessThreads(codex, projectlessIds);
+    const codexIds = new Set(markedCodex.map((summary) => summary.id));
     const extra = filterRuntime(external, "codex").filter((summary) => !codexIds.has(summary.id) && summary.archived === archived);
     const ids = new Set(extra.map((summary) => summary.id));
-    const merged = [...extra, ...annotateCodexSummaries(codex.filter((summary) => !ids.has(summary.id)), external)];
+    const merged = [...extra, ...annotateCodexSummaries(markedCodex.filter((summary) => !ids.has(summary.id)), external)];
     sortThreadsByRecency(merged);
     return applySessionIndexTitles(merged);
   });
