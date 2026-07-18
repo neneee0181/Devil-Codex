@@ -11,6 +11,8 @@ tags:
 ---
 # Current Project State
 
+- External tool-catalog nudge parity (2026-07-18, uncommitted): OpenCodex-style compact tool-contract guidance now accompanies the actual wire tool names for Google/Antigravity, Anthropic, and non-OpenAI OpenAI-compatible providers; official OpenAI is excluded and `tool_choice: none` suppresses it. Main build/test and provider-body smoke pass.
+
 - Bridge multi-selection persistence fix (2026-07-18, uncommitted): stock model picker clicks could issue concurrent `settings:save` IPC calls; `CodexSettingsStore` now serializes read-modify-write cycles so a stale shorter selection cannot overwrite the final list. Concurrent 12-selection smoke test and Electron main build pass. Current local config still contains only the previously persisted two models and requires re-selection for models that were never saved.
 
 - Bridge stale-model overwrite fix (2026-07-18, v0.3.18): separate `useCodexSettings()` instances in the main view and Bridge picker could keep different snapshots; the main view could save an old external-model list after the picker removed it, leaving `devil-codex-catalog.json` stale. Added a renderer IPC listener for authoritative `settings:changed` events so all hooks converge on the saved list. Full build, main test, and diff check pass.

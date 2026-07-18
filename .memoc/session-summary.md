@@ -15,7 +15,7 @@ Last: 2026-07-18.
 ## Status
 - v0.3.18 fixed stale Bridge model selection synchronization.
 - Stock session `019f733f-7b48-7982-a467-69e0f76bfb0d` exposed zstd parsing failure; proxy now bounds/decodes request bodies.
-- OpenCodex parity: compact/retry/reasoning/tools/WebSocket, Gemini schema, DeepSeek/GLM/Kimi/Zen/xAI wire rules, Claude adaptive thinking.
+- OpenCodex parity: compact/retry/reasoning/tools/WebSocket, provider wire rules, and compact tool-contract nudges for external Google/Anthropic/OpenAI-compatible adapters.
 - `npm run build`, `npm run test:main`, and `git diff --check` pass.
 
 ## Resume

@@ -1,4 +1,4 @@
-import type { OcxTool } from "./types.cjs";
+import type { OcxRequestOptions, OcxTool } from "./types.cjs";
 
 const UNSUPPORTED_SCHEMA_KEYS = new Set([
   "$schema",
@@ -167,4 +167,20 @@ export function budgetTools<T extends OcxTool>(tools: T[], max: number, required
   add(tools.filter((tool) => CORE_TOOL_NAME.test(tool.name)));
   add(tools);
   return out;
+}
+
+export function buildToolCatalogNudge(
+  names: readonly string[],
+  choice?: OcxRequestOptions["toolChoice"],
+): string | undefined {
+  if (choice === "none") return undefined;
+  const unique = [...new Set(names.filter((name) => name.trim().length > 0))];
+  if (!unique.length) return undefined;
+  return [
+    "Tool contract: use the current tool catalog as ground truth.",
+    `Valid tool names for this turn are exactly ${unique.map((name) => `\`${name}\``).join(", ")}.`,
+    "Call only listed names with their listed argument keys; do not invent, translate, or rename tools.",
+    "If the task requires file, shell, search, or browser work, call the listed tool that provides it before explaining.",
+    "Keep calling tools until the requested work is complete; a progress statement alone is not completion.",
+  ].join(" ");
 }

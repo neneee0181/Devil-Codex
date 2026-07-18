@@ -1,7 +1,7 @@
 // Anthropic adapter: neutral request → Anthropic Messages call → AdapterEvent stream.
 // Adapted from opencodex (MIT).
 import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxMessage, type OcxParsedRequest, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
-import { budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { buildToolCatalogNudge, budgetTools, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import { providerErrorMessage } from "./errors.cjs";
 
 const ANTHROPIC_API = "https://api.anthropic.com";
@@ -147,6 +147,13 @@ export function buildAnthropicRequest(parsed: OcxParsedRequest, auth: AnthropicA
   if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
   if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
   if (parsed.options.stopSequences !== undefined) body.stop_sequences = parsed.options.stopSequences;
+
+  const nudge = buildToolCatalogNudge(
+    selectedTools.map((tool) => toClaudeToolName(sanitizeName(namespacedToolName(tool.namespace, tool.name)), oauth)),
+    parsed.options.toolChoice,
+  );
+  const systemParts = [oauth ? CLAUDE_CODE_SYSTEM : undefined, sys, nudge].filter(Boolean);
+  if (systemParts.length) body.system = oauth ? systemParts.map((text) => ({ type: "text", text })) : systemParts.join("\n\n");
 
   const tc = parsed.options.toolChoice;
   if (tc === "auto") body.tool_choice = { type: "auto" };

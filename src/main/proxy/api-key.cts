@@ -1,6 +1,6 @@
 import { allowedToolNames, namespacedToolName, type AdapterEvent, type OcxAssistantMessage, type OcxContentPart, type OcxParsedRequest, type OcxTool, type OcxToolResultMessage, type OcxUsage } from "./types.cjs";
 import { providerErrorMessage } from "./errors.cjs";
-import { budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
+import { buildToolCatalogNudge, budgetTools, normalizeGeminiSchema, normalizeSchema, sanitizeName } from "./tool-sanitize.cjs";
 import type { ProviderId } from "../contracts.cjs";
 import { apiProviderConfig, apiProviderUrl } from "../provider-settings.cjs";
 
@@ -55,10 +55,23 @@ function wireToolCallName(part: { name: string; namespace?: string }): string {
   return sanitizeName(namespacedToolName(part.namespace, part.name));
 }
 
+function selectedTools(parsed: OcxParsedRequest, max: number): OcxTool[] {
+  const allowed = allowedToolNames(parsed.options.toolChoice);
+  return budgetTools(
+    parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name))),
+    max,
+    requiredToolName(parsed),
+  );
+}
+
 function openAiMessages(parsed: OcxParsedRequest, allowImages: boolean, provider: ApiKeyProvider): unknown[] {
   const out: unknown[] = [];
   let pendingToolCallIds = new Set<string>();
-  if (parsed.context.instructions) out.push({ role: "system", content: parsed.context.instructions });
+  const nudge = provider !== "openai"
+    ? buildToolCatalogNudge(selectedTools(parsed, maxToolsForProvider(provider)).map(wireToolName), parsed.options.toolChoice)
+    : undefined;
+  const instructions = [parsed.context.instructions, nudge].filter(Boolean).join("\n\n");
+  if (instructions) out.push({ role: "system", content: instructions });
   for (const msg of parsed.context.messages) {
     if (msg.role === "user") {
       out.push({ role: "user", content: chatContent(msg.content, allowImages) });
@@ -135,7 +148,7 @@ export function googleContents(parsed: OcxParsedRequest): unknown[] {
 }
 
 export function googleTools(parsed: OcxParsedRequest): unknown[] | undefined {
-  const selected = budgetTools(parsed.tools, 24, requiredToolName(parsed));
+  const selected = selectedTools(parsed, 24);
   if (!selected.length) return undefined;
   return [{
     functionDeclarations: selected.map((tool) => ({
@@ -271,9 +284,14 @@ export function buildGoogleGenerateContentBody(parsed: OcxParsedRequest): Record
   if (parsed.options.topP !== undefined) generationConfig.topP = parsed.options.topP;
   if (parsed.options.stopSequences !== undefined) generationConfig.stopSequences = parsed.options.stopSequences;
   const tools = googleTools(parsed);
+  const nudge = buildToolCatalogNudge(
+    selectedTools(parsed, 24).map(wireToolName),
+    parsed.options.toolChoice,
+  );
+  const instructions = [parsed.context.instructions, nudge].filter(Boolean).join("\n\n");
   return {
     contents: googleContents(parsed),
-    ...(parsed.context.instructions ? { systemInstruction: { parts: [{ text: parsed.context.instructions }] } } : {}),
+    ...(instructions ? { systemInstruction: { parts: [{ text: instructions }] } } : {}),
     ...(tools ? { tools } : {}),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
   };
