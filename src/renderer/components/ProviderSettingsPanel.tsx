@@ -213,6 +213,7 @@ export function ProviderSettingsPanel({ settings, state, error, onSelect, onSave
               <span>{sidecar}</span>
               <span>{entry.durationMs !== undefined ? `${Math.round(entry.durationMs / 1000)}s` : when}</span>
               <b>{entry.status === "completed" ? "성공" : entry.status === "failed" ? "실패" : "진행 중"}</b>
+              {entry.finishReason && <small>finishReason: {entry.finishReason}</small>}
               {entry.error && <small className="provider-request-log-error">{entry.errorType ? `[${entry.errorType}] ` : ""}{entry.error}</small>}
             </div>;
           })}</div>

@@ -2,13 +2,14 @@
 // app-server routes external-model turns here; this translates to Claude/Copilot
 // and streams Codex Responses SSE back. Codex records the turn natively → syncs.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { gunzipSync, inflateRawSync, inflateSync, zstdDecompressSync } from "node:zlib";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { app } from "electron";
 import { bridgeToResponsesSSE, type ResponsesTerminalStatus } from "./bridge.cjs";
 import { parseRequest } from "./parser.cjs";
@@ -40,6 +41,7 @@ import { CodexSettingsStore } from "../codex-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
 import { getStoredAccount } from "../provider-accounts.cjs";
 import { selectConfiguredModelRows } from "../codex-stock-catalog.cjs";
+import { diagnosticLog } from "../diagnostic-log.cjs";
 
 const CHATGPT_CODEX_RESPONSES = "https://chatgpt.com/backend-api/codex/responses";
 export const DEVIL_PROXY_PORT = 49873;
@@ -73,6 +75,137 @@ let requestLogWrite = Promise.resolve();
 const REQUEST_LOG_LIMIT = 120;
 let nvidiaRateLimitQueue = Promise.resolve();
 let nvidiaLastRequestAt = 0;
+
+interface BridgeDiagnosticContext extends Record<string, unknown> {
+  requestId: string;
+  transport: "http" | "websocket";
+  route: string;
+  threadId?: string;
+  provider?: string;
+  model?: string;
+  upstreamSequence?: number;
+}
+
+const bridgeDiagnosticContext = new AsyncLocalStorage<BridgeDiagnosticContext>();
+
+function logBridgeDiagnostic(
+  event: string,
+  data: unknown = {},
+  context = bridgeDiagnosticContext.getStore(),
+  level: "debug" | "info" | "warn" | "error" = "info",
+): void {
+  if (!context) return;
+  diagnosticLog("bridge", event, data, context, level);
+}
+
+function diagnosticRequestId(req: IncomingMessage): string {
+  const value = req.headers["x-devil-diagnostic-id"];
+  if (typeof value === "string" && /^[A-Za-z0-9._:-]{8,160}$/.test(value)) return value;
+  return crypto.randomUUID();
+}
+
+function diagnosticTransport(req: IncomingMessage): BridgeDiagnosticContext["transport"] {
+  return req.headers["x-devil-diagnostic-transport"] === "websocket" ? "websocket" : "http";
+}
+
+function diagnosticHeaders(headers: HeadersInit | undefined): Record<string, unknown> {
+  if (!headers) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return { ...headers };
+}
+
+const MAX_DIAGNOSTIC_BODY_BYTES = 8 * 1024 * 1024;
+
+function diagnosticChunk(chunk: Uint8Array): { bytes: number; sha256: string } {
+  return { bytes: chunk.byteLength, sha256: createHash("sha256").update(chunk).digest("hex") };
+}
+
+function diagnosticBody(text: string, kind: string): unknown {
+  const bytes = Buffer.byteLength(text);
+  if (bytes <= MAX_DIAGNOSTIC_BODY_BYTES) {
+    try { return { kind, bytes, json: JSON.parse(text) as unknown }; }
+    catch { return { kind, bytes, text }; }
+  }
+  return { kind, bytes, sha256: createHash("sha256").update(text).digest("hex"), omitted: true };
+}
+
+function tracedUpstreamResponse(response: Response, context: BridgeDiagnosticContext, upstreamRequestId: string): Response {
+  if (!response.body) return response;
+  const isSse = (response.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream");
+  const decoder = new TextDecoder();
+  let sequence = 0;
+  let totalBytes = 0;
+  let textBuffer = "";
+  let bodyOmitted = false;
+  let oversizedSseFrame = false;
+  let oversizedSseTail = "";
+  let sseSequence = 0;
+  const bodyHash = createHash("sha256");
+  const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      sequence += 1;
+      totalBytes += chunk.byteLength;
+      bodyHash.update(chunk);
+      logBridgeDiagnostic("upstream.raw_chunk", {
+        upstreamRequestId,
+        sequence,
+        ...diagnosticChunk(chunk),
+      }, context, "debug");
+      const decoded = decoder.decode(chunk, { stream: true });
+      if (isSse) {
+        let nextText = decoded;
+        if (oversizedSseFrame) {
+          const combined = oversizedSseTail + nextText;
+          const boundary = combined.match(/\r?\n\r?\n/);
+          if (!boundary || boundary.index === undefined) {
+            oversizedSseTail = combined.slice(-3);
+            controller.enqueue(chunk);
+            return;
+          }
+          logBridgeDiagnostic("upstream.sse_frame", { upstreamRequestId, sequence: ++sseSequence, omitted: true, reason: "frame exceeds diagnostic limit" }, context, "warn");
+          nextText = combined.slice(boundary.index + boundary[0].length);
+          oversizedSseFrame = false;
+          oversizedSseTail = "";
+        }
+        textBuffer += nextText;
+        let next: { block: string; rest: string } | null;
+        while ((next = nextSseBlock(textBuffer))) {
+          textBuffer = next.rest;
+          logBridgeDiagnostic("upstream.sse_frame", { upstreamRequestId, sequence: ++sseSequence, block: next.block }, context, "debug");
+        }
+        if (Buffer.byteLength(textBuffer) > MAX_DIAGNOSTIC_BODY_BYTES) {
+          oversizedSseTail = textBuffer.slice(-3);
+          textBuffer = "";
+          oversizedSseFrame = true;
+        }
+      } else if (!bodyOmitted) {
+        textBuffer += decoded;
+        if (Buffer.byteLength(textBuffer) > MAX_DIAGNOSTIC_BODY_BYTES) {
+          textBuffer = "";
+          bodyOmitted = true;
+        }
+      }
+      controller.enqueue(chunk);
+    },
+    flush() {
+      const residual = decoder.decode();
+      if (isSse) {
+        if (oversizedSseFrame) {
+          logBridgeDiagnostic("upstream.sse_residual", { upstreamRequestId, sequence: ++sseSequence, omitted: true, reason: "frame exceeds diagnostic limit" }, context, "warn");
+        } else {
+          textBuffer += residual;
+          if (textBuffer.trim()) logBridgeDiagnostic("upstream.sse_residual", { upstreamRequestId, sequence: ++sseSequence, text: textBuffer }, context, "debug");
+        }
+      } else if (!bodyOmitted) {
+        textBuffer += residual;
+        logBridgeDiagnostic("upstream.body", diagnosticBody(textBuffer, "upstream"), context, "debug");
+      }
+      logBridgeDiagnostic("upstream.stream_end", { upstreamRequestId, chunks: sequence, bytes: totalBytes, sha256: bodyHash.digest("hex"), bodyOmitted }, context);
+    },
+  }));
+  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
 
 function rejectWebSocketUpgrade(socket: Duplex, status: number, message: string): void {
   const body = JSON.stringify({ error: { message } });
@@ -111,9 +244,11 @@ function terminalResponseType(payload: string): "completed" | "failed" | "incomp
   return undefined;
 }
 
-function sendWsProtocolError(ws: WebSocket, message: string): void {
+function sendWsProtocolError(ws: WebSocket, message: string, context?: BridgeDiagnosticContext): void {
   if (ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: "error", status: 502, error: { type: "protocol_error", code: "websocket_protocol_error", message } }));
+  const payload = JSON.stringify({ type: "error", status: 502, error: { type: "protocol_error", code: "websocket_protocol_error", message } });
+  ws.send(payload);
+  if (context) logBridgeDiagnostic("websocket.protocol_error_sent", { message, payload }, context, "error");
 }
 
 async function pumpResponsesSseToWebSocket(
@@ -121,6 +256,7 @@ async function pumpResponsesSseToWebSocket(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   isCurrent: () => boolean,
+  context?: BridgeDiagnosticContext,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -138,26 +274,33 @@ async function pumpResponsesSseToWebSocket(
         let valid = true;
         try { JSON.parse(payload); } catch { valid = false; }
         if (!valid) {
-          sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame");
+          sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame", context);
           terminalSeen = true;
           break;
         }
         if (ws.readyState !== WebSocket.OPEN) return;
         ws.send(payload);
-        if (terminalResponseType(payload)) { terminalSeen = true; break; }
+        const terminal = terminalResponseType(payload);
+        if (context) logBridgeDiagnostic("websocket.frame_sent", { payload, terminal }, context, terminal && terminal !== "completed" ? "warn" : "debug");
+        if (terminal) { terminalSeen = true; break; }
       }
     }
     buffer += decoder.decode();
     if (!terminalSeen && buffer.trim() && !signal.aborted && isCurrent()) {
       const parsed = ssePayloads(`${buffer}\n\n`);
       for (const payload of parsed.payloads) {
-        try { JSON.parse(payload); } catch { sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame"); terminalSeen = true; break; }
-        if (ws.readyState === WebSocket.OPEN) ws.send(payload);
-        if (terminalResponseType(payload)) { terminalSeen = true; break; }
+        try { JSON.parse(payload); } catch { sendWsProtocolError(ws, "Invalid JSON payload in upstream SSE frame", context); terminalSeen = true; break; }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(payload);
+          const terminal = terminalResponseType(payload);
+          if (context) logBridgeDiagnostic("websocket.frame_sent", { payload, terminal, residual: true }, context, terminal && terminal !== "completed" ? "warn" : "debug");
+          if (terminal) { terminalSeen = true; break; }
+        }
       }
     }
-    if (!terminalSeen && !signal.aborted && isCurrent()) sendWsProtocolError(ws, "Upstream stream ended before response terminal event");
+    if (!terminalSeen && !signal.aborted && isCurrent()) sendWsProtocolError(ws, "Upstream stream ended before response terminal event", context);
   } finally {
+    if (context) logBridgeDiagnostic("websocket.pump_end", { terminalSeen, aborted: signal.aborted, current: isCurrent(), readyState: ws.readyState }, context, terminalSeen ? "info" : "warn");
     if (terminalSeen || signal.aborted || !isCurrent()) await reader.cancel().catch(() => undefined);
     else reader.releaseLock();
   }
@@ -277,19 +420,67 @@ function retryAfterMs(response: Response): number {
 
 async function fetchUpstream(url: string, init: RequestInit, parentSignal: AbortSignal): Promise<Response> {
   let lastError: unknown;
+  const diagnosticContext = bridgeDiagnosticContext.getStore();
+  const upstreamSequence = diagnosticContext ? (diagnosticContext.upstreamSequence = (diagnosticContext.upstreamSequence ?? 0) + 1) : 0;
+  const upstreamOperationId = diagnosticContext ? `${diagnosticContext.requestId}:upstream:${upstreamSequence}` : "";
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (parentSignal.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    const upstreamRequestId = diagnosticContext ? `${upstreamOperationId}:attempt:${attempt + 1}` : "";
+    const attemptStartedAt = Date.now();
+    if (diagnosticContext) {
+      logBridgeDiagnostic("upstream.attempt", {
+        upstreamRequestId,
+        upstreamOperationId,
+        attempt: attempt + 1,
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
+        url,
+        method: init.method ?? "GET",
+        headers: diagnosticHeaders(init.headers),
+        body: typeof init.body === "string" ? diagnosticBody(init.body, "upstream_request") : init.body,
+      }, diagnosticContext);
+    }
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), UPSTREAM_TIMEOUT_MS);
     const abort = () => timeout.abort();
     parentSignal.addEventListener("abort", abort, { once: true });
     try {
       const response = await fetch(url, { ...init, signal: timeout.signal });
-      if (!retryableStatus(response.status) || attempt === 2) return response;
-      try { await response.arrayBuffer(); } catch { /* body drain is best effort */ }
-      await new Promise<void>((resolve) => setTimeout(resolve, retryAfterMs(response) || Math.min(2_000, 250 * (2 ** attempt))));
+      const shouldRetry = retryableStatus(response.status) && attempt < 2;
+      const retryDelayMs = shouldRetry ? retryAfterMs(response) || Math.min(2_000, 250 * (2 ** attempt)) : 0;
+      if (diagnosticContext) {
+        logBridgeDiagnostic("upstream.response", {
+          upstreamRequestId,
+          upstreamOperationId,
+          attempt: attempt + 1,
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          elapsedMs: Date.now() - attemptStartedAt,
+          retry: shouldRetry,
+          retryDelayMs,
+        }, diagnosticContext, response.ok ? "info" : "warn");
+      }
+      if (!shouldRetry) return diagnosticContext ? tracedUpstreamResponse(response, diagnosticContext, upstreamRequestId) : response;
+      try {
+        const retryBody = await response.text();
+        if (diagnosticContext) logBridgeDiagnostic("upstream.retry_body", { upstreamRequestId, text: retryBody }, diagnosticContext, "warn");
+      } catch (error) {
+        if (diagnosticContext) logBridgeDiagnostic("upstream.retry_body_error", { upstreamRequestId, error }, diagnosticContext, "warn");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
     } catch (error) {
       lastError = error;
+      if (diagnosticContext) {
+        logBridgeDiagnostic("upstream.error", {
+          upstreamRequestId,
+          upstreamOperationId,
+          attempt: attempt + 1,
+          elapsedMs: Date.now() - attemptStartedAt,
+          parentAborted: parentSignal.aborted,
+          timeoutAborted: timeout.signal.aborted,
+          error,
+        }, diagnosticContext, "error");
+      }
       if (parentSignal.aborted) throw error;
       if (attempt === 2) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, Math.min(2_000, 250 * (2 ** attempt))));
@@ -515,6 +706,13 @@ async function relayResponsesPassthrough(
   controller: AbortController,
   options: { expectStream: boolean; onCompletedResponse?: (response: Record<string, unknown>) => void },
 ): Promise<PassthroughRelayResult> {
+  const diagnosticContext = bridgeDiagnosticContext.getStore();
+  let downstreamSequence = 0;
+  const logDownstream = (body: string | Uint8Array, kind: string) => {
+    if (!diagnosticContext) return;
+    const value = typeof body === "string" ? Buffer.from(body) : body;
+    logBridgeDiagnostic("responses.raw_chunk", { sequence: ++downstreamSequence, kind, ...diagnosticChunk(value) }, diagnosticContext, "debug");
+  };
   const headers = sanitizePassthroughHeaders(upstream.headers);
   const contentTypeKey = Object.keys(headers).find((key) => key.toLowerCase() === "content-type");
   const contentType = contentTypeKey ? headers[contentTypeKey]!.toLowerCase() : "";
@@ -525,6 +723,7 @@ async function relayResponsesPassthrough(
   res.writeHead(upstream.status, headers);
 
   if (!upstream.body) {
+    if (diagnosticContext) logBridgeDiagnostic("responses.empty_body", { upstreamStatus: upstream.status }, diagnosticContext, upstream.ok ? "warn" : "error");
     res.end();
     return {
       terminal: upstream.ok ? "incomplete" : "failed",
@@ -546,6 +745,8 @@ async function relayResponsesPassthrough(
         error: `Upstream response terminated unexpectedly: ${redactSensitiveText(caught instanceof Error ? caught.message : String(caught))}`,
       };
     }
+    logDownstream(text, "json");
+    if (diagnosticContext) logBridgeDiagnostic("responses.body", diagnosticBody(text, "json"), diagnosticContext, "debug");
     res.end(text);
     let response: Record<string, unknown> | undefined;
     let terminal: ResponsesTerminalStatus = upstream.ok ? "incomplete" : "failed";
@@ -612,16 +813,21 @@ async function relayResponsesPassthrough(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      logDownstream(value, "sse");
       res.write(Buffer.from(value));
       buffer += decoder.decode(value, { stream: true });
       let next: { block: string; rest: string } | null;
       while ((next = nextSseBlock(buffer))) {
         buffer = next.rest;
+        if (diagnosticContext) logBridgeDiagnostic("responses.sse_frame", { sequence: downstreamSequence, block: next.block }, diagnosticContext, "debug");
         inspect(sseDataPayload(next.block));
       }
     }
     buffer += decoder.decode();
-    if (buffer.trim()) inspect(sseDataPayload(buffer));
+    if (buffer.trim()) {
+      if (diagnosticContext) logBridgeDiagnostic("responses.sse_residual", { sequence: downstreamSequence, block: buffer }, diagnosticContext, "debug");
+      inspect(sseDataPayload(buffer));
+    }
     terminal ??= upstream.ok ? "incomplete" : "failed";
   } catch (caught) {
     terminal = "failed";
@@ -630,13 +836,25 @@ async function relayResponsesPassthrough(
     if (!controller.signal.aborted && !res.destroyed && !res.writableEnded) {
       const failure = { type: "upstream_error", code: "upstream_reset", message: error };
       const payload = JSON.stringify({ type: "response.failed", response: { status: "failed", error: failure, last_error: failure } });
-      res.write(`\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`);
+      const failureSse = `\n\nevent: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`;
+      logDownstream(failureSse, "synthetic_failure_sse");
+      res.write(failureSse);
     }
   } finally {
     reader.releaseLock();
     if (!res.writableEnded) res.end();
   }
   const usage = completedResponse ? responsesUsage(completedResponse) : undefined;
+  if (diagnosticContext) {
+    logBridgeDiagnostic("responses.passthrough_terminal", {
+      terminal: terminal ?? "incomplete",
+      upstreamStatus: upstream.status,
+      usage,
+      error,
+      errorType,
+      completedResponse,
+    }, diagnosticContext, terminal === "completed" ? "info" : "warn");
+  }
   return {
     terminal: terminal ?? "incomplete",
     upstreamStatus: upstream.status,
@@ -652,10 +870,12 @@ function sendResponsesFailure(res: ServerResponse, stream: boolean, status: numb
   if (stream) {
     const failure = { type: "upstream_error", code: "upstream_error", message: safe };
     const payload = JSON.stringify({ type: "response.failed", response: { status: "failed", error: failure, last_error: failure } });
+    logBridgeDiagnostic("responses.synthetic_failure", { stream, status, payload }, undefined, "error");
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     res.end(`event: response.failed\ndata: ${payload}\n\ndata: [DONE]\n\n`);
     return;
   }
+  logBridgeDiagnostic("responses.synthetic_failure", { stream, status, message: safe }, undefined, "error");
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: { type: "upstream_error", message: safe } }));
 }
@@ -687,7 +907,13 @@ async function handleNativeCompact(req: IncomingMessage, raw: string, res: Serve
   res.writeHead(upstream.status, { "Content-Type": upstream.headers.get("content-type") ?? "application/json" });
   if (upstream.body) {
     const reader = upstream.body.getReader();
-    while (true) { const { done, value } = await reader.read(); if (done) break; res.write(Buffer.from(value)); }
+    let sequence = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      logBridgeDiagnostic("responses.raw_chunk", { sequence: ++sequence, kind: "compact", ...diagnosticChunk(value) }, undefined, "debug");
+      res.write(Buffer.from(value));
+    }
   }
   res.end();
 }
@@ -699,6 +925,8 @@ async function handleCompactResponses(req: IncomingMessage, body: unknown, res: 
   const parsed = parseRequest(body);
   const { provider, accountId, model } = splitModel(parsed.model);
   parsed.model = model;
+  const diagnosticContext = bridgeDiagnosticContext.getStore();
+  if (diagnosticContext) Object.assign(diagnosticContext, { provider, model, threadId: threadIdFromRequest(req, body) || undefined });
   const controller = new AbortController();
   res.on("close", () => controller.abort());
   if (provider === "openai") {
@@ -719,7 +947,7 @@ async function handleCompactResponses(req: IncomingMessage, body: unknown, res: 
   let summary = "";
   let failure = "";
   try {
-    const stream = await providerEventStream(provider, accountId, parsed, controller.signal);
+    const stream = tapProxyEvents(await providerEventStream(provider, accountId, parsed, controller.signal), {});
     for await (const event of stream) {
       if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "reasoning_raw_delta") summary += event.type === "text_delta" ? event.text : event.type === "thinking_delta" ? event.thinking : event.text;
       if (event.type === "error") failure = event.message;
@@ -728,6 +956,7 @@ async function handleCompactResponses(req: IncomingMessage, body: unknown, res: 
   if (failure) throw new ProxyRequestError(502, redactSensitiveText(failure));
   const messages = extractCompactUserMessages((body as Record<string, unknown>).input);
   const output = buildCompactV1Output(messages, summary.trim());
+  logBridgeDiagnostic("responses.compact_output", { output });
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ output }));
 }
@@ -807,12 +1036,14 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   const controller = new AbortController();
   res.on("close", () => controller.abort());
   const threadId = threadIdFromRequest(req, body);
+  const diagnosticContext = bridgeDiagnosticContext.getStore();
+  if (diagnosticContext) Object.assign(diagnosticContext, { provider, model, ...(threadId ? { threadId } : {}) });
   const sidecars = routedCompaction || provider === "openai"
     ? { stats: { webSearchRequests: 0, webSearchEvents: [], visionRequests: 0, failures: [] } as SidecarStats }
     : await sidecarState(threadId);
   const stats = requestPartStats(parsed);
   const startedAt = Date.now();
-  const requestId = crypto.randomUUID();
+  const requestId = diagnosticContext?.requestId ?? crypto.randomUUID();
   const account = accountId ? await getStoredAccount(provider, accountId).catch(() => null) : null;
   startRequestLog({
     id: requestId,
@@ -830,6 +1061,17 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     capability: capabilityFor(provider as ProviderId, model),
     sidecar: sidecarSnapshot(sidecars.stats),
   });
+  logBridgeDiagnostic("request.summary", {
+    accountId,
+    previousResponseId: parsed.previousResponseId,
+    previousResponseInputExpanded,
+    routedCompaction,
+    stream: parsed.stream,
+    reasoningEffort: parsed.reasoningEffort,
+    options: parsed.options,
+    stats,
+    sidecar: { settings: sidecars.settings, stats: sidecarSnapshot(sidecars.stats) },
+  }, diagnosticContext);
 
   if (provider === "openai") {
     const responseStateEligible = parsed._compactionRequest !== true && (!parsed.previousResponseId || previousResponseInputExpanded);
@@ -867,6 +1109,15 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
       ...(result?.usage ? { usage: result.usage } : {}),
       sidecar: sidecarSnapshot(sidecars.stats),
     });
+    logBridgeDiagnostic("request.terminal", {
+      status: failed ? "failed" : "completed",
+      terminal: result?.terminal ?? "failed",
+      upstreamStatus: result?.upstreamStatus,
+      durationMs: completedAt - startedAt,
+      usage: result?.usage,
+      error: failureMessage,
+      errorType: failureType,
+    }, diagnosticContext, failed ? "error" : "info");
     return;
   }
 
@@ -875,6 +1126,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   let failureType = "";
   let terminalStatus: ResponsesTerminalStatus | undefined;
   let usage: ProviderRequestLogEntry["usage"] | undefined;
+  let finishReason: string | undefined;
   try {
     stream = await streamForProvider({ provider, accountId, parsed, req, sidecars, signal: controller.signal });
   } catch (error) {
@@ -884,6 +1136,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   stream = tapProxyEvents(stream, {
     onError: (message, type) => { failureMessage = message; failureType = type ?? ""; },
     onUsage: (value) => { usage = logUsage(value); },
+    onFinishReason: (value) => { finishReason = value; },
   });
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -908,25 +1161,84 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     },
   );
   const reader = sse.getReader();
+  const downstreamDecoder = new TextDecoder();
+  let downstreamSequence = 0;
+  let downstreamBuffer = "";
+  let downstreamFrameOmitted = false;
+  let downstreamBoundaryTail = "";
+  const traceDownstreamText = (decoded: string) => {
+    let nextText = decoded;
+    if (downstreamFrameOmitted) {
+      const combined = downstreamBoundaryTail + nextText;
+      const boundary = combined.match(/\r?\n\r?\n/);
+      if (!boundary || boundary.index === undefined) {
+        downstreamBoundaryTail = combined.slice(-3);
+        return;
+      }
+      logBridgeDiagnostic("responses.sse_frame", { sequence: downstreamSequence, omitted: true, reason: "frame exceeds diagnostic limit" }, diagnosticContext, "warn");
+      nextText = combined.slice(boundary.index + boundary[0].length);
+      downstreamFrameOmitted = false;
+      downstreamBoundaryTail = "";
+    }
+    downstreamBuffer += nextText;
+    let next: { block: string; rest: string } | null;
+    while ((next = nextSseBlock(downstreamBuffer))) {
+      downstreamBuffer = next.rest;
+      logBridgeDiagnostic("responses.sse_frame", { sequence: downstreamSequence, block: next.block }, diagnosticContext, "debug");
+    }
+    if (Buffer.byteLength(downstreamBuffer) > MAX_DIAGNOSTIC_BODY_BYTES) {
+      downstreamBoundaryTail = downstreamBuffer.slice(-3);
+      downstreamBuffer = "";
+      downstreamFrameOmitted = true;
+    }
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      logBridgeDiagnostic("responses.raw_chunk", {
+        sequence: ++downstreamSequence,
+        kind: "translated_sse",
+        ...diagnosticChunk(value),
+      }, diagnosticContext, "debug");
+      traceDownstreamText(downstreamDecoder.decode(value, { stream: true }));
       res.write(Buffer.from(value));
     }
+    traceDownstreamText(downstreamDecoder.decode());
+    if (downstreamFrameOmitted) logBridgeDiagnostic("responses.sse_residual", { sequence: downstreamSequence, omitted: true, reason: "frame exceeds diagnostic limit" }, diagnosticContext, "warn");
+    else if (downstreamBuffer.trim()) logBridgeDiagnostic("responses.sse_residual", { sequence: downstreamSequence, block: downstreamBuffer }, diagnosticContext, "debug");
   } finally {
     const completedAt = Date.now();
     const incomplete = terminalStatus === "incomplete";
-    const failed = Boolean(failureMessage) || terminalStatus === "failed" || incomplete;
+    const aborted = controller.signal.aborted;
+    const terminalMissing = terminalStatus === undefined;
+    const failed = Boolean(failureMessage) || terminalStatus !== "completed";
+    const terminalError = failureMessage
+      || (aborted ? "클라이언트 연결이 응답 완료 전에 종료되었습니다." : terminalMissing ? "프록시 terminal 이벤트 없이 응답이 종료되었습니다." : incomplete ? "프록시 응답이 완료 전에 종료되었습니다." : terminalStatus === "failed" ? "프록시가 실패 terminal 이벤트로 응답을 종료했습니다." : "");
+    const terminalErrorType = failureType
+      || (aborted ? "request_aborted" : terminalMissing ? "bridge_terminal_missing" : incomplete ? "upstream_incomplete" : terminalStatus === "failed" ? "bridge_failed" : "");
     finishRequestLog(requestId, {
       status: failed ? "failed" : "completed",
       completedAt,
       durationMs: completedAt - startedAt,
-      ...(failureMessage ? { error: failureMessage } : incomplete ? { error: "프록시 응답이 완료 전에 종료되었습니다." } : {}),
-      ...(failureType ? { errorType: failureType } : incomplete ? { errorType: "upstream_incomplete" } : {}),
+      ...(terminalError ? { error: terminalError } : {}),
+      ...(terminalErrorType ? { errorType: terminalErrorType } : {}),
+      ...(finishReason ? { finishReason } : {}),
       ...(usage ? { usage } : {}),
       sidecar: sidecarSnapshot(sidecars.stats),
     });
+    logBridgeDiagnostic("request.terminal", {
+      status: failed ? "failed" : "completed",
+      bridgeTerminal: terminalStatus ?? "missing",
+      finishReason,
+      durationMs: completedAt - startedAt,
+      usage,
+      aborted,
+      terminalMissing,
+      error: terminalError || undefined,
+      errorType: terminalErrorType || undefined,
+      sidecar: sidecarSnapshot(sidecars.stats),
+    }, diagnosticContext, failed ? "error" : "info");
     res.end();
   }
 }
@@ -950,17 +1262,38 @@ function bridgeToolMaps(parsed: OcxParsedRequest): {
   return { toolNsMap, freeformToolNames, toolSearchToolNames };
 }
 
-async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: { onError?: (message: string, type?: string) => void; onUsage?: (usage: OcxUsage | undefined) => void }): AsyncGenerator<AdapterEvent> {
-  for await (const event of stream) {
-    if (event.type === "error") {
-      const message = redactSensitiveText(event.message);
-      handlers.onError?.(message, event.errorType);
-      reportProxyError?.(message);
-      yield { ...event, message };
-      continue;
+async function* tapProxyEvents(stream: AsyncGenerator<AdapterEvent>, handlers: { onError?: (message: string, type?: string) => void; onUsage?: (usage: OcxUsage | undefined) => void; onFinishReason?: (finishReason: string) => void }): AsyncGenerator<AdapterEvent> {
+  const diagnosticContext = bridgeDiagnosticContext.getStore();
+  let sequence = 0;
+  let terminalSeen = false;
+  try {
+    for await (const event of stream) {
+      logBridgeDiagnostic("adapter.event", { sequence: ++sequence, event }, diagnosticContext, event.type === "error" ? "error" : "debug");
+      if (event.type === "error") {
+        terminalSeen = true;
+        const message = redactSensitiveText(event.message);
+        handlers.onError?.(message, event.errorType);
+        if (event.usage) handlers.onUsage?.(event.usage);
+        if (event.finishReason) handlers.onFinishReason?.(event.finishReason);
+        reportProxyError?.(message);
+        yield { ...event, message };
+        continue;
+      }
+      if (event.type === "done") {
+        terminalSeen = true;
+        handlers.onUsage?.(event.usage);
+        if (event.finishReason) handlers.onFinishReason?.(event.finishReason);
+      }
+      yield event;
     }
-    if (event.type === "done") handlers.onUsage?.(event.usage);
-    yield event;
+  } catch (error) {
+    const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
+    handlers.onError?.(message, "adapter_stream_error");
+    reportProxyError?.(message);
+    logBridgeDiagnostic("adapter.stream_error", { sequence, error }, diagnosticContext, "error");
+    throw error;
+  } finally {
+    logBridgeDiagnostic("adapter.stream_end", { events: sequence, terminalSeen }, diagnosticContext, terminalSeen ? "debug" : "warn");
   }
 }
 
@@ -1050,6 +1383,7 @@ export class CodexProxyServer {
     const websocketServer = new WebSocketServer({ noServer: true, maxPayload: MAX_DECOMPRESSED_BODY_BYTES });
     const server = createServer((req, res) => {
       void (async () => {
+        let requestDiagnosticContext: BridgeDiagnosticContext | undefined;
         try {
           // Reject browser-originated requests: stock Codex (a native HTTP
           // client) never sends these, only a web page would. Closes the CSRF /
@@ -1067,27 +1401,71 @@ export class CodexProxyServer {
           const requestedUrl = rawUrl.slice(prefix.length) || "/";
           const stockRoute = requestedUrl === "/stock/v1" || requestedUrl.startsWith("/stock/v1/");
           const url = stockRoute ? requestedUrl.slice("/stock".length) : requestedUrl;
-          if (req.method === "GET" && url.startsWith("/v1/models")) { await handleModels(res, stockRoute); return; }
-          if (req.method === "POST" && (url === "/v1/responses" || url === "/v1/responses/compact")) {
-            const { raw, body } = await readBody(req);
-            // Both native ChatGPT passthrough and routed providers need the local replay cache:
-            // stock Codex chains WS turns with previous_response_id, while ChatGPT's Codex REST
-            // endpoint rejects that parameter. Expanding every normal Responses turn preserves the
-            // second/third-turn context before either route strips the id for its upstream.
-            const routedBody = url === "/v1/responses" ? expandPreviousResponseInput(body) : body;
-            const previousResponseInputExpanded = routedBody !== body;
-            const rewritten = routedBody && typeof routedBody === "object" && !Array.isArray(routedBody)
-              ? sanitizeEncryptedContentInPlace((routedBody as { input?: unknown }).input)
-              : 0;
-            const routedRaw = previousResponseInputExpanded || rewritten > 0 ? JSON.stringify(routedBody) : raw;
-            if (url === "/v1/responses/compact" && isExternalModel(modelId(body))) await handleCompactResponses(req, routedBody, res);
-            else if (url === "/v1/responses/compact") await handleNativeCompact(req, routedRaw, res);
-            else if (isExternalModel(modelId(body))) await handleExternalResponses(req, routedBody, res, previousResponseInputExpanded);
-            else await handleNativeResponses(req, routedBody, res, previousResponseInputExpanded);
-            return;
-          }
-          res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"error":"not found"}');
+          const diagnosticContext: BridgeDiagnosticContext | undefined = stockRoute ? {
+            requestId: diagnosticRequestId(req),
+            transport: diagnosticTransport(req),
+            route: url,
+          } : undefined;
+          requestDiagnosticContext = diagnosticContext;
+          const routeRequest = async () => {
+            if (req.method === "GET" && url.startsWith("/v1/models")) {
+              const startedAt = Date.now();
+              if (diagnosticContext) logBridgeDiagnostic("models.request_received", { method: req.method, route: url, headers: req.headers }, diagnosticContext);
+              await handleModels(res, stockRoute);
+              if (diagnosticContext) logBridgeDiagnostic("models.request_completed", { statusCode: res.statusCode, durationMs: Date.now() - startedAt }, diagnosticContext);
+              return;
+            }
+            if (req.method === "POST" && (url === "/v1/responses" || url === "/v1/responses/compact")) {
+              const requestStartedAt = Date.now();
+              if (diagnosticContext) {
+                res.once("finish", () => logBridgeDiagnostic("request.http_finish", {
+                  statusCode: res.statusCode,
+                  durationMs: Date.now() - requestStartedAt,
+                  writableFinished: res.writableFinished,
+                }, diagnosticContext));
+                res.once("close", () => {
+                  if (!res.writableFinished) logBridgeDiagnostic("request.client_close", {
+                    statusCode: res.statusCode,
+                    durationMs: Date.now() - requestStartedAt,
+                    destroyed: res.destroyed,
+                  }, diagnosticContext, "warn");
+                });
+              }
+              const { raw, body } = await readBody(req);
+              if (diagnosticContext) {
+                diagnosticContext.model = modelId(body);
+                diagnosticContext.threadId = threadIdFromRequest(req, body) || undefined;
+                logBridgeDiagnostic("request.received", {
+                  method: req.method,
+                  route: url,
+                  headers: req.headers,
+                  compressedBytes: Number(req.headers["content-length"] ?? 0) || undefined,
+                  decodedBytes: Buffer.byteLength(raw),
+                  body: diagnosticBody(raw, "request_json"),
+                }, diagnosticContext);
+              }
+              // Both native ChatGPT passthrough and routed providers need the local replay cache:
+              // stock Codex chains WS turns with previous_response_id, while ChatGPT's Codex REST
+              // endpoint rejects that parameter. Expanding every normal Responses turn preserves the
+              // second/third-turn context before either route strips the id for its upstream.
+              const routedBody = url === "/v1/responses" ? expandPreviousResponseInput(body) : body;
+              const previousResponseInputExpanded = routedBody !== body;
+              const rewritten = routedBody && typeof routedBody === "object" && !Array.isArray(routedBody)
+                ? sanitizeEncryptedContentInPlace((routedBody as { input?: unknown }).input)
+                : 0;
+              const routedRaw = previousResponseInputExpanded || rewritten > 0 ? JSON.stringify(routedBody) : raw;
+              if (url === "/v1/responses/compact" && isExternalModel(modelId(body))) await handleCompactResponses(req, routedBody, res);
+              else if (url === "/v1/responses/compact") await handleNativeCompact(req, routedRaw, res);
+              else if (isExternalModel(modelId(body))) await handleExternalResponses(req, routedBody, res, previousResponseInputExpanded);
+              else await handleNativeResponses(req, routedBody, res, previousResponseInputExpanded);
+              return;
+            }
+            res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"error":"not found"}');
+          };
+          if (diagnosticContext) await bridgeDiagnosticContext.run(diagnosticContext, routeRequest);
+          else await routeRequest();
         } catch (error) {
+          if (requestDiagnosticContext) logBridgeDiagnostic("request.handler_error", { error }, requestDiagnosticContext, "error");
           const status = error instanceof ProxyRequestError ? error.status : (error && typeof error === "object" && "status" in error && typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : 500);
           if (!res.headersSent) res.writeHead(status, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
@@ -1115,14 +1493,30 @@ export class CodexProxyServer {
     });
     websocketServer.on("connection", (ws, req) => {
       let activeAbort: AbortController | undefined;
+      let activeDiagnosticContext: BridgeDiagnosticContext | undefined;
       let turnSequence = 0;
+      const requestedPath = (req.url ?? "").slice(`/${this.secret}`.length).split("?", 1)[0];
+      const stockConnection = requestedPath.startsWith("/stock/v1/");
+      const connectionId = crypto.randomUUID();
       ws.on("message", (raw: RawData) => {
         let frame: Record<string, unknown>;
         try { frame = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
-        if (frame.type === "response.processed") return;
+        if (frame.type === "response.processed") {
+          if (activeDiagnosticContext) logBridgeDiagnostic("websocket.response_processed", { frame }, activeDiagnosticContext);
+          return;
+        }
         if (frame.type !== "response.create") return;
         activeAbort?.abort();
         const turnId = ++turnSequence;
+        const requestId = `${connectionId}:${turnId}`;
+        const wsDiagnosticContext: BridgeDiagnosticContext | undefined = stockConnection ? {
+          requestId,
+          transport: "websocket",
+          route: "/v1/responses",
+          model: typeof frame.model === "string" ? frame.model : undefined,
+        } : undefined;
+        activeDiagnosticContext = wsDiagnosticContext;
+        if (wsDiagnosticContext) logBridgeDiagnostic("websocket.request_received", { connectionId, turnId, frame: diagnosticBody(raw.toString(), "websocket_frame") }, wsDiagnosticContext);
         const isCurrent = () => turnSequence === turnId;
         const turnAbort = new AbortController();
         activeAbort = turnAbort;
@@ -1130,8 +1524,11 @@ export class CodexProxyServer {
         delete payload.type;
         if (payload.generate === false) {
           const model = typeof payload.model === "string" ? payload.model : "";
-          ws.send(JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "in_progress", output: [] } }));
-          ws.send(JSON.stringify({ type: "response.completed", sequence_number: 1, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "completed", output: [] } }));
+          const created = JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "in_progress", output: [] } });
+          const completed = JSON.stringify({ type: "response.completed", sequence_number: 1, response: { id: "", object: "response", created_at: Math.floor(Date.now() / 1000), model, status: "completed", output: [] } });
+          ws.send(created);
+          ws.send(completed);
+          if (wsDiagnosticContext) logBridgeDiagnostic("websocket.generate_false_completed", { frames: [created, completed] }, wsDiagnosticContext);
           return;
         }
         void (async () => {
@@ -1141,20 +1538,40 @@ export class CodexProxyServer {
               const value = req.headers[name];
               if (typeof value === "string") headers[name] = value;
             }
-            const response = await fetch(`http://127.0.0.1:${DEVIL_PROXY_PORT}/${this.secret}/v1/responses`, {
+            if (wsDiagnosticContext) {
+              headers["x-devil-diagnostic-id"] = requestId;
+              headers["x-devil-diagnostic-transport"] = "websocket";
+            }
+            const stockPrefix = stockConnection ? "/stock" : "";
+            const response = await fetch(`http://127.0.0.1:${DEVIL_PROXY_PORT}/${this.secret}${stockPrefix}/v1/responses`, {
               method: "POST", headers, body: JSON.stringify({ ...payload, stream: true }), signal: turnAbort.signal,
             });
             if (!response.ok || !response.body) {
-              if (isCurrent() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: response.status, error: { message: redactSensitiveText(await response.text()) } }));
+              const detail = redactSensitiveText(await response.text());
+              if (wsDiagnosticContext) logBridgeDiagnostic("websocket.http_error", { status: response.status, detail }, wsDiagnosticContext, "error");
+              if (isCurrent() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: response.status, error: { message: detail } }));
               return;
             }
-            await pumpResponsesSseToWebSocket(ws, response.body, turnAbort.signal, isCurrent);
+            await pumpResponsesSseToWebSocket(ws, response.body, turnAbort.signal, isCurrent, wsDiagnosticContext);
           } catch (error) {
-            if (!turnAbort.signal.aborted && isCurrent() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", status: 502, error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } }));
+            if (wsDiagnosticContext) logBridgeDiagnostic("websocket.request_error", { connectionId, turnId, error }, wsDiagnosticContext, "error");
+            if (!turnAbort.signal.aborted && isCurrent() && ws.readyState === WebSocket.OPEN) {
+              const payload = JSON.stringify({ type: "error", status: 502, error: { message: redactSensitiveText(error instanceof Error ? error.message : String(error)) } });
+              ws.send(payload);
+              if (wsDiagnosticContext) logBridgeDiagnostic("websocket.error_sent", { payload }, wsDiagnosticContext, "error");
+            }
           }
         })();
       });
-      ws.on("close", () => { turnSequence += 1; activeAbort?.abort(); });
+      ws.on("close", (code, reason) => {
+        turnSequence += 1;
+        activeAbort?.abort();
+        if (stockConnection) logBridgeDiagnostic("websocket.closed", { connectionId, code, reason: reason.toString() }, {
+          requestId: connectionId,
+          transport: "websocket",
+          route: "/v1/responses",
+        }, code === 1000 ? "info" : "warn");
+      });
     });
     // Keep the provider URL stable across Devil restarts. Codex stores the
     // provider name in a rollout, and a fixed URL lets stock Codex recognise
@@ -1169,6 +1586,7 @@ export class CodexProxyServer {
     const addr = server.address();
     this.port = typeof addr === "object" && addr ? addr.port : 0;
     this.server = server;
+    diagnosticLog("bridge", "server.started", { port: this.port, stockProxyServiceMode }, { processRole: stockProxyServiceMode ? "stock-bridge" : "desktop-main" });
     return this.port;
   }
 
@@ -1178,5 +1596,6 @@ export class CodexProxyServer {
     if (!server) return;
     this.server = undefined;
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    diagnosticLog("bridge", "server.stopped", { port: this.port }, { processRole: stockProxyServiceMode ? "stock-bridge" : "desktop-main" });
   }
 }

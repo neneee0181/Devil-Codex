@@ -238,6 +238,7 @@ export interface ProviderRequestLogEntry {
   durationMs?: number;
   error?: string;
   errorType?: string;
+  finishReason?: string;
   tools?: number;
   images?: number;
   files?: number;

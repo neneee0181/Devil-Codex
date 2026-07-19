@@ -79,8 +79,8 @@ export type AdapterEvent =
   | { type: "tool_call_end" }
   | { type: "web_search_call_begin"; id: string }
   | { type: "web_search_call_end"; id: string; queries: string[]; status?: "completed" | "failed"; sources?: Array<{ url: string; title?: string }> }
-  | { type: "done"; usage?: OcxUsage }
-  | { type: "error"; message: string; status?: number; errorType?: string; usage?: OcxUsage };
+  | { type: "done"; usage?: OcxUsage; finishReason?: string }
+  | { type: "error"; message: string; status?: number; errorType?: string; usage?: OcxUsage; finishReason?: string };
 
 export interface OcxUsage {
   inputTokens: number;

@@ -199,10 +199,55 @@ async function listClaudeMcpServers(input: { cwd?: string } = {}): Promise<McpSe
 import { createGitWorktree, listGitWorktrees } from "./worktree-service.cjs";
 import { BrowserViewManager } from "./browser-view.cjs";
 import { ThreadHistoryCache, mergeCachedActivities, normalizeCachedDelegateSubagents } from "./history-cache.cjs";
+import { configureDiagnostics, diagnosticLog, diagnosticsDirectory, flushDiagnostics } from "./diagnostic-log.cjs";
 
 loadEnv({ path: join(process.cwd(), ".env.local"), quiet: true });
 app.setName("devil-codex");
 if (process.platform === "win32") app.setAppUserModelId("dev.devilcodex.app");
+const stockProxyServiceMode = process.argv.includes("--devil-stock-proxy");
+configureDiagnostics({
+  directory: join(app.getPath("userData"), "diagnostics"),
+  role: stockProxyServiceMode ? "stock-bridge" : "desktop-main",
+});
+
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console),
+};
+for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+  console[method] = (...args: unknown[]) => {
+    diagnosticLog("app", `console.${method}`, { arguments: args }, { source: "main" }, method === "warn" ? "warn" : method === "error" ? "error" : method === "debug" ? "debug" : "info");
+    originalConsole[method](...args);
+  };
+}
+
+process.on("uncaughtExceptionMonitor", (error, origin) => diagnosticLog("app", "process.uncaught_exception", { origin, error }, { source: "process" }, "error"));
+process.on("warning", (warning) => diagnosticLog("app", "process.warning", { warning }, { source: "process" }, "warn"));
+
+app.on("web-contents-created", (_event, contents) => {
+  const context = { source: "webContents", webContentsId: contents.id, webContentsType: contents.getType() };
+  contents.on("console-message", (...args: any[]) => {
+    const details = args[0] as { level?: string; message?: string; lineNumber?: number; sourceId?: string };
+    diagnosticLog("app", "renderer.console", {
+      level: details?.level ?? args[1],
+      message: details?.message ?? args[2],
+      lineNumber: details?.lineNumber ?? args[3],
+      sourceId: details?.sourceId ?? args[4],
+    }, context, details?.level === "error" ? "error" : details?.level === "warning" ? "warn" : "info");
+  });
+  contents.on("preload-error", (_event, preloadPath, error) => diagnosticLog("app", "renderer.preload_error", { preloadPath, error }, context, "error"));
+  contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame, frameProcessId, frameRoutingId) => diagnosticLog("app", "renderer.load_failed", {
+    errorCode, errorDescription, validatedURL, isMainFrame, frameProcessId, frameRoutingId,
+  }, context, "error"));
+  contents.on("render-process-gone", (_event, details) => diagnosticLog("app", "renderer.process_gone", { details }, context, "error"));
+  contents.on("unresponsive", () => diagnosticLog("app", "renderer.unresponsive", {}, context, "warn"));
+  contents.on("responsive", () => diagnosticLog("app", "renderer.responsive", {}, context));
+});
+app.on("child-process-gone", (_event, details) => diagnosticLog("app", "electron.child_process_gone", { details }, { source: "electron" }, details.reason === "clean-exit" ? "info" : "error"));
+app.once("ready", () => diagnosticLog("app", "lifecycle.ready", { version: app.getVersion(), packaged: app.isPackaged, diagnosticsDirectory: diagnosticsDirectory() }, { source: "electron" }));
 
 const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
 const DEVIL_ASK_USER_DIRECTIVE = [
@@ -274,7 +319,6 @@ function escapeRegExp(value: string): string {
 // and leaves the renderer talking to a different app-server than the one holding
 // a thread's per-thread child → "thread not found". Hand focus to the running
 // window and quit the duplicate before any of that state is touched.
-const stockProxyServiceMode = process.argv.includes("--devil-stock-proxy");
 const hasSingleInstanceLock = stockProxyServiceMode || app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -289,6 +333,7 @@ let trayRef: Tray | undefined;
 let isQuitting = false;
 let desktopOwnsProxy = false;
 let stockBridgeHandoffStarted = false;
+let finalShutdownStarted = false;
 let ipcHandlersReady = false;
 type IpcHandler = (input: unknown) => Promise<unknown> | unknown;
 const ipcHandlers = new Map<string, IpcHandler>();
@@ -552,7 +597,10 @@ function recordAppServerStderr(line: string): void {
   const at = Date.now();
   for (const part of String(line ?? "").split(/\r?\n/)) {
     const trimmed = part.trim();
-    if (trimmed) appServerStderr.push({ line: trimmed, at });
+    if (trimmed) {
+      appServerStderr.push({ line: trimmed, at });
+      diagnosticLog("app", "app_server.stderr", { line: trimmed, at }, { source: "codex-app-server" }, /error|fail|panic|denied|unauthor|forbidden|401|403|429|quota|rate.?limit|timeout/i.test(trimmed) ? "error" : "debug");
+    }
   }
   if (appServerStderr.length > 120) appServerStderr.splice(0, appServerStderr.length - 120);
 }
@@ -2279,15 +2327,20 @@ async function claudeMcpConfig(): Promise<string | undefined> {
 }
 
 async function startCodexProxy(): Promise<void> {
+  const startedAt = Date.now();
+  diagnosticLog("app", "proxy.start_requested", { stockProxyServiceMode }, { source: "bridge-lifecycle" });
   try {
     const port = await codexProxy.start();
     desktopOwnsProxy = true;
     await registerDevilProvider(port, codexProxy.secretToken());
+    diagnosticLog("app", "proxy.started", { port, durationMs: Date.now() - startedAt }, { source: "bridge-lifecycle" });
   } catch (error) {
     if (/EADDRINUSE/i.test(error instanceof Error ? error.message : String(error))) {
       console.log("[devil-codex proxy] background stock bridge is already running");
+      diagnosticLog("app", "proxy.existing_owner", { durationMs: Date.now() - startedAt, error }, { source: "bridge-lifecycle" }, "warn");
     } else {
       console.error("[devil-codex proxy]", error instanceof Error ? error.message : error);
+      diagnosticLog("app", "proxy.start_failed", { durationMs: Date.now() - startedAt, error }, { source: "bridge-lifecycle" }, "error");
     }
   }
   await unrealMcpRelay.start().catch((error) => {
@@ -2323,6 +2376,8 @@ async function activateDevilNativeCatalog(): Promise<void> {
 }
 
 async function syncStockCodexBridge(): Promise<void> {
+  const startedAt = Date.now();
+  diagnosticLog("app", "bridge.sync_started", {}, { source: "bridge-lifecycle" });
   const port = await codexProxy.start();
   await registerDevilProvider(port, codexProxy.secretToken());
   const catalog = await syncStockCodexCatalogOnly();
@@ -2330,25 +2385,33 @@ async function syncStockCodexBridge(): Promise<void> {
   const expectedModels = (await settingsStore.load()).stockBridgeModels;
   const baseUrl = `http://127.0.0.1:${port}/${codexProxy.secretToken()}/stock/v1`;
   const response = await fetch(`${baseUrl}/models`, { cache: "no-store" });
+  diagnosticLog("app", "bridge.health_response", { status: response.status, port, catalogPath: catalog.path, catalogModels: catalog.added }, { source: "bridge-lifecycle" }, response.ok ? "info" : "error");
   if (!response.ok) throw new Error(`Stock Codex Bridge health check failed (${response.status}).`);
   const body = await response.json() as { data?: Array<{ id?: unknown }> };
   const available = (body.data ?? []).flatMap((item) => typeof item.id === "string" ? [{ id: item.id }] : []);
   const missing = expectedModels.filter((model) => selectConfiguredModelRows(available, [model]).length === 0);
   if (missing.length) throw new Error(`Stock Codex Bridge did not expose selected models: ${missing.join(", ")}`);
+  diagnosticLog("app", "bridge.sync_completed", { port, catalogPath: catalog.path, catalogModels: catalog.added, expectedModels, available, durationMs: Date.now() - startedAt }, { source: "bridge-lifecycle" });
   console.log(`[devil-codex stock bridge] ${catalog.added} external models injected into ${catalog.path}`);
 }
 
 async function activateStockCodexBridge(): Promise<void> {
+  diagnosticLog("app", "bridge.handoff_activation_started", {}, { source: "bridge-lifecycle" });
   await unregisterDevilNativeCatalog();
   const catalog = await syncStockCodexCatalogOnly();
   await registerDevilStockBridge(DEVIL_PROXY_PORT, await readDevilProxySecret(), catalog.path);
+  diagnosticLog("app", "bridge.handoff_activation_completed", { port: DEVIL_PROXY_PORT, catalogPath: catalog.path, catalogModels: catalog.added }, { source: "bridge-lifecycle" });
 }
 
 async function deactivateStockCodexBridge(): Promise<void> {
+  diagnosticLog("app", "bridge.deactivation_started", { stockProxyServiceMode }, { source: "bridge-lifecycle" });
   await unregisterDevilStockBridge();
   await unregisterDevilNativeCatalog();
   await disableStockProxyAutostart().catch((error) => console.warn("[devil-codex stock bridge] autostart removal failed:", error instanceof Error ? error.message : error));
-  if (stockProxyServiceMode) return;
+  if (stockProxyServiceMode) {
+    diagnosticLog("app", "bridge.deactivation_completed", { stockProxyServiceMode }, { source: "bridge-lifecycle" });
+    return;
+  }
   if (process.platform === "win32") {
     const command = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--devil-stock-proxy*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
     await execFileAsync("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true })
@@ -2361,6 +2424,7 @@ async function deactivateStockCodexBridge(): Promise<void> {
         if (!/exit code 1|code: 1/i.test(error instanceof Error ? error.message : String(error))) console.warn("[devil-codex stock bridge] stop failed:", error instanceof Error ? error.message : error);
       });
   }
+  diagnosticLog("app", "bridge.deactivation_completed", { stockProxyServiceMode }, { source: "bridge-lifecycle" });
 }
 
 function stockBridgeCatalogChanged(previous: CodexSettings, next: CodexSettings): boolean {
@@ -2385,19 +2449,34 @@ async function applySettingsRuntime(previous: CodexSettings, next: CodexSettings
 
   const bridgeChanged = previous.stockBridgeEnabled !== next.stockBridgeEnabled;
   const catalogChanged = stockBridgeCatalogChanged(previous, next);
-  if (bridgeChanged) {
-    if (next.stockBridgeEnabled) {
-      await disableDevilExclusiveMcps();
+  const bridgeRuntimeChanged = bridgeChanged || (next.stockBridgeEnabled && catalogChanged);
+  if (bridgeRuntimeChanged) diagnosticLog("app", "bridge.settings_apply_started", {
+    previousEnabled: previous.stockBridgeEnabled,
+    nextEnabled: next.stockBridgeEnabled,
+    catalogChanged,
+    models: next.stockBridgeModels,
+    webSearch: next.stockBridgeWebSearch,
+    vision: next.stockBridgeVision,
+  }, { source: "bridge-lifecycle" });
+  try {
+    if (bridgeChanged) {
+      if (next.stockBridgeEnabled) {
+        await disableDevilExclusiveMcps();
+        await syncStockCodexBridge();
+        ensureStockProxyAutostartBestEffort();
+      } else {
+        await deactivateStockCodexBridge();
+        await restoreDevilExclusiveMcps(next);
+      }
+    } else if (next.stockBridgeEnabled && catalogChanged) {
       await syncStockCodexBridge();
-      ensureStockProxyAutostartBestEffort();
-    } else {
-      await deactivateStockCodexBridge();
-      await restoreDevilExclusiveMcps(next);
     }
-  } else if (next.stockBridgeEnabled && catalogChanged) {
-    await syncStockCodexBridge();
+    if (bridgeRuntimeChanged) await restartStockCodexIfRunning();
+  } catch (error) {
+    if (bridgeRuntimeChanged) diagnosticLog("app", "bridge.settings_apply_failed", { error }, { source: "bridge-lifecycle" }, "error");
+    throw error;
   }
-  if (bridgeChanged || (next.stockBridgeEnabled && catalogChanged)) await restartStockCodexIfRunning();
+  if (bridgeRuntimeChanged) diagnosticLog("app", "bridge.settings_apply_completed", { enabled: next.stockBridgeEnabled, catalogChanged }, { source: "bridge-lifecycle" });
 
   if (previous.remoteControlEnabled !== next.remoteControlEnabled || previous.remoteControlMode !== next.remoteControlMode) {
     if (next.remoteControlEnabled) await startRemoteControl(next.remoteControlMode);
@@ -2411,6 +2490,7 @@ function launchStockProxyService(): void {
   if (stockProxyServiceMode) return;
   const args = app.isPackaged ? ["--devil-stock-proxy"] : [app.getAppPath(), "--devil-stock-proxy"];
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });
+  diagnosticLog("app", "bridge.background_process_launched", { pid: child.pid, packaged: app.isPackaged, args }, { source: "bridge-lifecycle" });
   child.unref();
 }
 
@@ -2419,6 +2499,7 @@ async function startStockProxyService(): Promise<void> {
   if (settings?.stockBridgeEnabled === false) {
     await deactivateStockCodexBridge();
     console.log("[devil-codex stock bridge] disabled by settings");
+    await flushDiagnostics();
     app.exit(0);
     return;
   }
@@ -2428,13 +2509,17 @@ async function startStockProxyService(): Promise<void> {
   await unregisterDevilExclusiveMcps();
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
+      diagnosticLog("app", "bridge.background_start_attempt", { attempt: attempt + 1 }, { source: "bridge-lifecycle" }, attempt ? "warn" : "info");
       await syncStockCodexBridge();
       await unrealMcpRelay.start();
       console.log("[devil-codex stock bridge] background proxy service ready");
+      diagnosticLog("app", "bridge.background_ready", { attempt: attempt + 1 }, { source: "bridge-lifecycle" });
       return;
     } catch (error) {
+      diagnosticLog("app", "bridge.background_start_failed", { attempt: attempt + 1, retry: attempt < 59, error }, { source: "bridge-lifecycle" }, attempt === 59 ? "error" : "warn");
       if (attempt === 59) {
         console.error("[devil-codex stock bridge] background proxy failed:", error instanceof Error ? error.message : error);
+        await flushDiagnostics();
         app.exit(1);
         return;
       }
@@ -3418,6 +3503,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
+  diagnosticLog("app", "lifecycle.before_quit", { stockProxyServiceMode, stockBridgeHandoffStarted, isQuitting }, { source: "electron" });
   // The bridge config must be fully written before Electron releases the
   // desktop process. Otherwise stock Codex can see a catalog entry whose
   // background proxy was never started.
@@ -3436,13 +3522,18 @@ app.on("before-quit", (event) => {
         // Do not fire-and-forget these writes: Electron can otherwise exit
         // first and leave global Devil MCP entries visible to stock Codex.
         await unregisterDevilExclusiveMcps();
+        diagnosticLog("app", "bridge.shutdown_handoff_completed", { desktopOwnsProxy }, { source: "bridge-lifecycle" });
       } catch (error) {
         console.error("[devil-codex stock bridge] handoff failed:", error instanceof Error ? error.message : error);
       }
+      await flushDiagnostics();
       app.quit();
     })();
     return;
   }
+  if (finalShutdownStarted) return;
+  event.preventDefault();
+  finalShutdownStarted = true;
   isQuitting = true;
   // Leave a small headless owner for the stock-Codex bridge before the desktop
   // instance releases port 49873. The service reuses the same encrypted
@@ -3462,9 +3553,24 @@ app.on("before-quit", (event) => {
   askControl.stop();
   subagentControl.stop();
   workspaceWatcher.disposeAll();
-  void stopRemoteControl({ saveSettings: false });
-  // Keep the managed provider block in ~/.codex/config.toml. Rollouts created
-  // through it must remain recognisable to stock Codex after Devil exits.
-  void codexProxy.stop();
-  void unrealMcpRelay.stop();
+  void (async () => {
+    let cleanupTimedOut = false;
+    const cleanup = Promise.allSettled([
+      stopRemoteControl({ saveSettings: false }),
+      codexProxy.stop(),
+      unrealMcpRelay.stop(),
+    ]);
+    await Promise.race([
+      cleanup,
+      new Promise<void>((resolve) => setTimeout(() => { cleanupTimedOut = true; resolve(); }, 2_000)),
+    ]);
+    diagnosticLog("app", "lifecycle.shutdown_complete", { stockProxyServiceMode, cleanupTimedOut }, { source: "electron" }, cleanupTimedOut ? "warn" : "info");
+    await flushDiagnostics();
+    app.exit(0);
+  })();
+});
+
+app.on("will-quit", () => {
+  diagnosticLog("app", "lifecycle.will_quit", { stockProxyServiceMode }, { source: "electron" });
+  void flushDiagnostics();
 });

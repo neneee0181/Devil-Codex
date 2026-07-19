@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-19T00:59:37+09:00
+updated: 2026-07-19T19:10:44+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- Persistent Bridge diagnostics (2026-07-19, unreleased): desktop-main and stock-bridge processes now write separate role/PID/session JSONL app and Bridge logs under Electron `userData/diagnostics`. Actual `/stock/v1` traffic carries one request ID across HTTP/WebSocket ingress, upstream retries, provider adapters, Responses translation, terminal state, and the recent-request UI; provider `finishReason` is retained, including a Gemini `475` text + `STOP` regression. Credentials and binary/data payloads are redacted, raw network chunks are hash-only, complete bounded SSE frames are recorded, files rotate at 32 MiB with 7-day/512 MiB cleanup and 0700/0600 permissions, and shutdown performs a bounded proxy stop plus log flush. Rebased onto origin v0.4.2; combined main tests pass 37/37, full build and `git diff --check` pass. Installed-app incident capture remains.
 
 - Antigravity Sites bridge repair (2026-07-19, uncommitted): Gemini tool-schema normalization now preserves user argument names such as `title`, `default`, and `examples` inside every `properties` map while still removing unsupported metadata from the schema nodes themselves. This fixes Sites `create_site(title, slug)` losing its required `title`. External-provider guidance now treats connector results as authoritative, forbids claiming create/update/deploy success without confirmation, and reports missing existing resources instead of substituting localhost or silently creating a replacement unless explicitly authorized. Antigravity responses are buffered until a tool turn is known, then ordinary narration/raw patch text is suppressed while final text-only answers remain intact. Cached plugin versions are selected deterministically by parsed version rather than OS directory order. `npm run test:main` passes 32/32, full `npm run build` passes, and `git diff --check` passes. Installed-app Antigravity + Sites E2E remains; the current Sites connection still returns 404 for the persisted project and an empty site list, which is outside the local bridge path.
 

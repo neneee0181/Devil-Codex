@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-19T00:59:37+09:00
+updated: 2026-07-19T19:10:44+09:00
 status: active
 tags:
   - memoc
@@ -14,6 +14,12 @@ tags:
 Durable project decisions live here. Keep entries short, dated, and useful to future agents.
 
 ## Decision Log
+
+### 2026-07-19 — Persistent diagnostics are correlated, bounded, and redacted
+
+- Persist general app/main/renderer/app-server diagnostics continuously, but capture detailed proxy payload flow only for actual stock Bridge `/stock/v1` traffic. Split JSONL files by app-vs-Bridge scope and desktop-main-vs-stock-bridge role, PID, and launch session so concurrent owners never rotate each other's active files.
+- Carry one request ID through HTTP/WebSocket ingress, every upstream operation and retry, adapter/Responses translation, and terminal state. Record complete bounded SSE frames for protocol reconstruction while logging arbitrary raw chunks only as byte counts and SHA-256 hashes.
+- Treat credentials and large binary/data payloads as non-loggable. Enforce recursive redaction, 0700 directories, 0600 files, 32 MiB rotation, eight generations per process, seven-day/512 MiB cleanup, and a bounded shutdown flush.
 
 ### 2026-07-19 — Preserve connector argument names and trust mutation results
 

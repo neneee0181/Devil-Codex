@@ -388,6 +388,7 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
   let buffer = "";
   let pendingUsage: OcxUsage | undefined;
   let sawFinish = false;
+  let lastFinishReason: string | undefined;
   interface PendingToolCall { key: string; id: string; name: string; args: string }
   const pendingToolCalls: PendingToolCall[] = [];
   let callSequence = 0;
@@ -405,7 +406,7 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
     if (!payload) return "continue";
     if (payload === "[DONE]") {
       yield* flushToolCalls();
-      yield { type: "done", usage: pendingUsage };
+      yield { type: "done", usage: pendingUsage, ...(lastFinishReason ? { finishReason: lastFinishReason } : {}) };
       return "terminate";
     }
     let data: Record<string, unknown>;
@@ -423,7 +424,10 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
     if (data.usage) pendingUsage = openAiCompatibleUsage(data.usage as Record<string, unknown>);
     const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
     const finishReason = choice?.finish_reason;
-    if (typeof finishReason === "string" && finishReason) sawFinish = true;
+    if (typeof finishReason === "string" && finishReason) {
+      sawFinish = true;
+      lastFinishReason = finishReason;
+    }
     const delta = choice?.delta as Record<string, unknown> | undefined;
     if (delta) {
       if (typeof delta.content === "string" && delta.content) yield { type: "text_delta", text: delta.content };
@@ -461,7 +465,7 @@ export async function* streamOpenAiCompatible(providerLabel: string, response: R
       yield { type: "error", status: 502, errorType: "upstream_truncated_stream", message: `${providerLabel} 스트림이 완료 신호 없이 종료되었습니다.` };
       return;
     }
-    yield { type: "done", usage: pendingUsage };
+    yield { type: "done", usage: pendingUsage, ...(lastFinishReason ? { finishReason: lastFinishReason } : {}) };
   } finally {
     reader.releaseLock();
   }
@@ -500,7 +504,8 @@ async function* parseOpenAiCompatibleJson(providerLabel: string, response: Respo
     yield { type: "tool_call_end" };
   }
   const usage = data.usage as Record<string, number> | undefined;
-  yield { type: "done", usage: usage ? openAiCompatibleUsage(usage) : undefined };
+  const finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : undefined;
+  yield { type: "done", usage: usage ? openAiCompatibleUsage(usage) : undefined, ...(finishReason ? { finishReason } : {}) };
 }
 
 // OpenAI-compatible providers report cache hits in different fields:
@@ -623,10 +628,10 @@ export async function* streamGoogle(response: Response, options: { label?: strin
       if (result === "terminate") return;
     }
     if (toolCallsStarted > 0 && lastFinishReason && GOOGLE_TRUNCATION_REASONS.has(lastFinishReason)) {
-      yield { type: "error", status: 502, errorType: "upstream_truncated_tool_call", message: googleTruncationMessage(lastFinishReason), usage };
+      yield { type: "error", status: 502, errorType: "upstream_truncated_tool_call", message: googleTruncationMessage(lastFinishReason), usage, finishReason: lastFinishReason };
       return;
     }
-    yield { type: "done", usage };
+    yield { type: "done", usage, ...(lastFinishReason ? { finishReason: lastFinishReason } : {}) };
   } finally {
     reader.releaseLock();
   }

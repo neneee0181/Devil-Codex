@@ -13,7 +13,7 @@ import { buildMacStockProxyPlist, stockProxyTaskArgs } from "../stock-proxy-auto
 import { buildAnthropicRequest, streamAnthropic } from "./anthropic.cjs";
 import { filterAntigravityToolTurnText } from "./antigravity.cjs";
 import { applyAntigravityReplay, observeAntigravityReplayCall, resetAntigravityReplayForTests } from "./antigravity-replay.cjs";
-import { buildApiKeyRequest, buildGoogleGenerateContentBody, googleContents, streamOpenAiCompatible } from "./api-key.cjs";
+import { buildApiKeyRequest, buildGoogleGenerateContentBody, googleContents, streamGoogle, streamOpenAiCompatible } from "./api-key.cjs";
 import { bridgeToResponsesSSE } from "./bridge.cjs";
 import { encodeCompactionSummary } from "./compaction.cjs";
 import { buildCopilotRequest } from "./copilot.cjs";
@@ -656,10 +656,26 @@ test("OpenAI-compatible streams buffer interleaved parallel calls and reject mal
   ].map((value) => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n";
   const events = await collect(streamOpenAiCompatible("Provider", new Response(frames, { headers: { "content-type": "text/event-stream" } })));
   assert.deepEqual(events.filter((event) => event.type === "tool_call_start").map((event) => event.type === "tool_call_start" ? event.id : ""), ["a", "b"]);
-  assert.equal(events.at(-1)?.type, "done");
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type, "done");
+  assert.equal(terminal?.type === "done" ? terminal.finishReason : undefined, "tool_calls");
 
   const malformed = await collect(streamOpenAiCompatible("Provider", new Response("data: {bad", { headers: { "content-type": "text/event-stream" } })));
   assert.equal(malformed.at(-1)?.type, "error");
+});
+
+test("Google streams preserve the last finishReason on the terminal event", async () => {
+  const frames = [
+    { response: { candidates: [{ content: { parts: [{ text: "475" }] }, finishReason: "STOP" }] } },
+    { response: { usageMetadata: { promptTokenCount: 135304, candidatesTokenCount: 3 } } },
+  ].map((value) => `data: ${JSON.stringify(value)}\n\n`).join("");
+  const events = await collect(streamGoogle(new Response(frames), { label: "Antigravity", unwrapResponse: true }));
+  const text = events.find((event) => event.type === "text_delta");
+  assert.equal(text?.type === "text_delta" ? text.text : undefined, "475");
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type, "done");
+  assert.equal(terminal?.type === "done" ? terminal.finishReason : undefined, "STOP");
+  assert.equal(terminal?.type === "done" ? terminal.usage?.inputTokens : undefined, 135304);
 });
 
 test("Antigravity replay keys function calls by canonical arguments", () => {

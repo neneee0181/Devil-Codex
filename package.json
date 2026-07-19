@@ -13,7 +13,7 @@
     "build:renderer": "npm run typecheck:renderer && vite build",
     "build:mobile": "vite build -c vite.mobile.config.ts",
     "build:main": "tsc -p tsconfig.electron.json",
-    "test:main": "npm run build:main && node --test dist-electron/settings-transaction.test.cjs dist-electron/unreal-mcp-relay.test.cjs dist-electron/proxy/proxy-compat.test.cjs",
+    "test:main": "npm run build:main && node --test dist-electron/diagnostic-log.test.cjs dist-electron/settings-transaction.test.cjs dist-electron/unreal-mcp-relay.test.cjs dist-electron/proxy/proxy-compat.test.cjs",
     "start": "electron .",
     "icons": "node scripts/build-icons.cjs",
     "prepackage": "npm run icons && npm run build",
