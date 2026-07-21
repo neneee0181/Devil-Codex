@@ -1,7 +1,7 @@
 import { app } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ThreadHistoryItem } from "./contracts.cjs";
+import type { ThreadActivityEntry, ThreadHistoryItem } from "./contracts.cjs";
 
 // Persist the renderer's live-built timeline per thread so a restart can restore
 // the rich structure (work activities + final answer outside) even when the
@@ -42,6 +42,15 @@ function mergeCompactionActivities(native: ThreadHistoryItem, cached: ThreadHist
     if (!exists) activities.push(entry);
   }
   return { ...native, activities };
+}
+
+function mergeActivityEntriesPreferCached(nativeEntries: ThreadActivityEntry[], cachedEntries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const cachedById = new Map(cachedEntries.map((entry) => [entry.id, entry]));
+  const nativeIds = new Set(nativeEntries.map((entry) => entry.id));
+  return [
+    ...nativeEntries.map((entry) => cachedById.get(entry.id) ?? entry),
+    ...cachedEntries.filter((entry) => !nativeIds.has(entry.id)),
+  ];
 }
 
 function isRuntimeShareItem(item: ThreadHistoryItem): boolean {
@@ -149,8 +158,8 @@ export function mergeCachedActivities(native: ThreadHistoryItem[], cached: Threa
     nativeTurnIds.add(item.turnId);
     const richer = cachedByTurnId.get(item.turnId);
     if (!richer) return item;
-    if (activityCount([richer]) <= activityCount([item])) return hasCompactionActivity(richer) ? mergeCompactionActivities(item, richer) : item;
-    return { ...richer, ...item, activities: richer.activities };
+    if (!richer.activities?.length) return item;
+    return { ...richer, ...item, activities: mergeActivityEntriesPreferCached(item.activities ?? [], richer.activities) };
   });
 
   for (const item of cachedByTurnId.values()) {

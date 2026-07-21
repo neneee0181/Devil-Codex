@@ -1,14 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, MenuItemConstructorOptions, nativeImage, Notification, shell, Tray, type MessageBoxOptions } from "electron";
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { access, mkdir as fsMkdir, readdir, readFile, stat as fsStat } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import QRCode from "qrcode";
 import { CodexAppServer, syncStockThreadPermissions } from "./app-server.cjs";
-import { getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
+import { getGitHeadOid, getGitRevisionChanges, getWorkspaceChanges, getWorkspaceDiff } from "./git-status.cjs";
 import { applyWorkspaceHunk, commitWorkspace, createPullRequest, listGitBranches, pushWorkspace, stageWorkspaceFiles, switchGitBranch, unstageWorkspaceFiles } from "./git-workflow.cjs";
 import { undoFileChanges } from "./file-rollback.cjs";
 import { createWorkspaceEntry, deleteWorkspaceEntry, findWorkspaceFile, listWorkspaceDirectory, previewLocalImage, readWorkspaceEntry, renameWorkspaceEntry, writeWorkspaceFile } from "./file-service.cjs";
@@ -762,8 +762,24 @@ interface SidecarDiagnosticsSnapshot {
 }
 
 const pendingProviderDiagnostics = new Map<string, { provider: string; model: string; accountId?: string; accountLabel?: string; sidecars?: SidecarSettings; sandboxMode?: ThreadSandboxMode; approvalPolicy?: string; cwd?: string }>();
-const turnFileSnapshots = new Map<string, { cwd: string; files: Map<string, string> }>();
-const nativeFileChangeTurns = new Set<string>();
+interface TurnFileSnapshot {
+  cwd: string;
+  headOid?: string;
+  files: Map<string, string>;
+}
+
+type DetectedFileChange = WorkspaceChange & { diff: string; absPath: string };
+type FileChangeActivityFile = { path: string; diff: string; additions: number; deletions: number };
+
+interface NativeFileChangeRecord {
+  itemId: string;
+  path: string;
+  diff: string;
+  fingerprint: string;
+}
+
+const turnFileSnapshots = new Map<string, TurnFileSnapshot>();
+const nativeFileChanges = new Map<string, Map<string, NativeFileChangeRecord>>();
 
 function sidecarDiagnostics(sidecars?: SidecarSettings, actual?: SidecarDiagnosticsSnapshot): string[] {
   const config = sidecars ?? { webSearch: false, vision: false, webSearchLimit: 3, visionLimit: 3 };
@@ -956,67 +972,207 @@ function turnKey(threadId: string, turnId?: string): string {
   return `${threadId}:${turnId || "pending"}`;
 }
 
-async function snapshotWorkspaceFiles(cwd?: string): Promise<{ cwd: string; files: Map<string, string> } | undefined> {
+function fileChangePathKey(path: string, cwd?: string): string {
+  let normalized = path.trim();
+  if (cwd && isAbsolute(normalized)) normalized = relative(cwd, normalized);
+  normalized = normalized.replace(/\\/g, "/").replace(/^\.\//, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function clearNativeFileChanges(threadId: string): void {
+  const prefix = `${threadId}:`;
+  for (const key of nativeFileChanges.keys()) {
+    if (key.startsWith(prefix)) nativeFileChanges.delete(key);
+  }
+}
+
+function fileChangeDiffFingerprint(diff: string): string {
+  return diff
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("diff --git ")) return "diff --git <paths>";
+      if (line.startsWith("--- ")) return "--- <path>";
+      if (line.startsWith("+++ ")) return "+++ <path>";
+      return line;
+    })
+    .join("\n")
+    .trim();
+}
+
+function rememberNativeFileChanges(threadId: string, turnId: string, item: Record<string, unknown>): void {
+  if (!turnId || !Array.isArray(item.changes)) return;
+  const cwd = turnFileSnapshots.get(threadId)?.cwd;
+  const itemId = String(item.id ?? "");
+  if (!itemId) return;
+  const key = turnKey(threadId, turnId);
+  const seen = nativeFileChanges.get(key) ?? new Map<string, NativeFileChangeRecord>();
+  for (const change of item.changes) {
+    if (!change || typeof change !== "object") continue;
+    const path = String((change as Record<string, unknown>).path ?? "").trim();
+    if (!path) continue;
+    const diff = String((change as Record<string, unknown>).diff ?? "");
+    seen.set(fileChangePathKey(path, cwd), { itemId, path, diff, fingerprint: fileChangeDiffFingerprint(diff) });
+  }
+  if (seen.size) nativeFileChanges.set(key, seen);
+}
+
+function takeNativeFileChanges(threadId: string, turnId?: string): Map<string, NativeFileChangeRecord> {
+  const changes = new Map<string, NativeFileChangeRecord>();
+  for (const key of new Set([turnKey(threadId, turnId), turnKey(threadId)])) {
+    nativeFileChanges.get(key)?.forEach((change, path) => changes.set(path, change));
+    nativeFileChanges.delete(key);
+  }
+  return changes;
+}
+
+async function snapshotWorkspaceFiles(cwd?: string): Promise<TurnFileSnapshot | undefined> {
   if (!cwd) return undefined;
-  const changes = await getWorkspaceChanges(cwd);
+  const [changes, headOid] = await Promise.all([getWorkspaceChanges(cwd), getGitHeadOid(cwd)]);
   if (!changes.available) return undefined;
   const entries = await Promise.all(changes.files.map(async (file) => {
     const diff = await getWorkspaceDiff(cwd, file.path).catch(() => undefined);
     return [file.path, `${file.status}\0${file.additions}\0${file.deletions}\0${diff?.text ?? ""}`] as const;
   }));
-  return { cwd, files: new Map(entries) };
+  return { cwd, headOid, files: new Map(entries) };
 }
 
 async function rememberTurnFileSnapshot(threadId: string, cwd?: string): Promise<void> {
+  turnFileSnapshots.delete(threadId);
+  clearNativeFileChanges(threadId);
   const snapshot = await snapshotWorkspaceFiles(cwd);
   if (snapshot) turnFileSnapshots.set(threadId, snapshot);
 }
 
-async function changedFilesSinceSnapshot(threadId: string): Promise<Array<WorkspaceChange & { diff?: string; absPath?: string }>> {
-  const before = turnFileSnapshots.get(threadId);
-  turnFileSnapshots.delete(threadId);
-  if (!before) return [];
-  const after = await getWorkspaceChanges(before.cwd);
-  if (!after.available) return [];
-  const withDiffs = await Promise.all(after.files.map(async (file) => ({
-    ...file,
-    diff: (await getWorkspaceDiff(before.cwd, file.path).catch(() => undefined))?.text ?? "",
-  })));
-  const changed = withDiffs.filter((file) => {
-    const beforeSignature = before.files.get(file.path);
-    if (beforeSignature == null) return true;
-    return beforeSignature !== `${file.status}\0${file.additions}\0${file.deletions}\0${file.diff ?? ""}`;
-  });
-  return changed.filter((file) => file.diff || file.additions || file.deletions).map((file) => ({ ...file, absPath: resolve(before.cwd, file.path) }));
+function mergeDetectedFileChanges(changes: DetectedFileChange[]): DetectedFileChange[] {
+  const merged = new Map<string, DetectedFileChange>();
+  for (const change of changes) {
+    const key = fileChangePathKey(change.path);
+    const previous = merged.get(key);
+    if (!previous) {
+      merged.set(key, change);
+      continue;
+    }
+    const diff = [previous.diff, change.diff].filter((text, index, all) => text && all.indexOf(text) === index).join("\n");
+    merged.set(key, {
+      ...change,
+      status: previous.status === "A" && change.status !== "D" ? "A" : change.status,
+      additions: previous.additions + change.additions,
+      deletions: previous.deletions + change.deletions,
+      diff,
+    });
+  }
+  return [...merged.values()];
 }
 
-async function emitSyntheticFileChanges(input: { threadId: string; turnId?: string; status: "completed" | "failed"; mirrorRollout?: boolean }): Promise<void> {
-  const seenNative = nativeFileChangeTurns.delete(turnKey(input.threadId, input.turnId)) || nativeFileChangeTurns.delete(turnKey(input.threadId));
-  const changes = await changedFilesSinceSnapshot(input.threadId);
-  if (seenNative || changes.length === 0) return;
-  const mirrorId = `devil-file-change-${input.turnId || input.threadId}`;
+function fileChangeActivityFile(change: { path: string; diff: string; additions?: number; deletions?: number }): FileChangeActivityFile {
+  const additions = change.additions ?? (change.diff.match(/^\+(?!\+\+)/gm) ?? []).length;
+  const deletions = change.deletions ?? (change.diff.match(/^-(?!--)/gm) ?? []).length;
+  return { path: change.path, diff: change.diff, additions, deletions };
+}
+
+function emitFileChangeActivity(input: {
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  files: FileChangeActivityFile[];
+  status: "completed" | "failed";
+}): void {
   sendToRenderer("app-server:event", {
     method: "item/completed",
     params: {
       threadId: input.threadId,
       ...(input.turnId ? { turnId: input.turnId } : {}),
-      item: {
-        id: `synthetic-file-change-${input.turnId || input.threadId}`,
-        type: "fileChange",
-        status: input.status,
-        changes: changes.map((file) => ({ path: file.path, diff: file.diff ?? "" })),
-      },
+      item: { id: input.itemId, type: "fileChange", status: input.status, changes: input.files },
     },
   });
+  void providerTranscripts.isExternal(input.threadId).then((external) => external
+    ? providerTranscripts.appendActivityEntry(input.threadId, input.turnId, {
+      id: input.itemId,
+      kind: "fileChange",
+      title: `파일 ${input.files.length}개 수정`,
+      files: input.files,
+      status: input.status,
+    }, input.status)
+    : undefined).catch(() => undefined);
+}
+
+async function changedFilesSinceSnapshot(threadId: string): Promise<DetectedFileChange[]> {
+  const before = turnFileSnapshots.get(threadId);
+  turnFileSnapshots.delete(threadId);
+  if (!before) return [];
+  const [after, afterHeadOid] = await Promise.all([getWorkspaceChanges(before.cwd), getGitHeadOid(before.cwd)]);
+  const committed = before.headOid && afterHeadOid
+    ? await getGitRevisionChanges(before.cwd, before.headOid, afterHeadOid)
+    : [];
+  const working = after.available
+    ? await Promise.all(after.files.map(async (file) => ({
+      ...file,
+      diff: (await getWorkspaceDiff(before.cwd, file.path).catch(() => undefined))?.text ?? "",
+    })))
+    : [];
+  const changedWorking = working.filter((file) => {
+    const beforeSignature = before.files.get(file.path);
+    if (beforeSignature == null) return true;
+    return beforeSignature !== `${file.status}\0${file.additions}\0${file.deletions}\0${file.diff}`;
+  });
+  return mergeDetectedFileChanges([
+    ...committed.map((file) => ({ ...file, absPath: resolve(before.cwd, file.path) })),
+    ...changedWorking.map((file) => ({ ...file, absPath: resolve(before.cwd, file.path) })),
+  ]);
+}
+
+async function emitSyntheticFileChanges(input: { threadId: string; turnId?: string; status: "completed" | "failed"; mirrorRollout?: boolean }): Promise<void> {
+  const nativeChanges = takeNativeFileChanges(input.threadId, input.turnId);
+  const snapshotCwd = turnFileSnapshots.get(input.threadId)?.cwd;
+  const changes = await changedFilesSinceSnapshot(input.threadId);
+  const detectedByPath = new Map(changes.map((file) => [fileChangePathKey(file.path, snapshotCwd), file]));
+  const missingChanges: DetectedFileChange[] = [];
+  const changedNativePaths = new Set<string>();
+  for (const file of changes) {
+    const path = fileChangePathKey(file.path, snapshotCwd);
+    const native = nativeChanges.get(path);
+    if (!native) {
+      missingChanges.push(file);
+    } else if (native.fingerprint !== fileChangeDiffFingerprint(file.diff)) {
+      changedNativePaths.add(path);
+    }
+  }
+
+  const changedNativeItemIds = new Set(
+    [...changedNativePaths].map((path) => nativeChanges.get(path)?.itemId).filter((itemId): itemId is string => Boolean(itemId)),
+  );
+  for (const itemId of changedNativeItemIds) {
+    const files: FileChangeActivityFile[] = [];
+    for (const [path, native] of nativeChanges) {
+      if (native.itemId !== itemId) continue;
+      const detected = detectedByPath.get(path);
+      files.push(detected
+        ? fileChangeActivityFile(detected)
+        : fileChangeActivityFile({ path: native.path, diff: native.diff }));
+    }
+    emitFileChangeActivity({ threadId: input.threadId, turnId: input.turnId, itemId, files, status: input.status });
+  }
+
+  const mirrorId = `devil-file-change-${input.turnId || input.threadId}`;
+  const itemId = `synthetic-file-change-${input.turnId || input.threadId}`;
+  const files = missingChanges.map(fileChangeActivityFile);
+  if (files.length) emitFileChangeActivity({ threadId: input.threadId, turnId: input.turnId, itemId, files, status: input.status });
+
+  // Native fileChange items already exist in the rollout. Re-mirroring their
+  // final diff under a new call id would reconstruct a duplicate card after a
+  // reload; the same item id is updated live and in the external transcript.
+  const mirroredChanges = missingChanges;
+  if (mirroredChanges.length === 0) return;
   if (input.mirrorRollout === false) return;
   void appendMirroredRolloutEvents(input.threadId, mirrorId, [{
     type: "patch_apply_end",
     call_id: mirrorId,
     ...(input.turnId ? { turn_id: input.turnId } : {}),
-    stdout: `Devil Codex detected ${changes.length} changed file(s).`,
+    stdout: `Devil Codex detected ${mirroredChanges.length} changed file(s).`,
     stderr: "",
     success: input.status !== "failed",
-    changes: Object.fromEntries(changes.map((file) => [
+    changes: Object.fromEntries(mirroredChanges.map((file) => [
       file.absPath ?? file.path,
       { type: "update", unified_diff: truncateMirroredRolloutText(file.diff ?? "", MAX_MIRRORED_FILE_DIFF_CHARS) },
     ])),
@@ -1066,7 +1222,8 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
   const params = (event.params ?? {}) as Record<string, unknown>;
   const item = (params.item ?? {}) as Record<string, unknown>;
   const turn = (params.turn ?? {}) as Record<string, unknown>;
-  const turnId = String(params.turnId ?? turn.id ?? "");
+  const explicitTurnId = String(params.turnId ?? turn.id ?? "");
+  const turnId = explicitTurnId || activeThreadTurnIds.get(threadId) || "";
   const terminalTurn = event.method === "turn/completed" || event.method === "turn/aborted" || event.method === "turn/interrupted";
   touchThreadServer(threadId);
   if (event.method === "turn/started") {
@@ -1078,7 +1235,7 @@ function handleAppServerEvent(event: { method: string; params?: unknown }): void
     mirrorCommandExecution({ threadId, ...(turnId ? { turnId } : {}), item });
   }
   if ((event.method === "item/started" || event.method === "item/completed") && String(item.type ?? "") === "fileChange") {
-    nativeFileChangeTurns.add(turnKey(threadId, turnId));
+    if (event.method === "item/completed") rememberNativeFileChanges(threadId, turnId, item);
     return;
   }
   if (!terminalTurn) return;
@@ -1604,12 +1761,32 @@ function baseServerCwd(): string {
   return app.isPackaged ? app.getPath("home") : app.getAppPath();
 }
 
+function displayFileChangePath(path: string, cwd?: string): string {
+  let normalized = path.trim();
+  if (cwd && isAbsolute(normalized)) {
+    const candidate = relative(cwd, normalized);
+    if (candidate && candidate !== ".." && !candidate.startsWith("../") && !candidate.startsWith("..\\") && !isAbsolute(candidate)) normalized = candidate;
+  }
+  return normalized.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
 function scopedAppServerEvent(instance: CodexAppServer, event: AppServerEvent): AppServerEvent {
-  const threadId = appServerThreadIds.get(instance);
-  if (!threadId) return event;
   const params = event.params && typeof event.params === "object" ? event.params as Record<string, unknown> : {};
-  if (params.threadId) return event;
-  return { ...event, params: { ...params, threadId } };
+  const boundThreadId = appServerThreadIds.get(instance);
+  const threadId = String(params.threadId ?? boundThreadId ?? "");
+  const scoped = params.threadId || !boundThreadId ? event : { ...event, params: { ...params, threadId: boundThreadId } };
+  if (!threadId) return scoped;
+  const scopedParams = scoped.params && typeof scoped.params === "object" ? scoped.params as Record<string, unknown> : {};
+  const item = scopedParams.item && typeof scopedParams.item === "object" ? scopedParams.item as Record<string, unknown> : undefined;
+  if (String(item?.type ?? "") !== "fileChange" || !Array.isArray(item?.changes)) return scoped;
+  const cwd = turnFileSnapshots.get(threadId)?.cwd ?? pendingProviderDiagnostics.get(threadId)?.cwd;
+  const changes = item.changes.map((change) => {
+    if (!change || typeof change !== "object") return change;
+    const record = change as Record<string, unknown>;
+    const path = String(record.path ?? "").trim();
+    return path ? { ...record, path: displayFileChangePath(path, cwd) } : record;
+  });
+  return { ...scoped, params: { ...scopedParams, item: { ...item, changes } } };
 }
 
 function attachAppServerEvents(instance: CodexAppServer, reportStatus: boolean): CodexAppServer {

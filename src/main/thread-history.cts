@@ -10,6 +10,42 @@ function countDiff(diff: string): { additions: number; deletions: number } {
   };
 }
 
+function fileChangePathKey(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function sameFileChangePath(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(left);
+  const rightAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(right);
+  if (leftAbsolute === rightAbsolute) return false;
+  const absolute = leftAbsolute ? left : right;
+  const relativePath = leftAbsolute ? right : left;
+  return Boolean(relativePath) && absolute.endsWith(`/${relativePath}`);
+}
+
+function dedupeFileChangeEntries(entries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const seenPaths: string[] = [];
+  const kept: ThreadActivityEntry[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind !== "fileChange" || !entry.files?.length) {
+      kept.push(entry);
+      continue;
+    }
+    const files = entry.files.filter((file) => {
+      const path = fileChangePathKey(file.path);
+      if (!path || seenPaths.some((seen) => sameFileChangePath(path, seen))) return false;
+      seenPaths.push(path);
+      return true;
+    });
+    if (!files.length) continue;
+    kept.push(files.length === entry.files.length ? entry : { ...entry, title: `파일 ${files.length}개 수정`, files });
+  }
+  return kept.reverse();
+}
+
 function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || "image";
 }
@@ -330,7 +366,7 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
     const rawStatus = String(turn.status ?? "completed") as ThreadHistoryItem["status"];
     const status = rawStatus === "failed" && finalMessages.length > 0 ? "completed" : rawStatus;
     history.push({
-      id: `activity-${turnId}`, kind: "activity", text: "", turnId, activities,
+      id: `activity-${turnId}`, kind: "activity", text: "", turnId, activities: dedupeFileChangeEntries(activities),
       status,
       durationMs: Number(turn.durationMs ?? (startedAt && completedAt ? (completedAt - startedAt) * 1000 : 0)), startedAt: startedAt * 1000,
       contextUsage: contextUsageFromRaw(turn),

@@ -26,6 +26,105 @@ function diffCounts(diff: string): { additions: number; deletions: number } {
   return { additions: (diff.match(/^\+(?!\+\+)/gm) ?? []).length, deletions: (diff.match(/^-(?!--)/gm) ?? []).length };
 }
 
+function fileChangePathKey(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  return typeof navigator !== "undefined" && /win/i.test(navigator.platform) ? normalized.toLowerCase() : normalized;
+}
+
+function sameFileChangePath(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(left);
+  const rightAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(right);
+  if (leftAbsolute === rightAbsolute) return false;
+  const absolute = leftAbsolute ? left : right;
+  const relativePath = leftAbsolute ? right : left;
+  return Boolean(relativePath) && absolute.endsWith(`/${relativePath}`);
+}
+
+function dedupeFileChangeEntries(entries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const seenPaths: string[] = [];
+  const kept: ThreadActivityEntry[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind !== "fileChange" || !entry.files?.length) {
+      kept.push(entry);
+      continue;
+    }
+    const files = entry.files.filter((file) => {
+      const path = fileChangePathKey(file.path);
+      if (!path || seenPaths.some((seen) => sameFileChangePath(path, seen))) return false;
+      seenPaths.push(path);
+      return true;
+    });
+    if (!files.length) continue;
+    kept.push(files.length === entry.files.length ? entry : { ...entry, title: `파일 ${files.length}개 수정`, files });
+  }
+  return kept.reverse();
+}
+
+const WORK_MEMO_ACTIONS: Array<[string, RegExp]> = [
+  ["inspect", /확인|점검|검토|파악|감사|audit|check|inspect/i],
+  ["edit", /수정|고치|변경|반영|edit|fix|patch/i],
+  ["test", /테스트|검증|test|verify|validation/i],
+  ["build", /빌드|build/i],
+  ["version", /버전|version|\bv?\d+\.\d+(?:\.\d+)*\b/i],
+  ["commit", /커밋|commit/i],
+  ["tag", /태그|tag/i],
+  ["push", /푸시|push/i],
+  ["release", /릴리스|배포|release|deploy/i],
+  ["wait", /기다리|대기|wait/i],
+  ["delegate", /에이전트|위임|agent|delegate/i],
+];
+
+function isWorkMemo(entry: ThreadActivityEntry): boolean {
+  return entry.kind === "message" && entry.title === "작업 메모";
+}
+
+function workMemoActions(text: string): Set<string> {
+  return new Set(WORK_MEMO_ACTIONS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name));
+}
+
+function workMemoAnchors(text: string): Set<string> {
+  const matches = text.toLowerCase().match(/\bv?\d+\.\d+(?:\.\d+)*\b|`[^`]+`|\b[a-z][a-z0-9_.-]{2,}\b/g) ?? [];
+  return new Set(matches.map((value) => value.replace(/^`|`$/g, "")));
+}
+
+function isFutureWorkMemo(text: string): boolean {
+  return /하겠습니다|하겠어요|할게요|할 예정|진행합니다|진행하겠|올리겠|기다리지 않|\bwill\b|\bgoing to\b/i.test(text);
+}
+
+function repeatedWorkMemo(left: ThreadActivityEntry, right: ThreadActivityEntry): boolean {
+  if (!isWorkMemo(left) || !isWorkMemo(right)) return false;
+  const leftText = normalizedActivityDetail(left.detail).toLowerCase();
+  const rightText = normalizedActivityDetail(right.detail).toLowerCase();
+  if (!leftText || !rightText) return false;
+  if (leftText === rightText) return true;
+  if (!isFutureWorkMemo(leftText) || !isFutureWorkMemo(rightText)) return false;
+  const leftActions = workMemoActions(leftText);
+  const rightActions = workMemoActions(rightText);
+  const sharedActions = [...leftActions].filter((action) => rightActions.has(action)).length;
+  const smallerActionCount = Math.min(leftActions.size, rightActions.size);
+  if (sharedActions < 3 || smallerActionCount === 0 || sharedActions / smallerActionCount < 0.75) return false;
+  const rightAnchors = workMemoAnchors(rightText);
+  const sharedAnchors = [...workMemoAnchors(leftText)].filter((anchor) => rightAnchors.has(anchor)).length;
+  return sharedAnchors >= 2;
+}
+
+export function dedupeRepeatedWorkMemos(entries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const kept: ThreadActivityEntry[] = [];
+  for (const entry of entries) {
+    if (isWorkMemo(entry)) {
+      let previous = -1;
+      for (let index = kept.length - 1; index >= 0; index -= 1) {
+        if (repeatedWorkMemo(kept[index]!, entry)) { previous = index; break; }
+      }
+      if (previous >= 0) kept.splice(previous, 1);
+    }
+    kept.push(entry);
+  }
+  return kept;
+}
+
 function finiteNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(number) && number > 0 ? number : undefined;
@@ -323,7 +422,8 @@ function upsertEntry(items: ThreadHistoryItem[], turnId: string, entry: ThreadAc
     const entries = activity.activities ?? [];
     const exists = entries.some((current) => current.id === entry.id);
     if (!exists && isDuplicateProviderFailureMessage(entries, entry)) return activity;
-    return { ...activity, activities: exists ? entries.map((current) => current.id === entry.id ? { ...current, ...entry } : current) : [...entries, entry] };
+    const next = exists ? entries.map((current) => current.id === entry.id ? { ...current, ...entry } : current) : [...entries, entry];
+    return { ...activity, activities: dedupeRepeatedWorkMemos(dedupeFileChangeEntries(next)) };
   });
 }
 
@@ -393,6 +493,16 @@ function latestActivityTurnId(items: ThreadHistoryItem[]): string {
     if (item.kind === "activity" && item.turnId) return item.turnId;
   }
   return "";
+}
+
+function uniqueInProgressActivityTurnId(items: ThreadHistoryItem[]): string {
+  let turnId = "";
+  for (const item of items) {
+    if (item.kind !== "activity" || item.status !== "inProgress" || !item.turnId) continue;
+    if (turnId && turnId !== item.turnId) return "";
+    turnId = item.turnId;
+  }
+  return turnId;
 }
 
 function hasFailureEntry(item: ThreadHistoryItem): boolean {
@@ -508,7 +618,8 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
   }
   if ((event.method === "item/started" || event.method === "item/completed") && item && turnId) {
     const type = String(item.type ?? "");
-    if (!explicitTurnId && (type === "fileChange" || type === "webSearch" || type === "contextCompaction")) return items;
+    if (!explicitTurnId && type === "fileChange" && !uniqueInProgressActivityTurnId(items)) return items;
+    if (!explicitTurnId && (type === "webSearch" || type === "contextCompaction")) return items;
     if (type === "providerDiagnostics") {
       const effectiveTurnId = explicitTurnId || latestActivityTurnId(items);
       if (effectiveTurnId) {

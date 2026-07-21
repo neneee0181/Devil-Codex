@@ -1,14 +1,150 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { relative, resolve, sep } from "node:path";
-import type { WorkspaceChanges, WorkspaceDiff } from "./contracts.cjs";
+import type { WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "./contracts.cjs";
 
 const execFileAsync = promisify(execFile);
-const isBinaryDiff = (text: string): boolean => /^Binary files .+ differ$/m.test(text);
+const isBinaryDiff = (text: string): boolean => /^Binary files .+ differ$/m.test(text) || /^GIT binary patch$/m.test(text);
 const statFromNumstat = (text: string): { additions: number; deletions: number } => {
   const [added = "0", deleted = "0"] = text.trim().split("\t");
   return { additions: Number(added) || 0, deletions: Number(deleted) || 0 };
 };
+
+export interface GitRevisionChange extends WorkspaceChange {
+  previousPath?: string;
+  diff: string;
+  binary: boolean;
+}
+
+interface GitPathChange {
+  status: string;
+  path: string;
+  previousPath?: string;
+}
+
+interface GitNumstat {
+  path: string;
+  previousPath?: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+const revisionOptions = (cwd: string) => ({ cwd, maxBuffer: 8 * 1024 * 1024 });
+
+const resolveGitCommitOid = async (cwd: string, revision: string): Promise<string | undefined> => {
+  if (!revision.trim()) return undefined;
+  try {
+    const result = await execFileAsync("git", ["rev-parse", "--verify", "--end-of-options", `${revision}^{commit}`], revisionOptions(cwd));
+    const oid = result.stdout.trim();
+    return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(oid) ? oid : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const parseNameStatus = (text: string): GitPathChange[] => {
+  const fields = text.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const changes: GitPathChange[] = [];
+  for (let index = 0; index < fields.length;) {
+    const rawStatus = fields[index++] ?? "";
+    const status = rawStatus.slice(0, 1);
+    if (status === "R") {
+      const previousPath = fields[index++];
+      const path = fields[index++];
+      if (previousPath !== undefined && path !== undefined) changes.push({ status, path, previousPath });
+      continue;
+    }
+    const path = fields[index++];
+    if (path !== undefined && ["A", "M", "D"].includes(status)) changes.push({ status, path });
+  }
+  return changes;
+};
+
+const parseNumstat = (text: string): GitNumstat[] => {
+  const stats: GitNumstat[] = [];
+  let offset = 0;
+  while (offset < text.length) {
+    const end = text.indexOf("\0", offset);
+    if (end < 0) break;
+    const header = text.slice(offset, end);
+    offset = end + 1;
+    const firstTab = header.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : header.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const added = header.slice(0, firstTab);
+    const deleted = header.slice(firstTab + 1, secondTab);
+    let path = header.slice(secondTab + 1);
+    let previousPath: string | undefined;
+    if (!path) {
+      const previousEnd = text.indexOf("\0", offset);
+      if (previousEnd < 0) break;
+      previousPath = text.slice(offset, previousEnd);
+      offset = previousEnd + 1;
+      const pathEnd = text.indexOf("\0", offset);
+      if (pathEnd < 0) break;
+      path = text.slice(offset, pathEnd);
+      offset = pathEnd + 1;
+    }
+    stats.push({
+      path,
+      previousPath,
+      additions: Number(added) || 0,
+      deletions: Number(deleted) || 0,
+      binary: added === "-" || deleted === "-",
+    });
+  }
+  return stats;
+};
+
+/** Returns the current commit OID, or undefined outside a Git repository or before the first commit. */
+export async function getGitHeadOid(cwd: string): Promise<string | undefined> {
+  return resolveGitCommitOid(cwd, "HEAD");
+}
+
+/** Returns committed file changes between two revisions; invalid revisions and unavailable Git yield an empty list. */
+export async function getGitRevisionChanges(cwd: string, fromRevision: string, toRevision: string): Promise<GitRevisionChange[]> {
+  const [fromOid, toOid] = await Promise.all([
+    resolveGitCommitOid(cwd, fromRevision),
+    resolveGitCommitOid(cwd, toRevision),
+  ]);
+  if (!fromOid || !toOid || fromOid === toOid) return [];
+  try {
+    const options = revisionOptions(cwd);
+    const [namesResult, statsResult] = await Promise.all([
+      execFileAsync("git", ["diff", "--name-status", "-z", "--find-renames", "--diff-filter=AMDR", fromOid, toOid, "--"], options),
+      execFileAsync("git", ["diff", "--numstat", "-z", "--find-renames", "--diff-filter=AMDR", fromOid, toOid, "--"], options),
+    ]);
+    const statsByPath = new Map(parseNumstat(statsResult.stdout).map((stat) => [stat.path, stat]));
+    const changes: GitRevisionChange[] = [];
+    for (const change of parseNameStatus(namesResult.stdout)) {
+      const stat = statsByPath.get(change.path);
+      const pathspecs = change.previousPath ? [change.previousPath, change.path] : [change.path];
+      let diff = "";
+      try {
+        diff = (await execFileAsync("git", [
+          "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--unified=3",
+          fromOid, toOid, "--", ...pathspecs,
+        ], options)).stdout;
+      } catch {
+        // A single oversized or unreadable diff must not hide the other committed changes.
+      }
+      changes.push({
+        status: change.status,
+        path: change.path,
+        previousPath: change.previousPath,
+        additions: stat?.additions ?? 0,
+        deletions: stat?.deletions ?? 0,
+        diff,
+        binary: stat?.binary === true || isBinaryDiff(diff),
+      });
+    }
+    return changes;
+  } catch {
+    return [];
+  }
+}
 
 export async function getWorkspaceChanges(cwd: string): Promise<WorkspaceChanges> {
   try {

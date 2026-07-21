@@ -32,7 +32,7 @@ import { useDismissShellPopovers } from "./hooks/useOutsideDismiss";
 import { useProviders } from "./hooks/useProviders";
 import { useCodexSettings } from "./hooks/useCodexSettings";
 import { approvalPromptFromEvent } from "./approvalRequests";
-import { applyTimelineEvent } from "./threadTimeline";
+import { applyTimelineEvent, dedupeRepeatedWorkMemos } from "./threadTimeline";
 import { estimateProviderUsageCost } from "./providerPricing";
 import { selectableApiProvider } from "./providerReadiness";
 import { isPrimaryModifier, shortcut } from "./shortcuts";
@@ -1945,8 +1945,7 @@ function App(): React.JSX.Element {
       }
       if (item.kind === "activity" && item.turnId) {
         const ft = finalText.get(item.turnId);
-        if (!ft) return [item];
-        const activities = (item.activities ?? []).filter((entry) => !(entry.kind === "message" && entry.title === "작업 메모" && (entry.detail ?? "").trim() === ft));
+        const activities = dedupeRepeatedWorkMemos((item.activities ?? []).filter((entry) => !(ft && entry.kind === "message" && entry.title === "작업 메모" && (entry.detail ?? "").trim() === ft)));
         return [{ ...item, activities }];
       }
       return [item];
@@ -2774,7 +2773,8 @@ function App(): React.JSX.Element {
             await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
           }
           const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
-          let recoveredHistory = annotateAgentMessages(mergeTimelineItems(localHistory, history), turnId, completedPending ?? undefined);
+          const latestLocalHistory = threadHistoryCache.current.get(threadId) ?? localHistory;
+          let recoveredHistory = annotateAgentMessages(mergeTimelineItems(latestLocalHistory, history), turnId, completedPending ?? undefined);
           recoveredHistory = removeMissingFinalNoticeForTurn(recoveredHistory, turnId);
           if (turnStatus === "completed" && turnId && !hasAgentMessageForTurn(recoveredHistory, turnId)) {
             const alreadyWarned = recoveredHistory.some((item) => item.id === `missing-final-${turnId}`);
@@ -2784,7 +2784,7 @@ function App(): React.JSX.Element {
             }
           }
           threadHistoryCache.current.set(threadId, recoveredHistory);
-          if (threadRef.current?.id === threadId && recoveredHistory !== localHistory) {
+          if (threadRef.current?.id === threadId && recoveredHistory !== latestLocalHistory) {
             setItems(recoveredHistory);
             itemsRef.current = recoveredHistory;
             itemsOwnerRef.current = threadId;

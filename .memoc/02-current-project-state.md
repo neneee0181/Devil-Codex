@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-19T19:10:44+09:00
+updated: 2026-07-21T03:01:42+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- v0.4.4 Antigravity/Bridge progress fix (2026-07-21): Antigravity tool turns may expose only marked complete user-facing `DEVIL_PROGRESS:` sentences; raw reasoning, code, commands, patches, tool payloads, and secrets remain hidden. Turn-end file tracking reconciles committed and dirty-worktree changes, recovers missing turn IDs, preserves late events, retains the final diff after reload, and deduplicates paths. Stock-Bridge native lite SSE now restores streamed reasoning/messages/tool calls before continuation caching when the completion omits `output`; stale `tools.exec_command` guidance is conditionally repaired to the actually exposed `tools.shell_command`, and repeated equivalent future-plan work memos retain only the latest copy. Full build, proxy tests 36/36, renderer tests 6/6, and diff checks pass. Full main is 45/46; only the unchanged Windows diagnostic-log chmod assertion fails (`0o666` vs expected `0o600`). Installed-app E2E remains.
 
 - Persistent Bridge diagnostics (2026-07-19, unreleased): desktop-main and stock-bridge processes now write separate role/PID/session JSONL app and Bridge logs under Electron `userData/diagnostics`. Actual `/stock/v1` traffic carries one request ID across HTTP/WebSocket ingress, upstream retries, provider adapters, Responses translation, terminal state, and the recent-request UI; provider `finishReason` is retained, including a Gemini `475` text + `STOP` regression. Credentials and binary/data payloads are redacted, raw network chunks are hash-only, complete bounded SSE frames are recorded, files rotate at 32 MiB with 7-day/512 MiB cleanup and 0700/0600 permissions, and shutdown performs a bounded proxy stop plus log flush. Rebased onto origin v0.4.2; combined main tests pass 37/37, full build and `git diff --check` pass. Installed-app incident capture remains.
 

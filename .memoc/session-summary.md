@@ -3,21 +3,19 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-07-18T16:09:15
-updated: 2026-07-19T19:10:44+09:00
+updated: 2026-07-21T10:51:36+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Session Summary
-Last: 2026-07-19.
-Replace, do not append. Keep <800B. History: worklog. Risks: 04-handoff.md.
+Last: 2026-07-21. Replace; keep <800B. History: worklog.
 
 ## Status
-- Gemini connector schemas preserve `properties.title/default/examples`; plugin cache selects versions deterministically.
-- Antigravity preserves final answers while hiding tool-turn narration/raw payloads.
-- Bridge/app have correlated redacted rotating JSONL, bounded SSE reconstruction, and persisted `finishReason`.
-- Rebased onto origin v0.4.2; 37 main tests, full build, and diff check pass.
+- v0.4.4: safe Antigravity progress, final file rollups, and complete stock-Bridge tool-loop continuation.
+- Native lite SSE restores streamed reasoning/messages/tool calls when completion omits output. Stale exec guidance and repeated equivalent plan memos are repaired.
+- Full build, proxy 36/36, renderer 6/6 pass. Main 45/46; only the unchanged Windows chmod assertion fails.
 
 ## Resume
-- Rebuild/reinstall for `@sites` E2E and Bridge incident capture. Preserve `.DS_Store`.
+- Install v0.4.4; verify fresh Antigravity and stock-Bridge turns.

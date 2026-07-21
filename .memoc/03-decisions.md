@@ -3,7 +3,7 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-19T19:10:44+09:00
+updated: 2026-07-21T03:01:42+09:00
 status: active
 tags:
   - memoc
@@ -14,6 +14,14 @@ tags:
 Durable project decisions live here. Keep entries short, dated, and useful to future agents.
 
 ## Decision Log
+
+### 2026-07-21 — Native streamed continuations retain the full tool loop
+- Forwarded native Responses SSE must collect `response.output_item.done` items and use them only when `response.completed.output` is empty, so the next tool round retains assistant reasoning/messages/calls without altering the relayed stream.
+- Repair the stale `tools.exec_command` example only when the same `exec` description exposes `shell_command` and no real `exec_command`. The UI may compact semantically equivalent future-plan work memos, but must preserve distinct progress and reasoning.
+
+### 2026-07-21 — External progress is explicit and final file state is reconciled
+- External Google/Antigravity tool turns may surface only a marked, complete user-facing `DEVIL_PROGRESS:` sentence. Detailed reasoning, source, commands, tool arguments/results, patches, and secrets remain hidden; final answers are unrestricted, while error/EOF never flush buffered raw text.
+- Turn file summaries reconcile both HEAD movement and working-tree deltas. Repeated paths belong to the latest card, same-ID local/cached updates beat stale native history, and native absolute paths are normalized against the workspace cwd.
 
 ### 2026-07-19 — Persistent diagnostics are correlated, bounded, and redacted
 

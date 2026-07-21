@@ -47,6 +47,51 @@ type ClaudeJsonLine = {
   message?: { role?: string; content?: unknown };
 };
 
+function fileChangePathKey(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function sameFileChangePath(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(left);
+  const rightAbsolute = /^(?:[A-Za-z]:\/|\/)/.test(right);
+  if (leftAbsolute === rightAbsolute) return false;
+  const absolute = leftAbsolute ? left : right;
+  const relativePath = leftAbsolute ? right : left;
+  return Boolean(relativePath) && absolute.endsWith(`/${relativePath}`);
+}
+
+function dedupeFileChangeEntries(entries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const seenPaths: string[] = [];
+  const kept: ThreadActivityEntry[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.kind !== "fileChange" || !entry.files?.length) {
+      kept.push(entry);
+      continue;
+    }
+    const files = entry.files.filter((file) => {
+      const path = fileChangePathKey(file.path);
+      if (!path || seenPaths.some((seen) => sameFileChangePath(path, seen))) return false;
+      seenPaths.push(path);
+      return true;
+    });
+    if (!files.length) continue;
+    kept.push(files.length === entry.files.length ? entry : { ...entry, title: `파일 ${files.length}개 수정`, files });
+  }
+  return kept.reverse();
+}
+
+function mergeActivityEntriesPreferLocal(nativeEntries: ThreadActivityEntry[], localEntries: ThreadActivityEntry[]): ThreadActivityEntry[] {
+  const localById = new Map(localEntries.map((entry) => [entry.id, entry]));
+  const nativeIds = new Set(nativeEntries.map((entry) => entry.id));
+  return dedupeFileChangeEntries([
+    ...nativeEntries.map((entry) => localById.get(entry.id) ?? entry),
+    ...localEntries.filter((entry) => !nativeIds.has(entry.id)),
+  ]);
+}
+
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -279,15 +324,12 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
   const usedTurnIds = new Set<string>();
   let cursor = 0;
   let result = native.map((item) => {
-    // Activity items: prefer local entries when they are richer.
+    // Local activity entries carry Devil's latest same-id updates (including
+    // reconciled final file diffs), regardless of the total entry count.
     if (item.kind === "activity" && item.turnId) {
       const localAct = localActivityMap.get(item.turnId);
       usedTurnIds.add(item.turnId);
-      if (localAct && localAct.activities && localAct.activities.length > 0) {
-        if (!item.activities || item.activities.length < localAct.activities.length) {
-          return { ...item, activities: localAct.activities };
-        }
-      }
+      if (localAct?.activities?.length) return { ...item, activities: mergeActivityEntriesPreferLocal(item.activities ?? [], localAct.activities) };
       return item;
     }
     if (item.kind !== "user" || item.attachments?.length) return item;
@@ -451,7 +493,7 @@ export class ProviderTranscriptStore {
         const activities = target.activities ?? [];
         const exists = activities.some((current) => current.id === entry.id);
         all.items[threadId] = items.map((item, index) => index === targetIndex
-          ? { ...item, activities: exists ? activities.map((current) => current.id === entry.id ? entry : current) : [...activities, entry] }
+          ? { ...item, activities: dedupeFileChangeEntries(exists ? activities.map((current) => current.id === entry.id ? entry : current) : [...activities, entry]) }
           : item);
         return;
       }

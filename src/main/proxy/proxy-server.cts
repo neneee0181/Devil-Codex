@@ -31,6 +31,7 @@ import {
   inspectResponsesPayload,
   nextSseBlock,
   prepareOpenAiResponsesBody,
+  restoreStreamedResponseOutput,
   sanitizePassthroughHeaders,
   sseDataPayload,
 } from "./openai-responses.cjs";
@@ -788,15 +789,17 @@ async function relayResponsesPassthrough(
   let error: string | undefined;
   let errorType: string | undefined;
   let remembered = false;
+  const streamedOutput = new Map<number, Record<string, unknown>>();
   const inspect = (payload: string | null) => {
     if (!payload) return;
     const result = inspectResponsesPayload(payload);
     if (result.terminal) terminal = result.terminal;
+    if (result.outputItem) streamedOutput.set(result.outputItem.outputIndex, result.outputItem.item);
     if (result.response) {
-      completedResponse = result.response;
+      completedResponse = restoreStreamedResponseOutput(result.response, [...streamedOutput].map(([outputIndex, item]) => ({ outputIndex, item })));
       if (!remembered) {
         remembered = true;
-        try { options.onCompletedResponse?.(result.response); } catch { /* continuation storage is best effort */ }
+        try { options.onCompletedResponse?.(completedResponse); } catch { /* continuation storage is best effort */ }
       }
     }
     if (payload === "[DONE]") return;

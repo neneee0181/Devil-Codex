@@ -18,7 +18,7 @@ import { bridgeToResponsesSSE } from "./bridge.cjs";
 import { encodeCompactionSummary } from "./compaction.cjs";
 import { buildCopilotRequest } from "./copilot.cjs";
 import { rawMessage } from "./errors.cjs";
-import { buildOpenAiResponsesApiKeyRequest, inspectResponsesPayload, prepareOpenAiResponsesBody } from "./openai-responses.cjs";
+import { buildOpenAiResponsesApiKeyRequest, inspectResponsesPayload, prepareOpenAiResponsesBody, restoreStreamedResponseOutput } from "./openai-responses.cjs";
 import { parseRequest } from "./parser.cjs";
 import { mapProviderReasoningEffort, providerAutoToolChoiceOnly, providerContextWindow, providerNativeImageInput, providerReasoningEfforts } from "./provider-policy.cjs";
 import { decodeRequestBody } from "./proxy-server.cjs";
@@ -243,6 +243,31 @@ test("additional_tools survive follow-up parsing and all active tools reach chat
   assert.equal(body.reasoning_effort, undefined);
 });
 
+test("native passthrough repairs a stale exec_command example when only shell_command exists", () => {
+  const prepared = prepareOpenAiResponsesBody({
+    model: "gpt-5.6-sol",
+    input: [{
+      type: "additional_tools",
+      role: "developer",
+      tools: [{
+        type: "custom",
+        name: "exec",
+        description: [
+          "Example: await tools.exec_command({ cmd: 'git status' }).",
+          "### `shell_command`",
+          "declare const tools: { shell_command(args: object): Promise<unknown>; };",
+        ].join("\n"),
+      }],
+    }],
+  }, { forward: true }) as { input: Array<{ tools: Array<{ description: string }> }> };
+
+  const description = prepared.input[0]!.tools[0]!.description;
+  assert.doesNotMatch(description, /tools\.exec_command/);
+  assert.match(description, /tools\.shell_command/);
+  assert.match(description, /command: "git status"/);
+  assert.doesNotMatch(description, /\bcmd:/);
+});
+
 test("OpenAI-compatible orphan and image tool results stay schema-valid", () => {
   const orphan = parsedRequest({
     model: "deepseek-v4-flash",
@@ -427,7 +452,8 @@ test("Gemini schema removes Responses-only markers and resolves definitions", ()
   assert.doesNotMatch(JSON.stringify(schema), /"encrypted"/);
   assert.equal(((schema.properties as Record<string, Record<string, unknown>>).target).type, "string");
   assert.equal(((schema.properties as Record<string, Record<string, unknown>>).count).minimum, 0);
-  assert.match(body.systemInstruction.parts[0]!.text, /Prefer taking the next tool action/);
+  assert.match(body.systemInstruction.parts[0]!.text, /DEVIL_PROGRESS: <what you will do next>/);
+  assert.match(body.systemInstruction.parts[0]!.text, /Use DEVIL_PROGRESS only for plain-language status/);
   assert.match(body.systemInstruction.parts[0]!.text, /never claim an external create, update, save, publish, or deployment succeeded/i);
   assert.match(body.systemInstruction.parts[0]!.text, /Never print raw tool arguments, patches, source files, shell commands, or tool schemas as intermediate text/);
 });
@@ -519,6 +545,101 @@ test("Antigravity hides ordinary text in tool turns but preserves final answers"
   ]);
 });
 
+test("Antigravity preserves one safe progress line before a tool and hides post-tool text", async () => {
+  async function* toolTurn(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "DEVIL_PROGRESS: 저장소 구조를 확인한 뒤 필요한 파일만 수정하겠습니다." };
+    yield { type: "tool_call_start", id: "call_1", name: "read_file" };
+    yield { type: "tool_call_delta", arguments: '{"path":"README.md"}' };
+    yield { type: "tool_call_end" };
+    yield { type: "text_delta", text: "raw tool result follows" };
+    yield { type: "done" };
+  }
+
+  const filtered = await collect(filterAntigravityToolTurnText(toolTurn()));
+  assert.deepEqual(filtered, [
+    { type: "heartbeat" },
+    { type: "text_delta", text: "저장소 구조를 확인한 뒤 필요한 파일만 수정하겠습니다." },
+    { type: "tool_call_start", id: "call_1", name: "read_file" },
+    { type: "tool_call_delta", arguments: '{"path":"README.md"}' },
+    { type: "tool_call_end" },
+    { type: "heartbeat" },
+    { type: "done" },
+  ]);
+});
+
+test("Antigravity preserves Korean and English plain-language progress", async () => {
+  for (const progress of [
+    "변경 범위를 확인한 뒤 관련 테스트를 실행하겠습니다.",
+    "I will make the smallest safe change and verify it.",
+    "I’ll inspect the affected files and run the relevant tests.",
+  ]) {
+    async function* toolTurn(): AsyncGenerator<AdapterEvent> {
+      yield { type: "text_delta", text: `DEVIL_PROGRESS: ${progress}` };
+      yield { type: "tool_call_start", id: "call_1", name: "read_file" };
+      yield { type: "tool_call_end" };
+      yield { type: "done" };
+    }
+
+    const filtered = await collect(filterAntigravityToolTurnText(toolTurn()));
+    assert.equal(
+      filtered.some((event) => event.type === "text_delta" && event.text === progress),
+      true,
+      progress,
+    );
+  }
+});
+
+test("Antigravity rejects unmarked, source, JSON-like, command, and secret progress before a tool", async () => {
+  for (const unsafeText of [
+    '저장소 구조를 확인하겠습니다.',
+    'console.log("secret");',
+    '{"path":"README.md"}',
+    'npm run build && git status',
+    'Authorization bearer sk-sensitive-token',
+    'DEVIL_PROGRESS: Get-Content package.json',
+    'DEVIL_PROGRESS: rg --files',
+    'DEVIL_PROGRESS: apply_patch 수정',
+    'DEVIL_PROGRESS: cargo test',
+    'DEVIL_PROGRESS: cargo.exe test --workspace',
+    'DEVIL_PROGRESS: dotnet build',
+    'DEVIL_PROGRESS: dotnet.exe test Project.sln',
+    'DEVIL_PROGRESS: make',
+    'DEVIL_PROGRESS: make test',
+    'DEVIL_PROGRESS: run make -C src',
+    'DEVIL_PROGRESS: rm -rf /',
+    'DEVIL_PROGRESS: cmake --build .',
+    'DEVIL_PROGRESS: go test ./...',
+    'DEVIL_PROGRESS: I will run rm -rf /.',
+  ]) {
+    async function* toolTurn(): AsyncGenerator<AdapterEvent> {
+      yield { type: "text_delta", text: unsafeText };
+      yield { type: "tool_call_start", id: "call_1", name: "exec_command" };
+      yield { type: "tool_call_end" };
+      yield { type: "done" };
+    }
+
+    const filtered = await collect(filterAntigravityToolTurnText(toolTurn()));
+    assert.equal(filtered.some((event) => event.type === "text_delta"), false, unsafeText);
+  }
+});
+
+test("Antigravity never flushes unsafe buffered text on error or truncated EOF", async () => {
+  async function* errorTurn(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "*** Begin Patch\n*** Update File: secret.txt" };
+    yield { type: "error", message: "upstream failed" };
+  }
+  async function* truncatedTurn(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "Get-Content package.json" };
+  }
+
+  const errored = await collect(filterAntigravityToolTurnText(errorTurn()));
+  assert.equal(errored.some((event) => event.type === "text_delta"), false);
+  assert.equal(errored.some((event) => event.type === "error" && event.message === "upstream failed"), true);
+
+  const truncated = await collect(filterAntigravityToolTurnText(truncatedTurn()));
+  assert.equal(truncated.some((event) => event.type === "text_delta"), false);
+});
+
 test("native Codex identity is neutralized before an external provider sees it", () => {
   const parsed = parsedRequest({
     model: "deepseek-v4-flash",
@@ -528,6 +649,46 @@ test("native Codex identity is neutralized before an external provider sees it",
   const system = body.messages.find((message) => message.role === "system")?.content ?? "";
   assert.doesNotMatch(system, /You are Codex|based on GPT-5/);
   assert.match(system, /coding agent/);
+});
+
+test("native lite SSE restores streamed items when response.completed output is empty", async () => {
+  const previousDataDir = process.env.DEVIL_CODEX_USER_DATA;
+  const dataDir = await mkdtemp(join(tmpdir(), "devil-lite-response-state-"));
+  process.env.DEVIL_CODEX_USER_DATA = dataDir;
+  try {
+    clearResponseStateForTests();
+    const request = {
+      model: "gpt-5.6-sol",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "release it" }] }],
+    };
+    const streamed = [
+      { type: "reasoning", id: "reasoning_1", summary: [] },
+      { type: "message", id: "message_1", role: "assistant", content: [{ type: "output_text", text: "진행하겠습니다." }] },
+      { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "exec", input: "status" },
+    ].map((item, outputIndex) => inspectResponsesPayload(JSON.stringify({ type: "response.output_item.done", output_index: outputIndex, item })).outputItem!);
+    const completed = inspectResponsesPayload(JSON.stringify({
+      type: "response.completed",
+      response: { id: "resp_lite_empty_output", status: "completed", output: [] },
+    })).response!;
+
+    const restored = restoreStreamedResponseOutput(completed, streamed);
+    assert.equal((restored.output as unknown[]).length, 3);
+    rememberResponseState(request, restored);
+    const expanded = expandPreviousResponseInput({
+      model: request.model,
+      previous_response_id: "resp_lite_empty_output",
+      input: [{ type: "custom_tool_call_output", call_id: "call_1", output: "clean" }],
+    });
+    const forwarded = prepareOpenAiResponsesBody(expanded, { forward: true, previousResponseInputExpanded: true }) as { input: Array<Record<string, unknown>> };
+    assert.ok(forwarded.input.some((item) => item.type === "custom_tool_call" && item.call_id === "call_1"));
+    assert.ok(forwarded.input.some((item) => item.type === "custom_tool_call_output" && item.call_id === "call_1"));
+    assert.equal(forwarded.input.some((item) => item.type === "message" && JSON.stringify(item).includes("[tool output for call_1]")), false);
+  } finally {
+    clearResponseStateForTests();
+    if (previousDataDir === undefined) delete process.env.DEVIL_CODEX_USER_DATA;
+    else process.env.DEVIL_CODEX_USER_DATA = previousDataDir;
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("Anthropic forwards the complete active tool catalog", async () => {

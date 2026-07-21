@@ -11,10 +11,10 @@ type ApiKeyProvider = Exclude<ProviderId, "codex" | "claude-code" | "copilot" | 
 
 const GOOGLE_BREVITY_INSTRUCTION = [
   "Output style for this session:",
-  "- While you are still working (between tool calls), keep any text you emit to a single short line; do not narrate at length.",
+  "- Before each meaningful new phase or tool batch, emit exactly one short user-facing progress line in the form DEVIL_PROGRESS: <what you will do next>; use a complete future-action sentence starting with I/We in English or a polite Korean sentence, end it with punctuation, and do not repeat unchanged progress or narrate at length.",
   "- Do detailed reasoning internally, not as visible intermediate output.",
   "- Never print raw tool arguments, patches, source files, shell commands, or tool schemas as intermediate text; send them only through the matching tool call.",
-  "- Prefer taking the next tool action over explaining; keep calling tools until the task is complete.",
+  "- Use DEVIL_PROGRESS only for plain-language status, never for commands, code, arguments, or patches. After that line, take the next tool action immediately; keep calling tools until the task is complete.",
   "- This applies only to intermediate progress text. Your final answer after the work is done is exempt: write it in full and at whatever length the task requires.",
 ].join("\n");
 

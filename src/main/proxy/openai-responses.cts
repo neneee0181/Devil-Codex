@@ -29,6 +29,37 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function repairExecTool(tool: unknown): unknown {
+  if (!isPlainObject(tool) || tool.type !== "custom" || tool.name !== "exec" || typeof tool.description !== "string") return tool;
+  const description = tool.description;
+  const hasStaleExample = description.includes("tools.exec_command");
+  const exposesShellCommand = /###\s+`shell_command`|\btools\.shell_command\b|\bshell_command\s*\(/.test(description);
+  const exposesExecCommand = /###\s+`exec_command`|\bexec_command\s*\([^)]*\)\s*:\s*Promise/.test(description);
+  if (!hasStaleExample || !exposesShellCommand || exposesExecCommand) return tool;
+  const repaired = description
+    .replace(/await\s+tools\.exec_command\([^\n]*?\)/g, "await tools.shell_command({ command: \"git status\" })")
+    .replaceAll("tools.exec_command", "tools.shell_command");
+  return { ...tool, description: repaired };
+}
+
+function repairForwardedExecToolDescriptions(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  let changed = false;
+  const repairTools = (tools: unknown[]): unknown[] => tools.map((tool) => {
+    const repaired = repairExecTool(tool);
+    if (repaired !== tool) changed = true;
+    return repaired;
+  });
+  const tools = Array.isArray(body.tools) ? repairTools(body.tools) : body.tools;
+  const input = Array.isArray(body.input) ? body.input.map((item) => {
+    if (!isPlainObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) return item;
+    const originalTools = item.tools;
+    const repaired = repairTools(originalTools);
+    return repaired.some((tool, index) => tool !== originalTools[index]) ? { ...item, tools: repaired } : item;
+  }) : body.input;
+  return changed ? { ...body, ...(tools !== body.tools ? { tools } : {}), ...(input !== body.input ? { input } : {}) } : body;
+}
+
 function sanitizeReasoningInputContent(body: unknown): unknown {
   if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
   let changed = false;
@@ -219,7 +250,10 @@ export function prepareOpenAiResponsesBody(
   let output: unknown = isPlainObject(body) && options.model ? { ...body, model: options.model } : body;
   const previousId = isPlainObject(output) && typeof output.previous_response_id === "string";
   output = stripPreviousResponseId(output, options.forward || options.previousResponseInputExpanded === true);
-  if (options.forward) output = repairOrphanedInputItems(output, previousId && options.previousResponseInputExpanded !== true);
+  if (options.forward) {
+    output = repairForwardedExecToolDescriptions(output);
+    output = repairOrphanedInputItems(output, previousId && options.previousResponseInputExpanded !== true);
+  }
   else output = stripConflictingHostedTools(output);
   output = scrubDevilCompactionItems(output);
   output = sanitizeReasoningInputContent(output);
@@ -262,10 +296,11 @@ export function sseDataPayload(block: string): string | null {
 export function inspectResponsesPayload(payload: string): {
   terminal?: "completed" | "failed" | "incomplete";
   response?: Record<string, unknown>;
+  outputItem?: { outputIndex: number; item: Record<string, unknown> };
 } {
   if (!payload || payload === "[DONE]") return {};
   try {
-    const event = JSON.parse(payload) as { type?: unknown; response?: unknown };
+    const event = JSON.parse(payload) as { type?: unknown; response?: unknown; output_index?: unknown; item?: unknown };
     const terminal = event.type === "response.completed" ? "completed"
       : event.type === "response.failed" ? "failed"
       : event.type === "response.incomplete" ? "incomplete"
@@ -273,10 +308,24 @@ export function inspectResponsesPayload(payload: string): {
     return {
       ...(terminal ? { terminal } : {}),
       ...(event.type === "response.completed" && isPlainObject(event.response) ? { response: event.response } : {}),
+      ...(event.type === "response.output_item.done" && Number.isInteger(event.output_index) && Number(event.output_index) >= 0 && isPlainObject(event.item)
+        ? { outputItem: { outputIndex: Number(event.output_index), item: event.item } }
+        : {}),
     };
   } catch {
     return {};
   }
+}
+
+export function restoreStreamedResponseOutput(
+  response: Record<string, unknown>,
+  streamed: Array<{ outputIndex: number; item: Record<string, unknown> }>,
+): Record<string, unknown> {
+  if (Array.isArray(response.output) && response.output.length > 0) return response;
+  const output = [...streamed]
+    .sort((left, right) => left.outputIndex - right.outputIndex)
+    .map(({ item }) => item);
+  return output.length ? { ...response, output } : response;
 }
 
 export function sanitizePassthroughHeaders(headers: Headers): Record<string, string> {
