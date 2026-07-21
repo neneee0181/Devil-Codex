@@ -2,7 +2,7 @@ import { app } from "electron";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { ContextUsage, ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
+import type { ContextUsage, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
 
 type ProviderTurnMeta = {
   provider: string;
@@ -121,6 +121,30 @@ function claudeTextContent(content: unknown): string {
 function claudeContentParts(content: unknown): Record<string, unknown>[] {
   if (!Array.isArray(content)) return [];
   return content.filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object");
+}
+
+// Pasted/dropped images ride a top-level user message as Anthropic-format
+// `{type:"image", source:{type:"base64"|"url", ...}}` blocks (see
+// userMessageContent()/imageContentBlock() in claude-runtime.cts). Reimporting
+// a session from the raw jsonl (recoverClaudeProjects) previously only pulled
+// `type:"text"` parts via claudeTextContent(), silently dropping every
+// attachment on the user bubble on the next app restart even though the
+// image data is sitting right there in the session file.
+function claudeUserAttachments(content: unknown): ThreadAttachment[] {
+  return claudeContentParts(content).flatMap((part, index): ThreadAttachment[] => {
+    if (String(part.type ?? "") !== "image") return [];
+    const source = part.source as Record<string, unknown> | undefined;
+    if (!source) return [];
+    const sourceType = String(source.type ?? "");
+    if (sourceType === "base64" && typeof source.data === "string") {
+      const mediaType = typeof source.media_type === "string" ? source.media_type : "image/png";
+      return [{ name: `image-${index + 1}`, kind: "image", url: `data:${mediaType};base64,${source.data}`, mime: mediaType }];
+    }
+    if (sourceType === "url" && typeof source.url === "string" && source.url) {
+      return [{ name: `image-${index + 1}`, kind: "image", url: source.url }];
+    }
+    return [];
+  });
 }
 
 function isClaudeApiErrorLine(line: ClaudeJsonLine): boolean {
@@ -836,7 +860,8 @@ export class ProviderTranscriptStore {
         }
         if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return;
         currentTurnId = `${threadId}-claude-turn-${turnIndex++}`;
-        items.push({ id, kind: "user", text, turnId: currentTurnId });
+        const attachments = claudeUserAttachments(content);
+        items.push({ id, kind: "user", text, turnId: currentTurnId, ...(attachments.length ? { attachments } : {}) });
         return;
       }
       if (role !== "assistant") return;
