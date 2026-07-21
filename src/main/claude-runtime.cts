@@ -235,6 +235,22 @@ function toolResultText(part: Record<string, unknown>): string {
   return "";
 }
 
+// An MCP tool result reaches us in whichever image shape its transport used:
+// the MCP wire shape ({type:"image",data,mimeType}) or - what the Claude Agent
+// SDK actually hands back for devil_browser/devil_computer screenshots - the
+// Anthropic content-block shape ({type:"image",source:{type:"base64",
+// media_type,data}}). Reading only `data` silently dropped every screenshot,
+// so the activity card fell back to printing the tool name. Normalize both to
+// the MCP shape the renderer's mcpResultContent() consumes.
+function imageResultBlock(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (typeof record.data === "string") return { type: "image", data: record.data, mimeType: typeof record.mimeType === "string" ? record.mimeType : "image/png" };
+  const source = record.source && typeof record.source === "object" ? record.source as Record<string, unknown> : undefined;
+  if (!source) return undefined;
+  if (typeof source.data === "string") return { type: "image", data: source.data, mimeType: typeof source.media_type === "string" ? source.media_type : "image/png" };
+  if (typeof source.url === "string") return { type: "image_url", image_url: { url: source.url } };
+  return undefined;
+}
+
 // Like toolResultText, but keeps image blocks instead of collapsing them to
 // "" (record.text ?? record.content is empty for an image part, so a plain
 // text join silently drops screenshots — e.g. browser_screenshot/
@@ -249,7 +265,10 @@ function toolResultContent(part: Record<string, unknown>): Array<Record<string, 
     if (!entry || typeof entry !== "object") return [];
     const record = entry as Record<string, unknown>;
     const type = String(record.type ?? "");
-    if (type === "image" && typeof record.data === "string") return [{ type: "image", data: record.data, mimeType: typeof record.mimeType === "string" ? record.mimeType : "image/png" }];
+    if (type === "image") {
+      const image = imageResultBlock(record);
+      if (image) return [image];
+    }
     if (type === "image_url") return [record];
     const text = String(record.text ?? record.content ?? "");
     return text ? [{ type: "text", text }] : [];

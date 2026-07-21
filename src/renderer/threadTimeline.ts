@@ -322,8 +322,15 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
     if (!part || typeof part !== "object") continue;
     const p = part as RawItem;
     const type = String(p.type ?? "");
-    if (type === "image" && typeof p.data === "string") {
-      images.push(`data:${String(p.mimeType ?? "image/png")};base64,${p.data}`);
+    if (type === "image") {
+      // Both image shapes reach here: the MCP wire shape ({data,mimeType}) and
+      // the Anthropic content-block shape ({source:{type:"base64",media_type,
+      // data}}) that the Claude Agent SDK reports screenshots in. Reading only
+      // `data` rendered a screenshot-only tool result as an empty card.
+      const source = (typeof p.source === "object" && p.source ? p.source : {}) as RawItem;
+      if (typeof p.data === "string") images.push(`data:${String(p.mimeType ?? "image/png")};base64,${p.data}`);
+      else if (typeof source.data === "string") images.push(`data:${String(source.media_type ?? "image/png")};base64,${source.data}`);
+      else if (typeof source.url === "string" && source.url) images.push(source.url);
     } else if (type === "image_url") {
       const url = typeof p.image_url === "object" ? String((p.image_url as RawItem).url ?? "") : String(p.image_url ?? "");
       if (url) images.push(url);

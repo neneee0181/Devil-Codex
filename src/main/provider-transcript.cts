@@ -28,7 +28,7 @@ type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; thr
 // since its last import would otherwise be treated as "unchanged" forever
 // and keep serving the stale, already-imported (pre-fix) history even after
 // the app updates. Bumping this forces exactly one re-derive per thread.
-const CLAUDE_IMPORT_FORMAT_VERSION = 3;
+const CLAUDE_IMPORT_FORMAT_VERSION = 4;
 type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
@@ -151,6 +151,22 @@ function claudeUserAttachments(content: unknown): ThreadAttachment[] {
     }
     return [];
   });
+}
+
+// A screenshot inside an MCP tool_result is recorded in whichever image shape
+// the transport used: the MCP wire shape ({type:"image",data,mimeType}) or the
+// Anthropic content-block shape ({type:"image",source:{type:"base64",
+// media_type,data}}) - and devil_browser/devil_computer screenshots land in the
+// jsonl as the latter. Reading only `data` dropped every one of them, so the
+// reimported activity card showed no screenshot at all.
+function claudeResultImageUrl(part: Record<string, unknown>): string[] {
+  if (String(part.type ?? "") !== "image") return [];
+  if (typeof part.data === "string") return [`data:${typeof part.mimeType === "string" ? part.mimeType : "image/png"};base64,${part.data}`];
+  const source = part.source as Record<string, unknown> | undefined;
+  if (!source) return [];
+  if (typeof source.data === "string") return [`data:${typeof source.media_type === "string" ? source.media_type : "image/png"};base64,${source.data}`];
+  if (typeof source.url === "string" && source.url) return [source.url];
+  return [];
 }
 
 function isClaudeApiErrorLine(line: ClaudeJsonLine): boolean {
@@ -846,12 +862,7 @@ export class ProviderTranscriptStore {
         if (!useId) continue;
         if (!toolResults.has(useId)) toolResults.set(useId, claudeTextContent(part.content));
         if (!toolResultImages.has(useId)) {
-          const images = claudeContentParts(part.content).flatMap((entry) => {
-            if (String(entry.type ?? "") === "image" && typeof entry.data === "string") {
-              return [`data:${typeof entry.mimeType === "string" ? entry.mimeType : "image/png"};base64,${entry.data}`];
-            }
-            return [];
-          });
+          const images = claudeContentParts(part.content).flatMap((entry) => claudeResultImageUrl(entry));
           if (images.length) toolResultImages.set(useId, images);
         }
       }

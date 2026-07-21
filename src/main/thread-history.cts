@@ -193,7 +193,15 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
     if (!part || typeof part !== "object") continue;
     const p = part as RawItem;
     const type = String(p.type ?? "");
-    if (type === "image" && typeof p.data === "string") images.push(`data:${String(p.mimeType ?? "image/png")};base64,${p.data}`);
+    if (type === "image") {
+      // MCP wire shape ({data,mimeType}) and Anthropic content-block shape
+      // ({source:{type:"base64",media_type,data}}) both show up here; reading
+      // only `data` dropped screenshot-only tool results entirely.
+      const source = (typeof p.source === "object" && p.source ? p.source : {}) as RawItem;
+      if (typeof p.data === "string") images.push(`data:${String(p.mimeType ?? "image/png")};base64,${p.data}`);
+      else if (typeof source.data === "string") images.push(`data:${String(source.media_type ?? "image/png")};base64,${source.data}`);
+      else if (typeof source.url === "string" && source.url) images.push(source.url);
+    }
     else if (type === "image_url") { const url = typeof p.image_url === "object" ? String((p.image_url as RawItem).url ?? "") : String(p.image_url ?? ""); if (url) images.push(url); }
     else if (type === "text" && typeof p.text === "string") texts.push(p.text);
   }
