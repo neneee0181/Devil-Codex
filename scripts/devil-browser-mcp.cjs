@@ -33,7 +33,10 @@ function call(pathname, body) {
 
 // Strong guidance so the model uses THESE tools directly and does not fall back
 // to Codex's built-in in-app/Chrome browser skills (which aren't available here).
-const PREFIX = "Devil Codex 내장 브라우저를 직접 제어합니다. 브라우저 작업에는 다른 browser/in-app/Chrome 스킬 대신 반드시 이 도구를 사용하세요. ";
+// Escalation guidance mirrors devil-computer-mcp: native confirm()/alert()
+// dialogs live outside the DOM, so selector clicks can never dismiss them -
+// the model should route around them (script/API) instead of retrying.
+const PREFIX = "Devil Codex 내장 브라우저를 직접 제어합니다. 브라우저 작업에는 다른 browser/in-app/Chrome 스킬 대신 반드시 이 도구를 사용하세요. 요소 클릭은 CSS selector가 좌표보다 정확합니다. native confirm()/alert() 다이얼로그는 DOM 밖이라 이 도구로 못 누릅니다 - 그 흐름은 스크립트/API 직접 호출로 우회하세요. ";
 const TOOLS = [
   { name: "browser_navigate", description: PREFIX + "주어진 URL을 내장 브라우저에서 엽니다.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "browser_read", description: PREFIX + "현재 페이지의 보이는 텍스트를 읽습니다.", inputSchema: { type: "object", properties: {} } },

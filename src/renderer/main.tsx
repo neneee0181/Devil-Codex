@@ -138,10 +138,10 @@ function claudeRuntimeSkillPrompt(skillNames: string[], skillOptions: CodexSkill
   const names = new Set(skillNames);
   const lines: string[] = [];
   if (names.has("browser-use")) {
-    lines.push("사용자가 /browser-use를 선택했습니다. WebFetch 대신 Devil MCP 서버 `devil_browser`의 브라우저 도구를 사용하세요. 사용 가능한 도구는 `browser_navigate`, `browser_read`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`이며, SDK에서 `mcp__devil_browser__browser_navigate` 같은 이름으로 보일 수 있습니다.");
+    lines.push("사용자가 /browser-use를 선택했습니다. WebFetch 대신 Devil MCP 서버 `devil_browser`의 브라우저 도구를 사용하세요. 사용 가능한 도구는 `browser_navigate`, `browser_read`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`이며, SDK에서 `mcp__devil_browser__browser_navigate` 같은 이름으로 보일 수 있습니다. 클릭은 `browser_read`가 알려준 CSS selector를 좌표보다 우선하세요. native confirm()/alert() 다이얼로그는 DOM 밖이라 이 도구로 못 누릅니다 — 그런 흐름을 만나면 화면 조작을 반복하지 말고 같은 동작을 스크립트/CLI/API 직접 호출로 수행할 수 있는지 먼저 판단해 그 경로로 전환하세요.");
   }
   if (names.has("computer-use")) {
-    lines.push("사용자가 /computer-use를 선택했습니다. OS 화면 확인이나 마우스/키보드 조작이 필요하면 Devil MCP 서버 `devil_computer`의 도구를 사용하세요. 사용 가능한 도구는 `computer_screenshot`, `computer_click`, `computer_move`, `computer_type`, `computer_key`, `computer_scroll`, `computer_list_windows`이며, 사용자의 명시 요청 범위 안에서만 조작하세요.");
+    lines.push("사용자가 /computer-use를 선택했습니다. OS 화면 확인이나 마우스/키보드 조작이 필요하면 Devil MCP 서버 `devil_computer`의 도구를 사용하세요. 사용 가능한 도구는 `computer_screenshot`, `computer_click`, `computer_move`, `computer_type`, `computer_key`, `computer_scroll`, `computer_list_windows`이며, 사용자의 명시 요청 범위 안에서만 조작하세요. 기본적으로 화면 조작으로 진행하되, 매 단계에서 같은 목표를 스크립트/CLI/API로 더 확실하게 달성할 수 있는지 스스로 판단하세요. 다음 상황에서는 화면 클릭을 중단하고 스크립트 경로로 전환하는 것이 맞습니다: (1) 좌표 클릭이 2번 연속 빗나감, (2) 사용자가 마우스를 직접 사용 중이거나 풀스크린 앱/게임이 화면을 점유함(실제 커서를 공유하므로 충돌), (3) native confirm()/alert() 같은 화면 자동화가 닿지 않는 UI, (4) 동일 동작의 대량 반복. 전환할 때는 한 줄로 이유를 밝히고 진행하세요.");
   }
   for (const skillName of skillNames) {
     if (skillName === "browser-use" || skillName === "computer-use" || skillName.startsWith("mcp:")) continue;
