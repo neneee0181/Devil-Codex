@@ -1559,8 +1559,16 @@ function App(): React.JSX.Element {
     return dispose;
   }, []);
   // When the AI drives the browser (devil_browser MCP), open/focus the browser
-  // tab so the user watches it act.
-  useEffect(() => window.devilCodex.onBrowserActivate(() => { openBrowserTab("right"); }), []);
+  // tab so the user watches it act. Reuse an already-open browser tab instead of
+  // minting a new one on every MCP call (navigate/click/type/... all activate) —
+  // otherwise each AI action stacks another "브라우저" tab in the dock.
+  useEffect(() => window.devilCodex.onBrowserActivate(() => {
+    const existingRight = utilityTabs.find((tab) => tab.startsWith("browser:"));
+    const existingBottom = bottomTabs.find((tab) => tab.startsWith("browser:"));
+    if (existingRight) openUtility(existingRight);
+    else if (existingBottom) openBottomTool(existingBottom);
+    else openBrowserTab("right");
+  }), [utilityTabs, bottomTabs]);
   useEffect(() => window.devilCodex.onBrowserNewTab(({ sourceKey, url }) => {
     openBrowserTab(utilityTabs.includes(sourceKey) ? "right" : "bottom", url);
   }), [utilityTabs]);
