@@ -880,6 +880,18 @@ test("Google streams preserve the last finishReason on the terminal event", asyn
   assert.equal(terminal?.type === "done" ? terminal.usage?.inputTokens : undefined, 135304);
 });
 
+test("Google streams recover thought signatures nested under extra_content.google", async () => {
+  const frames = [
+    { response: { candidates: [{ content: { parts: [{
+      functionCall: { name: "exec", args: { cmd: "ls" } },
+      extra_content: { google: { thought_signature: "NestedSignature1234567890==" } },
+    }] } }] } },
+  ].map((value) => `data: ${JSON.stringify(value)}\n\n`).join("");
+  const events = await collect(streamGoogle(new Response(frames), { label: "Antigravity", unwrapResponse: true }));
+  const start = events.find((event) => event.type === "tool_call_start");
+  assert.equal(start?.type === "tool_call_start" ? start.thoughtSignature : undefined, "NestedSignature1234567890==");
+});
+
 test("Antigravity replay keys function calls by canonical arguments", () => {
   resetAntigravityReplayForTests();
   observeAntigravityReplayCall("gemini-3.5-flash-low", "session", "exec", { b: 2, a: 1 }, "ValidSignature1234567890==");

@@ -84,6 +84,18 @@ function realThoughtSignature(signature: string | undefined): signature is strin
   return /^[A-Za-z0-9+/_=-]+$/.test(signature);
 }
 
+// Gemini sometimes nests the reasoning signature under extra_content.google.thought_signature
+// instead of the top-level part/functionCall field (matches opencodex extractSignature).
+function extractThoughtSignature(record: Record<string, unknown>, fn: Record<string, unknown>): string | undefined {
+  if (typeof record.thoughtSignature === "string") return record.thoughtSignature;
+  if (typeof record.thought_signature === "string") return record.thought_signature;
+  if (typeof fn.thoughtSignature === "string") return fn.thoughtSignature;
+  if (typeof fn.thought_signature === "string") return fn.thought_signature;
+  const extra = record.extra_content as { google?: { thought_signature?: unknown } } | undefined;
+  const nested = extra?.google?.thought_signature;
+  return typeof nested === "string" ? nested : undefined;
+}
+
 function selectedTools(parsed: OcxParsedRequest): OcxTool[] {
   const allowed = allowedToolNames(parsed.options.toolChoice);
   return parsed.tools.filter((tool) => !allowed || allowed.has(tool.name) || allowed.has(namespacedToolName(tool.namespace, tool.name)));
@@ -584,15 +596,7 @@ export async function* streamGoogle(response: Response, options: { label?: strin
         const record = part as Record<string, unknown>;
         const fn = record.functionCall as Record<string, unknown> | undefined;
         if (fn?.name) {
-          const thoughtSignature = typeof record.thoughtSignature === "string"
-            ? record.thoughtSignature
-            : typeof record.thought_signature === "string"
-              ? record.thought_signature
-              : typeof fn.thoughtSignature === "string"
-                ? fn.thoughtSignature
-                : typeof fn.thought_signature === "string"
-                  ? fn.thought_signature
-                  : undefined;
+          const thoughtSignature = extractThoughtSignature(record, fn);
           const upstreamId = typeof fn.id === "string" ? geminiToolCallId(fn.id) : undefined;
           const id = upstreamId ?? `call_${crypto.randomUUID().replace(/-/g, "")}`;
           toolCallsStarted++;
