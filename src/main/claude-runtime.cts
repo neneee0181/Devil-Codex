@@ -1074,6 +1074,13 @@ export class ClaudeCodeRuntime extends EventEmitter {
         if (!this.hasStreamedAgentText(context.threadId, context.turnId)) {
           const itemId = context.currentTextItemId ?? context.fallbackItemId;
           context.onTextDelta(itemId, message.result);
+          // This delta carries the whole final answer in one shot (the SDK
+          // gave us no earlier content_block_delta stream to mark it via).
+          // Without marking it, sendTurn()'s run.then() fallback still sees
+          // hasStreamedAgentText() === false once this "result" message
+          // returns and emits ITS OWN item/completed with the same text
+          // under a different id — a second, duplicate standalone bubble.
+          this.markStreamedAgentText(context.threadId, context.turnId);
           this.emitEvent({ method: "item/agentMessage/delta", params: { threadId: context.threadId, turnId: context.turnId, itemId, delta: message.result } });
         }
       }
