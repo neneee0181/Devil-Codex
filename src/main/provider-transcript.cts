@@ -28,7 +28,7 @@ type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; thr
 // since its last import would otherwise be treated as "unchanged" forever
 // and keep serving the stale, already-imported (pre-fix) history even after
 // the app updates. Bumping this forces exactly one re-derive per thread.
-const CLAUDE_IMPORT_FORMAT_VERSION = 2;
+const CLAUDE_IMPORT_FORMAT_VERSION = 3;
 type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
@@ -905,12 +905,23 @@ export class ProviderTranscriptStore {
             continue;
           }
         }
+        // detail is the tool RESULT (rendered under the "결과" header in
+        // TurnActivity.tsx), not the call's input params - this used to
+        // stuff JSON.stringify(part.input) in here instead, so a no-arg
+        // screenshot tool (input === {}) rendered its "결과" as literally
+        // "{}" even though toolResults already had the real result text
+        // (or was empty because the only payload was an image, handled by
+        // resultImages below). Mirrors the live path's mcpResultContent()
+        // split between `input` and `detail` in threadTimeline.ts.
         const resultImages = toolResultImages.get(toolId);
+        const resultText = toolResults.get(toolId) ?? "";
+        const inputKeys = part.input && typeof part.input === "object" ? Object.keys(part.input as Record<string, unknown>) : [];
         ensureActivity(turnId, {
           id: toolId,
           kind: "mcp",
           title: `${name} 실행`,
-          detail: JSON.stringify(part.input ?? {}, null, 2),
+          ...(inputKeys.length ? { input: JSON.stringify(part.input, null, 2) } : {}),
+          detail: resultText || undefined,
           status: "completed",
           ...(resultImages?.length ? { images: resultImages } : {}),
         });
