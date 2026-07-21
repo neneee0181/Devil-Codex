@@ -22,7 +22,13 @@ type StoredShape = {
   recovered?: boolean;
   claudeImports?: Record<string, ClaudeImportState>;
 };
-type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; threadId: string };
+type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; threadId: string; formatVersion?: number };
+// Bump whenever historyFromClaudeLines() starts recovering data it used to
+// drop (e.g. image attachments) - a file whose size/mtime haven't changed
+// since its last import would otherwise be treated as "unchanged" forever
+// and keep serving the stale, already-imported (pre-fix) history even after
+// the app updates. Bumping this forces exactly one re-derive per thread.
+const CLAUDE_IMPORT_FORMAT_VERSION = 2;
 type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
@@ -612,7 +618,7 @@ export class ProviderTranscriptStore {
     const unchanged = files.length > 0
       && files.every((file) => {
         const imported = imports[file.path];
-        return imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs;
+        return imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && imported.formatVersion === CLAUDE_IMPORT_FORMAT_VERSION;
       })
       && Object.keys(imports).every((path) => currentPaths.has(path));
     if (unchanged) {
@@ -715,9 +721,9 @@ export class ProviderTranscriptStore {
       const threadId = nativeSessionToThreadId.get(sessionId) ?? sessionId;
       if (all.deleted?.[threadId]) continue;
       const imported = all.claudeImports[path];
-      if (imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && all.meta[threadId]) continue;
+      if (imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && imported.formatVersion === CLAUDE_IMPORT_FORMAT_VERSION && all.meta[threadId]) continue;
       if (!imported && all.meta[threadId] && all.items[threadId]) {
-        all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId };
+        all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId, formatVersion: CLAUDE_IMPORT_FORMAT_VERSION };
         continue;
       }
       let source = "";
@@ -753,7 +759,7 @@ export class ProviderTranscriptStore {
         updatedAt,
         archived: all.meta[threadId]?.archived ?? false,
       };
-      all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId };
+      all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId, formatVersion: CLAUDE_IMPORT_FORMAT_VERSION };
     }
   }
 
