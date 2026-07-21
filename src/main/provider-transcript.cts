@@ -143,6 +143,26 @@ function isClaudeLocalCommandText(text: string): boolean {
     || normalized.startsWith("<local-command-stderr>");
 }
 
+// True if `text` exactly repeats the most recent standalone agent reply in
+// `items` with no user message in between. Claude Code's own session jsonl
+// can log an internal/continuation "user" line that isn't caught by the
+// noise filters above (e.g. around auto-compaction), which this importer
+// then reads as a brand-new turn boundary — and if the model's reply for
+// that phantom turn is a verbatim repeat of the previous real answer, it
+// renders as a second, near-empty duplicate turn. A distinct item id or
+// turnId doesn't matter here: identical trailing text with nothing new from
+// the user is never a legitimate second reply.
+function isRepeatOfLastClaudeAgentReply(items: ThreadHistoryItem[], text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const current = items[index]!;
+    if (current.kind === "user") return false;
+    if (current.kind === "agent") return current.text.trim() === trimmed;
+  }
+  return false;
+}
+
 function isClaudeHookNoiseText(text: string): boolean {
   const normalized = text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim();
   return normalized.startsWith("CAVEMAN MODE ACTIVE")
@@ -812,7 +832,7 @@ export class ProviderTranscriptStore {
         if (isClaudeApiErrorLine(line)) {
           items.push({ id, kind: "system", title: claudeApiErrorTitle(line), text, turnId, status: "failed", runtime: "claude-code", provider: "claude-code" });
         } else if (index === lastTextIndexByTurn.get(turnId)) {
-          items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
+          if (!isRepeatOfLastClaudeAgentReply(items, text)) items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
         } else {
           ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
         }
