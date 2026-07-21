@@ -235,6 +235,27 @@ function toolResultText(part: Record<string, unknown>): string {
   return "";
 }
 
+// Like toolResultText, but keeps image blocks instead of collapsing them to
+// "" (record.text ?? record.content is empty for an image part, so a plain
+// text join silently drops screenshots — e.g. browser_screenshot/
+// computer_screenshot results). The renderer's mcpResultContent() expects
+// {type:"image",data,mimeType} entries to render the actual screenshot.
+function toolResultContent(part: Record<string, unknown>): Array<Record<string, unknown>> {
+  const content = part.content;
+  if (typeof content === "string") return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((entry): Array<Record<string, unknown>> => {
+    if (typeof entry === "string") return entry ? [{ type: "text", text: entry }] : [];
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    const type = String(record.type ?? "");
+    if (type === "image" && typeof record.data === "string") return [{ type: "image", data: record.data, mimeType: typeof record.mimeType === "string" ? record.mimeType : "image/png" }];
+    if (type === "image_url") return [record];
+    const text = String(record.text ?? record.content ?? "");
+    return text ? [{ type: "text", text }] : [];
+  });
+}
+
 function assistantContentText(message: Record<string, unknown>): string {
   return messageContent({ message })
     .filter((part) => part.type === "text" && typeof part.text === "string")
@@ -1150,9 +1171,10 @@ export class ClaudeCodeRuntime extends EventEmitter {
             params: { threadId, turnId, item: { id, type: "commandExecution", command: known.summary, aggregatedOutput: output, status: part.is_error ? "failed" : "completed" } },
           });
         } else {
+          const content = toolResultContent(part);
           this.emitEvent({
             method: "item/completed",
-            params: { threadId, turnId, item: { id, type: "mcpToolCall", tool: known.name, status: part.is_error ? "failed" : "completed", result: { content: [{ type: "text", text: output || known.path || known.summary }] } } },
+            params: { threadId, turnId, item: { id, type: "mcpToolCall", tool: known.name, status: part.is_error ? "failed" : "completed", result: { content: content.length ? content : [{ type: "text", text: output || known.path || known.summary }] } } },
           });
         }
         this.toolRuns.delete(id);

@@ -742,12 +742,26 @@ export class ProviderTranscriptStore {
     // as subagent activities: the child threadId/provider/model live in the MCP
     // result text, which arrives in later tool_result-only user lines.
     const toolResults = new Map<string, string>();
+    // tool_use_id → screenshot(s) from the same tool_result. claudeTextContent
+    // above only keeps type:"text" parts, so a screenshot-only result (browser_
+    // screenshot, computer_screenshot) left mcp activity cards image-less.
+    const toolResultImages = new Map<string, string[]>();
     for (const line of lines) {
       if (line.type !== "user" && line.type !== "assistant") continue;
       for (const part of claudeContentParts(line.message?.content)) {
         if (String(part.type ?? "") !== "tool_result") continue;
         const useId = String(part.tool_use_id ?? "");
-        if (useId && !toolResults.has(useId)) toolResults.set(useId, claudeTextContent(part.content));
+        if (!useId) continue;
+        if (!toolResults.has(useId)) toolResults.set(useId, claudeTextContent(part.content));
+        if (!toolResultImages.has(useId)) {
+          const images = claudeContentParts(part.content).flatMap((entry) => {
+            if (String(entry.type ?? "") === "image" && typeof entry.data === "string") {
+              return [`data:${typeof entry.mimeType === "string" ? entry.mimeType : "image/png"};base64,${entry.data}`];
+            }
+            return [];
+          });
+          if (images.length) toolResultImages.set(useId, images);
+        }
       }
     }
 
@@ -860,12 +874,14 @@ export class ProviderTranscriptStore {
             continue;
           }
         }
+        const resultImages = toolResultImages.get(toolId);
         ensureActivity(turnId, {
           id: toolId,
           kind: "mcp",
           title: `${name} 실행`,
           detail: JSON.stringify(part.input ?? {}, null, 2),
           status: "completed",
+          ...(resultImages?.length ? { images: resultImages } : {}),
         });
       }
     });

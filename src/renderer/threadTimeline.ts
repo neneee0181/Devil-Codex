@@ -640,6 +640,16 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
         status: "failed",
       });
     }
+    // A turn that completed with nothing to show — no work logged, no final
+    // answer — is a vacuous/phantom turn (e.g. a retried turn whose events
+    // arrive as a brand-new turnId but never produce real content). It
+    // reloads away on its own (the offline transcript reimport never
+    // materializes an activity card for it), so drop the empty "0s 동안
+    // 작업" ghost card live too instead of leaving it stacked under the
+    // real turn's result.
+    if (status === "completed" && !hasFinalAnswer && !activity?.activities?.length) {
+      return normalized.filter((current) => !(current.kind === "activity" && current.turnId === turnId));
+    }
     return normalized;
   }
   if (event.method === "response.failed" && turnId) {
