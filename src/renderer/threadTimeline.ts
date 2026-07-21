@@ -218,6 +218,23 @@ function isFinalAssistantMessage(item: RawItem): boolean {
   return phase !== "commentary";
 }
 
+// True if `text` exactly repeats the most recent standalone agent reply with
+// no user message in between (activity/system items don't count as a turn
+// boundary). Guards against a duplicate/misattributed completion event
+// reconstructing an already-rendered final answer a second time — a distinct
+// item id or turnId doesn't matter, identical trailing text with nothing new
+// from the user is never a legitimate second reply.
+function isRepeatOfLastAgentReply(items: ThreadHistoryItem[], text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const current = items[index]!;
+    if (current.kind === "user") return false;
+    if (current.kind === "agent") return current.text.trim() === trimmed;
+  }
+  return false;
+}
+
 function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefined {
   for (const value of values) {
     if (!value || typeof value !== "object") continue;
@@ -646,6 +663,7 @@ export function applyTimelineEvent(items: ThreadHistoryItem[], event: AppServerE
       const id = String(item.id ?? crypto.randomUUID());
       const text = assistantText(item);
       const exists = items.some((current) => current.id === id);
+      if (!exists && isRepeatOfLastAgentReply(items, text)) return items;
       // A new agent message means any earlier one was intermediate → fold it
       // into the work timeline; keep this latest message standalone (the final
       // answer until something later proves otherwise).
