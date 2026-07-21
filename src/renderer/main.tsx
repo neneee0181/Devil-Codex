@@ -738,6 +738,31 @@ function containedAgentMessageIndex(items: ThreadHistoryItem[], item: ThreadHist
   });
 }
 
+// The live stream renders whatever text a turn emits last as the standalone
+// final answer. The offline reimport is the source of truth about which text is
+// actually final: any assistant text followed by more tool work is folded into
+// the turn's activity as an intermediate "작업 메모" instead. When a turn ended
+// on such an intermediate note (the real answer came earlier, or the turn was
+// interrupted before a final answer), merging the reimport back in leaves the
+// live standalone copy AND the reimport's 작업-메모 copy both on screen — the
+// same text twice, once below the work card. Drop any standalone agent message
+// whose text the reimport already folded into its own turn's activity.
+function dropAgentMessagesFoldedIntoActivity(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const foldedByTurn = new Map<string, Set<string>>();
+  for (const item of items) {
+    if (item.kind !== "activity" || !item.turnId) continue;
+    for (const entry of item.activities ?? []) {
+      if (entry.kind !== "message" || !entry.detail?.trim()) continue;
+      const bucket = foldedByTurn.get(item.turnId) ?? new Set<string>();
+      bucket.add(entry.detail.trim());
+      foldedByTurn.set(item.turnId, bucket);
+    }
+  }
+  if (!foldedByTurn.size) return items;
+  const next = items.filter((item) => !(item.kind === "agent" && item.turnId && item.text.trim() && foldedByTurn.get(item.turnId)?.has(item.text.trim())));
+  return next.length === items.length ? items : next;
+}
+
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
@@ -756,7 +781,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       : item;
     result[index] = mergeTimelineItem(result[index]!, incoming);
   }
-  return dedupeTimelineItems(result);
+  return dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result));
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {

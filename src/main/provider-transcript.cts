@@ -28,7 +28,7 @@ type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; thr
 // since its last import would otherwise be treated as "unchanged" forever
 // and keep serving the stale, already-imported (pre-fix) history even after
 // the app updates. Bumping this forces exactly one re-derive per thread.
-const CLAUDE_IMPORT_FORMAT_VERSION = 4;
+const CLAUDE_IMPORT_FORMAT_VERSION = 5;
 type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
@@ -511,6 +511,41 @@ function alignClaudeTurnIds(history: ThreadHistoryItem[], existing: ThreadHistor
   });
 }
 
+// emitSyntheticFileChanges() (main.cts) records the git-diff it detects after a
+// turn as a fileChange activity keyed on the LIVE turn id (`claude-<uuid>`).
+// The jsonl reimport never reproduces that card - the raw transcript only holds
+// the Edit/Write tool_use, which re-derives as an "Edit 실행" mcp entry, not a
+// diff card - so once the reimport replaces the stored history the synthetic
+// card is either orphaned under a turn id no other item shares (a ghost card
+// stacked below the turn's real answer) or lost entirely. Fold each such
+// orphan's entries into the reimported turn that immediately precedes it in the
+// stored order (a post-turn synthetic always belongs to the turn that just
+// finished), so the diff card survives the reimport attached to the right turn.
+function absorbOrphanLiveActivities(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  if (!history.length || !existing.length) return history;
+  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
+  const orphanEntriesByTurn = new Map<string, ThreadActivityEntry[]>();
+  let lastKnownTurn = "";
+  for (const item of existing) {
+    if (item.turnId && historyTurns.has(item.turnId)) { lastKnownTurn = item.turnId; continue; }
+    if (item.kind !== "activity" || !item.activities?.length || !lastKnownTurn) continue;
+    // An activity whose turn id no reimported item shares is a live-only
+    // leftover (synthetic fileChange, etc.). Attribute it to the last real turn.
+    const bucket = orphanEntriesByTurn.get(lastKnownTurn) ?? [];
+    bucket.push(...item.activities);
+    orphanEntriesByTurn.set(lastKnownTurn, bucket);
+  }
+  if (!orphanEntriesByTurn.size) return history;
+  return history.map((item) => {
+    if (item.kind !== "activity" || !item.turnId) return item;
+    const orphans = orphanEntriesByTurn.get(item.turnId);
+    if (!orphans?.length) return item;
+    const seen = new Set((item.activities ?? []).map((entry) => entry.id));
+    const add = orphans.filter((entry) => !seen.has(entry.id));
+    return add.length ? { ...item, activities: dedupeFileChangeEntries([...(item.activities ?? []), ...add]) } : item;
+  });
+}
+
 // Keep a Devil-owned transcript copy for non-native providers. Proxy-backed
 // threads use the app-server too, but its custom-provider history can be absent
 // after restart while the local copy remains available for rendering.
@@ -811,7 +846,7 @@ export class ProviderTranscriptStore {
         if (!line.trim()) return [];
         try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
       }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
-      const history = alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), all.items[threadId] ?? []);
+      const history = absorbOrphanLiveActivities(alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), all.items[threadId] ?? []), all.items[threadId] ?? []);
       if (!history.length && all.deleted?.[threadId]) continue;
       const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? cwdFromClaudeProjectPath(path);
       if (!cwd) continue;
