@@ -483,14 +483,19 @@ function responseErrorMessage(response: RawItem | undefined): string {
   return raw;
 }
 
+// Only ever fall back to a turn that is still in progress. Falling back to the
+// last (possibly already-completed) turn — as this used to do — misattributes
+// an untagged event for a NEW turn (e.g. its own turn/started hasn't landed
+// yet) onto the PREVIOUS, finished turn: the previous turn's already-rendered
+// final message gets a duplicate sibling under the wrong turnId, and that
+// duplicate drags the previous turn's file-change diff card along with it
+// (turnChangeMeta keys off turnId). Returning "" instead makes the event a
+// harmless no-op (most callers require a truthy turnId) rather than corrupting
+// a finished turn.
 function latestActivityTurnId(items: ThreadHistoryItem[]): string {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind === "activity" && item.status === "inProgress" && item.turnId) return item.turnId;
-  }
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item.kind === "activity" && item.turnId) return item.turnId;
   }
   return "";
 }
