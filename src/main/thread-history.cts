@@ -272,6 +272,25 @@ function isFinalAssistantMessage(item: RawItem, index: number, lastAssistant: nu
   return index === lastAssistant;
 }
 
+// True if `text` exactly repeats the most recent standalone agent reply in
+// `history` with no user message in between. Guards against a duplicated
+// turn record (e.g. a retried Codex turn logged twice with the same final
+// answer) rendering as two back-to-back identical replies — a distinct
+// item id or turnId doesn't matter, identical trailing text with nothing
+// new from the user is never a legitimate second reply. Mirrors the same
+// guard in threadTimeline.ts (live renderer) and provider-transcript.cts
+// (Claude Code jsonl reimport).
+function isRepeatOfLastAgentReply(history: ThreadHistoryItem[], text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const current = history[index]!;
+    if (current.kind === "user") return false;
+    if (current.kind === "agent") return current.text.trim() === trimmed;
+  }
+  return false;
+}
+
 export function activityFromItem(item: RawItem, fallbackId: string = crypto.randomUUID()): ThreadActivityEntry | null {
   const id = String(item.id ?? fallbackId);
   const type = String(item.type ?? "");
@@ -369,8 +388,9 @@ export function mapThreadHistory(turns: RawTurn[]): ThreadHistoryItem[] {
       if (isAssistantMessageItem(item, type)) {
         const text = assistantText(item);
         if (!text) return;
-        if (isFinalAssistantMessage(item, index, lastAgent)) finalMessages.push({ id, kind: "agent", text, turnId });
-        else activities.push({ id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
+        if (isFinalAssistantMessage(item, index, lastAgent)) {
+          if (!isRepeatOfLastAgentReply([...history, ...finalMessages], text)) finalMessages.push({ id, kind: "agent", text, turnId });
+        } else activities.push({ id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
         return;
       }
       const activity = activityFromItem(item, id);
