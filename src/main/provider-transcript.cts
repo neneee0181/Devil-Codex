@@ -431,7 +431,69 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
   return result;
 }
 
+function claudeTurnAlignmentKey(text: string | undefined): string {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
 
+// Turn-id → the turn's user prompt, in turn order. Works for both shapes the
+// store can hold: freshly imported items (every item carries the turnId) and
+// live-appended ones (the user item has no turnId; the agent/activity item that
+// follows it does).
+function claudeTurnPrompts(items: ThreadHistoryItem[]): Array<{ turnId: string; prompt: string }> {
+  const turns: Array<{ turnId: string; prompt: string }> = [];
+  const seen = new Set<string>();
+  let prompt = "";
+  for (const item of items) {
+    if (item.kind === "user") {
+      prompt = claudeTurnAlignmentKey(item.text);
+      if (!item.turnId) continue;
+    }
+    const turnId = item.turnId ?? "";
+    if (!turnId || !prompt || seen.has(turnId)) continue;
+    seen.add(turnId);
+    turns.push({ turnId, prompt });
+  }
+  return turns;
+}
+
+// A live turn streams under a runtime-minted id (`claude-<uuid>`) that the
+// renderer keys its in-memory timeline on. Re-deriving the thread from the raw
+// jsonl cannot know those ids, so it numbers turns itself
+// (`<threadId>-claude-turn-N`) - and because the jsonl changes on every turn,
+// that re-derive replaces the stored history while the conversation is still
+// open. The renderer's post-turn sync merges stored history into the live one
+// by turn id, so every renamed turn missed its live counterpart and got
+// appended as a SECOND copy: the answer showed up twice, once more below the
+// work/diff card. Reloading the thread hid it, because that renders the stored
+// copy alone. Re-attach the ids the store already knows by matching each turn's
+// user prompt (the model-bound text only ever gets Devil directives appended,
+// so a prefix match on either side is the reliable pairing). Turns Devil never
+// streamed keep their synthetic id.
+function alignClaudeTurnIds(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  if (!history.length || !existing.length) return history;
+  const stored = claudeTurnPrompts(existing);
+  if (!stored.length) return history;
+  const rename = new Map<string, string>();
+  const taken = new Set<string>();
+  let cursor = 0;
+  for (const turn of claudeTurnPrompts(history)) {
+    for (let index = cursor; index < stored.length; index += 1) {
+      const candidate = stored[index]!;
+      if (taken.has(candidate.turnId)) continue;
+      if (!candidate.prompt.startsWith(turn.prompt) && !turn.prompt.startsWith(candidate.prompt)) continue;
+      taken.add(candidate.turnId);
+      cursor = index + 1;
+      if (candidate.turnId !== turn.turnId) rename.set(turn.turnId, candidate.turnId);
+      break;
+    }
+  }
+  if (!rename.size) return history;
+  return history.map((item) => {
+    const turnId = item.turnId ? rename.get(item.turnId) : undefined;
+    if (!turnId) return item;
+    return { ...item, turnId, ...(item.id === `activity-${item.turnId}` ? { id: `activity-${turnId}` } : {}) };
+  });
+}
 
 // Keep a Devil-owned transcript copy for non-native providers. Proxy-backed
 // threads use the app-server too, but its custom-provider history can be absent
@@ -733,7 +795,7 @@ export class ProviderTranscriptStore {
         if (!line.trim()) return [];
         try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
       }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
-      const history = this.historyFromClaudeLines(lines, threadId);
+      const history = alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), all.items[threadId] ?? []);
       if (!history.length && all.deleted?.[threadId]) continue;
       const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? cwdFromClaudeProjectPath(path);
       if (!cwd) continue;

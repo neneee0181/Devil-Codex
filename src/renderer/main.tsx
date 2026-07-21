@@ -721,6 +721,23 @@ function mergeActivityEntries(base: ThreadActivityEntry[] = [], overlay: ThreadA
   return result;
 }
 
+// agentMessageKey pins an agent message to its exact text, so a stored copy that
+// differs from the streamed one by so much as a trailing newline reads as a
+// brand-new message and gets appended below the turn's work card — the same
+// answer rendered twice. Within one turn there is only ever one agent message,
+// so treat a stored/live pair where one text contains the other as the same
+// message and keep whichever version is more complete.
+function containedAgentMessageIndex(items: ThreadHistoryItem[], item: ThreadHistoryItem): number {
+  if (item.kind !== "agent" || !item.turnId) return -1;
+  const text = item.text.trim();
+  if (!text) return -1;
+  return items.findIndex((current) => {
+    if (current.kind !== "agent" || current.turnId !== item.turnId) return false;
+    const currentText = current.text.trim();
+    return Boolean(currentText) && (currentText.includes(text) || text.includes(currentText));
+  });
+}
+
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
@@ -731,9 +748,13 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
     const attachmentContextIndex = item.kind === "user"
       ? result.findIndex((current) => current.kind === "user" && isAttachmentModelContext(item.text, current.attachments))
       : -1;
-    const index = indexes.get(key) ?? (attachmentContextIndex >= 0 ? attachmentContextIndex : undefined);
+    const containedIndex = indexes.has(key) ? -1 : containedAgentMessageIndex(result, item);
+    const index = indexes.get(key) ?? (attachmentContextIndex >= 0 ? attachmentContextIndex : containedIndex >= 0 ? containedIndex : undefined);
     if (index == null) { indexes.set(key, result.length); result.push(item); continue; }
-    result[index] = mergeTimelineItem(result[index]!, item);
+    const incoming = index === containedIndex && item.text.trim().length < result[index]!.text.trim().length
+      ? { ...item, text: result[index]!.text }
+      : item;
+    result[index] = mergeTimelineItem(result[index]!, incoming);
   }
   return dedupeTimelineItems(result);
 }
