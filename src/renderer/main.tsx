@@ -1355,7 +1355,7 @@ function App(): React.JSX.Element {
   const stickToThreadBottom = useRef(true);
   const scrolledThreadId = useRef<string | null>(null);
   const pendingScrollRestoreThread = useRef<string | null>(null);
-  const utilityScrollRestore = useRef<{ threadId: string; top: number; atBottom: boolean } | null>(null);
+  const utilityScrollRestore = useRef<{ threadId: string; top: number; scrollHeight: number; atBottom: boolean } | null>(null);
   const utilityScrollLockUntil = useRef(0);
   const threadScrollPositions = useRef<Record<string, ThreadScrollPosition>>(readThreadScrollPositions());
   const scrollPersistFrame = useRef<number | null>(null);
@@ -1791,7 +1791,7 @@ function App(): React.JSX.Element {
     const threadId = threadRef.current?.id;
     if (!node || !threadId) return;
     const hiddenBelow = node.scrollHeight - node.scrollTop - node.clientHeight;
-    utilityScrollRestore.current = { threadId, top: node.scrollTop, atBottom: hiddenBelow <= 140 };
+    utilityScrollRestore.current = { threadId, top: node.scrollTop, scrollHeight: node.scrollHeight, atBottom: hiddenBelow <= 140 };
     utilityScrollLockUntil.current = Date.now() + 560;
   }
 
@@ -1802,7 +1802,14 @@ function App(): React.JSX.Element {
       const node = threadViewRef.current;
       if (!node || threadRef.current?.id !== restore.threadId) return;
       const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
-      node.scrollTop = Math.min(restore.top, maxTop);
+      // Opening the panel narrows the thread view, which re-wraps text above
+      // the viewport and changes scrollHeight. Restoring the raw captured
+      // scrollTop then shows earlier content than before (perceived as
+      // "jumps up slightly"), because the same pixel offset no longer points
+      // at the same message once content above it grew/shrank. Compensate by
+      // the scrollHeight delta so the anchor content stays put instead.
+      const target = restore.atBottom ? maxTop : restore.top + (node.scrollHeight - restore.scrollHeight);
+      node.scrollTop = Math.min(Math.max(0, target), maxTop);
       setScrollToBottomVisible(!restore.atBottom && itemsRef.current.length > 0);
       rememberThreadScrollPosition(restore.threadId, node.scrollTop, restore.atBottom);
     };
