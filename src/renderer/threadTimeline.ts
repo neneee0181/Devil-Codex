@@ -296,6 +296,22 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
 // render screenshots (computer_screenshot) and generated images inline, rather
 // than dumping raw JSON. Handles the MCP CallToolResult `content` array as well
 // as app-server `contentItems` shapes.
+// Error/Error-like objects carry `message` as a non-enumerable own property,
+// so JSON.stringify(error) silently collapses to "{}" instead of the actual
+// text — check `.message` first, and only fall back to a JSON dump (then
+// String()) for plain data objects that really don't have one.
+function errorToText(error: unknown): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  const message = (error as { message?: unknown } | null)?.message;
+  if (typeof message === "string" && message) return message;
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== "{}") return json;
+  } catch { /* circular structure etc. */ }
+  return String(error);
+}
+
 function mcpResultContent(item: RawItem): { images: string[]; text: string } {
   const result = item.result as RawItem | undefined;
   const raw = (result?.content ?? item.contentItems ?? (Array.isArray(item.result) ? item.result : undefined)) as unknown;
@@ -315,7 +331,7 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
       texts.push(p.text);
     }
   }
-  if (!images.length && !texts.length && item.error) texts.push(String(typeof item.error === "string" ? item.error : JSON.stringify(item.error)));
+  if (!images.length && !texts.length && item.error) texts.push(errorToText(item.error));
   return { images, text: texts.join("\n").trim() };
 }
 

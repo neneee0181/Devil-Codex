@@ -167,6 +167,22 @@ function contextUsageFromRaw(...values: Array<unknown>): ContextUsage | undefine
 
 // Pull image data URLs + text out of an MCP tool result so reloaded history
 // renders screenshots/generated images inline (mirrors the live timeline path).
+// Error/Error-like objects carry `message` as a non-enumerable own property,
+// so JSON.stringify(error) silently collapses to "{}" instead of the actual
+// text — check `.message` first, and only fall back to a JSON dump (then
+// String()) for plain data objects that really don't have one.
+function errorToText(error: unknown): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  const message = (error as { message?: unknown } | null)?.message;
+  if (typeof message === "string" && message) return message;
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== "{}") return json;
+  } catch { /* circular structure etc. */ }
+  return String(error);
+}
+
 function mcpResultContent(item: RawItem): { images: string[]; text: string } {
   const result = item.result as RawItem | undefined;
   const raw = (result?.content ?? item.contentItems ?? (Array.isArray(item.result) ? item.result : undefined)) as unknown;
@@ -181,7 +197,7 @@ function mcpResultContent(item: RawItem): { images: string[]; text: string } {
     else if (type === "image_url") { const url = typeof p.image_url === "object" ? String((p.image_url as RawItem).url ?? "") : String(p.image_url ?? ""); if (url) images.push(url); }
     else if (type === "text" && typeof p.text === "string") texts.push(p.text);
   }
-  if (!images.length && !texts.length && item.error) texts.push(String(typeof item.error === "string" ? item.error : JSON.stringify(item.error)));
+  if (!images.length && !texts.length && item.error) texts.push(errorToText(item.error));
   return { images, text: texts.join("\n").trim() };
 }
 
