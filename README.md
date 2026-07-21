@@ -31,7 +31,7 @@ Codex app-server를 중심으로 순정 Codex 모델, 외부 모델 provider, Br
 
 Devil Codex는 공식 **Codex app-server**의 thread·turn·도구 경험을 기반으로, 아래 기능을 더합니다.
 
-- 🧩 **순정 + 외부 모델** — Codex 로그인 모델은 가능한 한 순정 경로를 유지하고, Claude Code·Copilot·API·로컬 모델은 Devil provider 프록시로 같은 프로젝트 경험에 연결합니다.
+- 🧩 **순정 + 외부 모델** — Codex 로그인 모델은 가능한 한 순정 경로를 유지하고, Claude Code·Antigravity·Kimi·GLM·Copilot·API·로컬 모델은 Devil provider 프록시로 같은 프로젝트 경험에 연결합니다.
 - 🖥️ **진짜 제어** — 인앱 브라우저와 OS 전체 데스크톱을 조작하는 Devil MCP 도구를 제공합니다.
 - 🌉 **순정 Codex Bridge** — 순정 Codex 앱/CLI에는 사용자가 고른 외부 모델만 노출합니다.
 - 🌐 **원격·언어 UX** — Tailscale 기반 원격 접속, 영어 응답 강제와 응답 번역, 시스템 알림을 지원합니다.
@@ -68,7 +68,8 @@ Devil Codex는 공식 **Codex app-server**의 thread·turn·도구 경험을 기
 | 구분 | 현재 경로 |
 | --- | --- |
 | Codex | app-server 직접 실행, native 모델 카탈로그 보강 |
-| 로그인 provider | Claude Code · GitHub Copilot · Antigravity |
+| 구독 provider | Claude Code OAuth · Antigravity OAuth · Kimi Code Device OAuth · Z.AI GLM Coding Plan 구독 키 |
+| 기타 로그인 provider | GitHub Copilot |
 | API / 호스티드 provider | OpenAI-compatible · Anthropic · Google · DeepSeek · xAI · OpenRouter · NVIDIA NIM 등 |
 | 로컬 provider | Ollama · vLLM · LM Studio |
 

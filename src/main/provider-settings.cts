@@ -32,6 +32,7 @@ const apiProviderConfigs: Partial<Record<ProviderId, ApiProviderConfig>> = {
   cerebras: { adapter: "openai-chat", baseUrl: "https://api.cerebras.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   together: { adapter: "openai-chat", baseUrl: "https://api.together.xyz/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   fireworks: { adapter: "openai-chat", baseUrl: "https://api.fireworks.ai/inference/v1", modelPath: "/models", keyRequired: true, allowImages: true },
+  kimi: { adapter: "openai-chat", baseUrl: "https://api.kimi.com/coding/v1", modelPath: "/models", keyRequired: true, allowImages: true },
   zai: { adapter: "openai-chat", baseUrl: "https://api.z.ai/api/coding/paas/v4", modelPath: "/models", keyRequired: true, allowImages: false },
   moonshot: { adapter: "openai-chat", baseUrl: "https://api.moonshot.ai/v1", modelPath: "/models", keyRequired: true, allowImages: false },
   huggingface: { adapter: "openai-chat", baseUrl: "https://router.huggingface.co/v1", modelPath: "/models", keyRequired: true, allowImages: true },
@@ -104,6 +105,13 @@ export function capabilityFor(provider: ProviderId, model: string): ProviderMode
     webSearch: "sidecar",
     diagnostics: "experimental",
     notes: ["Z.AI GLM Coding Plan 경로입니다. opencodex registry와 맞춰 OpenAI-compatible chat API를 사용합니다.", "GLM 5.2 계열은 reasoning_effort를 전달하며 이미지는 vision sidecar가 텍스트 설명으로 변환합니다."],
+  };
+  if (provider === "kimi") return {
+    tools: "limited",
+    images: providerNativeImageInput(provider, model) ? "native" : "sidecar",
+    webSearch: "sidecar",
+    diagnostics: "experimental",
+    notes: ["Kimi Code 구독 OAuth와 coding endpoint를 사용합니다.", "K3의 [1m] 표시는 로컬 컨텍스트 별칭이며 upstream 요청에서는 제거됩니다."],
   };
   if (provider === "openrouter" || provider === "mistral" || provider === "cerebras" || provider === "together" || provider === "fireworks" || provider === "moonshot" || provider === "huggingface" || provider === "nvidia" || provider === "xai") return {
     tools: "limited",
@@ -181,7 +189,7 @@ function antigravityCatalogModels(): ProviderModel[] {
 
 const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "accounts">> = [
   { id: "codex", label: "Codex", kind: "login", authProvider: "codex", keyRequired: false, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }, { id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
-  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", keyRequired: false, models: [
+  { id: "claude-code", label: "Claude Code", kind: "login", authProvider: "claude", subscription: true, keyRequired: false, models: [
     { id: "claude-fable-5", label: "Claude Fable 5" },
     { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
     { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -213,7 +221,16 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
     { id: "mai-code-1-flash", label: "MAI-Code-1-Flash" },
     { id: "raptor-mini", label: "Raptor Mini" },
   ] },
-  { id: "antigravity", label: "Antigravity", kind: "login", authProvider: "antigravity", keyRequired: false, models: antigravityCatalogModels() },
+  { id: "antigravity", label: "Antigravity", kind: "login", authProvider: "antigravity", subscription: true, keyRequired: false, models: antigravityCatalogModels() },
+  { id: "kimi", label: "Kimi Code", kind: "login", authProvider: "kimi", subscription: true, keyRequired: false, models: [
+    { id: "k3", label: "Kimi K3" },
+    { id: "k3[1m]", label: "Kimi K3 1M" },
+    { id: "kimi-k2.7-code", label: "Kimi K2.7 Code" },
+    { id: "kimi-k2.7-code-highspeed", label: "Kimi K2.7 Highspeed" },
+    { id: "kimi-k2.6", label: "Kimi K2.6" },
+    { id: "kimi-k2.5", label: "Kimi K2.5" },
+    { id: "kimi-for-coding", label: "Kimi for Coding" },
+  ] },
   { id: "openai", label: "OpenAI", kind: "apikey", keyRequired: true, models: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol" }, { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" }, { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" }, { id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" }] },
   { id: "anthropic", label: "Anthropic", kind: "apikey", keyRequired: true, models: [
     { id: "claude-fable-5", label: "Claude Fable 5" },
@@ -244,7 +261,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
   { id: "cerebras", label: "Cerebras", kind: "apikey", keyRequired: true, models: [{ id: "gpt-oss-120b", label: "GPT OSS 120B" }] },
   { id: "together", label: "Together", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", label: "Llama 3.3 70B Turbo" }] },
   { id: "fireworks", label: "Fireworks", kind: "apikey", keyRequired: true, models: [{ id: "accounts/fireworks/models/kimi-k2-instruct", label: "Kimi K2 Instruct" }] },
-  { id: "zai", label: "Z.AI GLM Coding Plan", kind: "apikey", keyRequired: true, models: [{ id: "glm-5.2", label: "GLM 5.2" }, { id: "glm-5.2[1m]", label: "GLM 5.2 1M" }, { id: "glm-5.1", label: "GLM 5.1" }, { id: "glm-5", label: "GLM 5" }, { id: "glm-4.6", label: "GLM 4.6" }] },
+  { id: "zai", label: "Z.AI GLM Coding Plan", kind: "apikey", subscription: true, keyRequired: true, models: [{ id: "glm-5.2", label: "GLM 5.2" }, { id: "glm-5.2[1m]", label: "GLM 5.2 1M" }, { id: "glm-5.1", label: "GLM 5.1" }, { id: "glm-5", label: "GLM 5" }, { id: "glm-4.6", label: "GLM 4.6" }] },
   { id: "moonshot", label: "Moonshot Kimi", kind: "apikey", keyRequired: true, models: [{ id: "kimi-k3", label: "Kimi K3" }, { id: "kimi-k2.7-code", label: "Kimi K2.7 Code" }, { id: "kimi-k2.7-code-highspeed", label: "Kimi K2.7 Highspeed" }, { id: "kimi-k2.6", label: "Kimi K2.6" }, { id: "kimi-k2.5", label: "Kimi K2.5" }] },
   { id: "huggingface", label: "Hugging Face", kind: "apikey", keyRequired: true, models: [{ id: "meta-llama/Llama-3.1-8B-Instruct", label: "Llama 3.1 8B" }] },
   { id: "nvidia", label: "NVIDIA NIM", kind: "apikey", keyRequired: true, models: [{ id: "moonshotai/kimi-k2.6", label: "Kimi K2.6" }, { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5" }, { id: "moonshotai/kimi-k2-thinking", label: "Kimi K2 Thinking" }, { id: "openai/gpt-oss-120b", label: "GPT OSS 120B" }, { id: "meta/llama-3.3-70b-instruct", label: "Llama 3.3 70B" }] },
@@ -252,7 +269,7 @@ const catalog: Array<Omit<ProviderInfo, "credentialSource" | "modelsLoaded" | "a
   { id: "vllm", label: "vLLM", kind: "apikey", keyRequired: false, models: [{ id: "default", label: "Default" }] },
   { id: "lm-studio", label: "LM Studio", kind: "apikey", keyRequired: false, models: [{ id: "local-model", label: "Local Model" }] },
 ];
-const LOGIN_IDS = new Set<ProviderId>(["codex", "claude-code", "copilot", "antigravity"]);
+const LOGIN_IDS = new Set<ProviderId>(["codex", "claude-code", "copilot", "antigravity", "kimi"]);
 const ENV_KEY_NAMES: Partial<Record<ProviderId, string[]>> = {
   openai: ["OPENAI_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY"],
@@ -359,7 +376,7 @@ export class ProviderSettingsStore {
   }
 
   async readApiKey(provider: Exclude<ProviderId, "codex">, accountId?: string): Promise<string> {
-    if (provider === "claude-code" || provider === "copilot" || provider === "antigravity") {
+    if (provider === "claude-code" || provider === "copilot" || provider === "antigravity" || provider === "kimi") {
       const label = catalog.find((item) => item.id === provider)?.label ?? provider;
       throw new Error(`${label}는 API 키 Provider가 아니라 로그인 Provider입니다. OAuth 로그인 경로로 요청해야 합니다.`);
     }

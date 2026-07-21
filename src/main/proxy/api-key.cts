@@ -235,8 +235,8 @@ function openAiCompatibleBody(parsed: OcxParsedRequest, allowImages: boolean, pr
 }
 
 function wireModelForProvider(provider: ApiKeyProvider, model: string): string {
-  // Z.AI accepts the context suffix in the catalog but rejects it on the wire.
-  return provider === "zai" ? model.replace(/\[[^\]]*\]\s*$/, "") : model;
+  // Z.AI and Kimi expose local context aliases but reject bracket suffixes on the wire.
+  return provider === "zai" || provider === "kimi" ? model.replace(/\[[^\]]*\]\s*$/, "") : model;
 }
 
 function preservesReasoningContent(provider: ApiKeyProvider, model: string): boolean {

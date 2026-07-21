@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
 import { providerAccountModelCount, providerAccountReady, selectableApiProvider } from "../providerReadiness";
 
-const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
+const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false, kimi: false };
 const notifyProviderAuthChanged = (): void => { window.dispatchEvent(new Event("devil-codex:provider-auth-changed")); };
 
 function authedFor(provider: ProviderInfo, auth: ProviderAuthStatus): boolean {
@@ -83,8 +83,9 @@ export function ProviderSettingsPanel({ settings, state, error, onSelect, onSave
 
   if (!settings) return <div className="empty-settings"><KeyRound size={28} /><strong>Provider 설정 불러오는 중…</strong></div>;
   const active = settings.providers.find((provider) => provider.id === (viewingId ?? settings.provider))!;
-  const loginProviders = settings.providers.filter((provider) => provider.kind === "login");
-  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey");
+  const subscriptionProviders = settings.providers.filter((provider) => provider.subscription);
+  const loginProviders = settings.providers.filter((provider) => provider.kind === "login" && !provider.subscription);
+  const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && !provider.subscription);
   const save = async (provider: ProviderInfo): Promise<void> => {
     const key = (keys[provider.id] ?? "").trim();
     if (!key) return;
@@ -98,9 +99,9 @@ export function ProviderSettingsPanel({ settings, state, error, onSelect, onSave
     if (!authKey) return;
     setBusy(provider.id);
     const info = await window.devilCodex.providerLogin({ provider: authKey }).catch(() => null);
-    // Copilot device flow emits a provider:auth event (clears busy). codex/claude
-    // open a browser with no event — poll status and clear "로그인 중" when done.
-    if (info?.userCode) { setNotice(`GitHub에서 코드 입력: ${info.userCode} (${info.verificationUri})`); return; }
+    // Device flows emit provider:auth when done. Browser callback flows are
+    // polled below so the button also recovers when no event arrives.
+    if (info?.userCode) { setNotice(`${provider.label} 인증 코드: ${info.userCode} (${info.verificationUri})`); return; }
     for (let i = 0; i < 40; i += 1) {
       await new Promise((r) => setTimeout(r, 1500));
       const status = await window.devilCodex.providerAuthStatus().catch(() => null);
@@ -153,16 +154,18 @@ export function ProviderSettingsPanel({ settings, state, error, onSelect, onSave
         </div>)}</div>}
         {!provider.keyRequired
           ? <p className="provider-local-note">{provider.id === "opencode-free" ? "API 키 없이 OpenCode 무료 모델을 사용합니다. 무료 endpoint에는 데이터 보존/학습 사용 예외가 있으니 민감한 내용을 보내지 마세요." : "로컬 OpenAI-compatible 서버가 실행 중이면 모델 목록 새로고침 후 picker에 표시됩니다."}</p>
-          : <div className="provider-key-input multi"><input type="text" value={labelValue} onChange={(event) => setLabelDraft(provider, event.target.value)} placeholder="계정 이름 예: work, personal" autoComplete="off" /><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder={`${provider.label} API 키`} autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>키 추가</button></div>}
+          : <div className="provider-key-input multi"><input type="text" value={labelValue} onChange={(event) => setLabelDraft(provider, event.target.value)} placeholder="계정 이름 예: work, personal" autoComplete="off" /><input type="password" value={keyValue} onChange={(event) => setKeyDraft(provider, event.target.value)} placeholder={`${provider.label}${provider.subscription ? " 구독" : ""} API 키`} autoComplete="off" /><button type="button" className="provider-btn primary" disabled={!keyValue.trim() || state === "loading"} onClick={() => void save(provider)}>키 추가</button></div>}
       </div>}
     </article>;
   };
 
   return <>
     <h1>연결</h1>
-    <p className="page-lead">로그인 Provider는 자체 세션(OAuth)을 사용하고, API 키 Provider는 OS Keychain으로 암호화해 저장합니다.</p>
+    <p className="page-lead">구독 Provider는 계정 OAuth를 사용하며, Z.AI GLM Coding Plan만 발급된 구독 API 키를 OS Keychain에 저장합니다.</p>
 
-    <section><h2>로그인 Provider</h2><div className="provider-grid">{loginProviders.map((provider) => providerCard(provider, loginStatusLabel(provider, auth)))}</div></section>
+    <section><h2>구독 Provider</h2><div className="provider-grid">{subscriptionProviders.map((provider) => providerCard(provider, provider.kind === "login" ? loginStatusLabel(provider, auth) : keyStatusLabel(provider)))}</div></section>
+
+    <section><h2>기타 로그인 Provider</h2><div className="provider-grid">{loginProviders.map((provider) => providerCard(provider, loginStatusLabel(provider, auth)))}</div></section>
 
     <section><h2>API 키 Provider</h2><div className="provider-grid">{apiProviders.map((provider) => providerCard(provider, keyStatusLabel(provider)))}</div></section>
 

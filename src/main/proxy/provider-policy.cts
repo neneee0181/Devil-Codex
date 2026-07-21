@@ -33,6 +33,15 @@ const MOONSHOT_LEGACY_MODELS = new Set([
   "kimi-k2.5",
 ]);
 const MOONSHOT_AUTO_TOOL_MODELS = new Set(["kimi-k2.7-code", "kimi-k2.7-code-highspeed"]);
+const KIMI_K3_MODELS = new Set(["k3", "k3[1m]"]);
+const KIMI_LEGACY_MODELS = new Set([
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
+  "kimi-k2.6",
+  "kimi-k2.5",
+  "kimi-for-coding",
+]);
+const KIMI_AUTO_TOOL_MODELS = new Set(["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-for-coding"]);
 
 const DEFAULT_REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
@@ -47,6 +56,7 @@ export function providerReasoningEfforts(provider: ProviderId, model: string): s
   if (provider === "deepseek" && DEEPSEEK_THINKING_MODELS.has(id)) return ["high", "xhigh", "max", "ultra"];
   if (provider === "opencode-free" && OPENCODE_FREE_DEEPSEEK_MODELS.has(id)) return ["high", "xhigh", "max", "ultra"];
   if (provider === "zai" && ZAI_GLM_52_MODELS.has(id)) return [...DEFAULT_REASONING_LEVELS];
+  if (provider === "kimi") return KIMI_K3_MODELS.has(id) ? ["low", "high", "max", "ultra"] : KIMI_LEGACY_MODELS.has(id) ? [] : undefined;
   if (provider === "moonshot") return id === "kimi-k3" ? ["max", "ultra"] : MOONSHOT_LEGACY_MODELS.has(id) ? [] : undefined;
   if (provider === "nvidia" && NVIDIA_KIMI_MODELS.has(id)) return [];
   if (provider === "xai") {
@@ -71,6 +81,11 @@ export function mapProviderReasoningEffort(provider: ProviderId, model: string, 
     return boundary === "xhigh" || boundary === "max" ? "max" : "high";
   }
   if (provider === "xai" && id === "grok-4.5" && (boundary === "xhigh" || boundary === "max")) return "high";
+  if (provider === "kimi" && KIMI_K3_MODELS.has(id)) {
+    if (boundary === "medium" || boundary === "high") return "high";
+    if (boundary === "xhigh" || boundary === "max") return "max";
+    return "low";
+  }
   if (supported?.length) {
     const wireLevels = supported.filter((effort) => effort !== "ultra");
     if (wireLevels.includes(boundary)) return boundary;
@@ -87,6 +102,7 @@ export function providerPreservesReasoning(provider: ProviderId, model: string):
   if (provider === "deepseek") return DEEPSEEK_THINKING_MODELS.has(id);
   if (provider === "opencode-free") return OPENCODE_FREE_DEEPSEEK_MODELS.has(id);
   if (provider === "zai") return ZAI_GLM_52_MODELS.has(id);
+  if (provider === "kimi") return KIMI_K3_MODELS.has(id) || KIMI_LEGACY_MODELS.has(id);
   if (provider === "moonshot") return id === "kimi-k3" || MOONSHOT_LEGACY_MODELS.has(id);
   if (provider === "nvidia") return NVIDIA_KIMI_THINKING_MODELS.has(id);
   if (provider === "xai") return XAI_REASONING_HISTORY_MODELS.has(id);
@@ -94,13 +110,14 @@ export function providerPreservesReasoning(provider: ProviderId, model: string):
 }
 
 export function providerLocksSampling(provider: ProviderId, model: string): boolean {
-  if (provider !== "moonshot") return false;
+  if (provider !== "moonshot" && provider !== "kimi") return false;
   const id = folded(model);
-  return id === "kimi-k3" || MOONSHOT_LEGACY_MODELS.has(id);
+  return provider === "kimi" ? KIMI_K3_MODELS.has(id) || KIMI_LEGACY_MODELS.has(id) : id === "kimi-k3" || MOONSHOT_LEGACY_MODELS.has(id);
 }
 
 export function providerAutoToolChoiceOnly(provider: ProviderId, model: string): boolean {
-  return provider === "moonshot" && MOONSHOT_AUTO_TOOL_MODELS.has(folded(model));
+  return (provider === "moonshot" && MOONSHOT_AUTO_TOOL_MODELS.has(folded(model)))
+    || (provider === "kimi" && KIMI_AUTO_TOOL_MODELS.has(folded(model)));
 }
 
 /** OpenCodex defaults OpenAI-chat transports on; NVIDIA NIM Kimi is the documented opt-out. */
@@ -117,6 +134,7 @@ export function providerNativeImageInput(provider: ProviderId, model: string): b
   // OpenCodex marks only its DeepSeek free route as no-vision; other live Zen
   // free models are allowed to receive native image_url parts.
   if (provider === "opencode-free") return !OPENCODE_FREE_DEEPSEEK_MODELS.has(id);
+  if (provider === "kimi") return KIMI_K3_MODELS.has(id);
   if (provider === "moonshot") return id === "kimi-k3";
   if (provider === "xai") return id !== "grok-build-0.1" && id !== "grok-composer-2.5-fast";
   return undefined;
@@ -142,6 +160,7 @@ export function providerContextWindow(provider: ProviderId, model: string): numb
     if (ZAI_GLM_52_MODELS.has(id)) return 1_000_000;
     if (/^glm-5(?:\.1)?$/.test(id)) return 202_752;
   }
+  if (provider === "kimi") return id === "k3[1m]" ? 1_048_576 : KIMI_K3_MODELS.has(id) || KIMI_LEGACY_MODELS.has(id) ? 262_144 : undefined;
   if (provider === "moonshot") return id === "kimi-k3" ? 1_048_576 : MOONSHOT_LEGACY_MODELS.has(id) ? 262_144 : undefined;
   if (provider === "xai") {
     if (id === "grok-4.5") return 500_000;

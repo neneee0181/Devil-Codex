@@ -37,6 +37,7 @@ import {
 } from "./openai-responses.cjs";
 import { claudeAuth, copilotAuth, oauthModels } from "../provider-oauth.cjs";
 import { antigravityAuth, antigravityModels } from "../provider-antigravity.cjs";
+import { kimiAuth, kimiModels } from "../provider-kimi.cjs";
 import { apiProviderConfig, apiProviderUrl, capabilityFor, providerAccountReady, ProviderSettingsStore } from "../provider-settings.cjs";
 import { CodexSettingsStore } from "../codex-settings.cjs";
 import type { ProviderId, ProviderRequestLogEntry, SidecarSettings } from "../contracts.cjs";
@@ -107,6 +108,13 @@ function diagnosticRequestId(req: IncomingMessage): string {
 
 function diagnosticTransport(req: IncomingMessage): BridgeDiagnosticContext["transport"] {
   return req.headers["x-devil-diagnostic-transport"] === "websocket" ? "websocket" : "http";
+}
+
+export function shouldUseEmptyWebSocketResponseId(
+  provider: ProviderId,
+  transport: BridgeDiagnosticContext["transport"],
+): boolean {
+  return transport === "websocket" && provider !== "codex" && provider !== "openai";
 }
 
 function diagnosticHeaders(headers: HeadersInit | undefined): Record<string, unknown> {
@@ -312,6 +320,7 @@ function providerLabel(provider: ProxyProvider): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "copilot") return "GitHub Copilot";
   if (provider === "antigravity") return "Antigravity";
+  if (provider === "kimi") return "Kimi Code";
   if (provider === "openai") return "OpenAI";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";
@@ -344,7 +353,7 @@ function splitModel(id: string): { provider: ProxyProvider; accountId?: string; 
     const accountSep = rawProvider.indexOf("@");
     const p = accountSep >= 0 ? rawProvider.slice(0, accountSep) : rawProvider;
     const accountId = accountSep >= 0 ? decodeURIComponent(rawProvider.slice(accountSep + 1)) : undefined;
-    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "opencode-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "zai" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, accountId, model: id.slice(sep + 1) };
+    if (p === "claude-code" || p === "copilot" || p === "antigravity" || p === "kimi" || p === "openai" || p === "anthropic" || p === "google" || p === "deepseek" || p === "xai" || p === "openrouter" || p === "openrouter-free" || p === "opencode-free" || p === "groq" || p === "mistral" || p === "cerebras" || p === "together" || p === "fireworks" || p === "zai" || p === "moonshot" || p === "huggingface" || p === "nvidia" || p === "ollama" || p === "vllm" || p === "lm-studio") return { provider: p, accountId, model: id.slice(sep + 1) };
   }
   // Fallback by name shape.
   return { provider: /claude/i.test(id) ? "claude-code" : "copilot", model: id };
@@ -498,7 +507,7 @@ function modelId(body: unknown): string {
 }
 
 function isExternalModel(model: string): boolean {
-  return /^(claude-code|copilot|antigravity|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|opencode-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^/:]+)?[/:]/.test(model);
+  return /^(claude-code|copilot|antigravity|kimi|openai|anthropic|google|deepseek|xai|openrouter|openrouter-free|opencode-free|groq|mistral|cerebras|together|fireworks|zai|moonshot|huggingface|nvidia|ollama|vllm|lm-studio)(@[^/:]+)?[/:]/.test(model);
 }
 
 function redactSensitiveText(text: string): string {
@@ -995,6 +1004,13 @@ async function providerEventStream(
     upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
     return streamAntigravity(upstream, parsed);
   }
+  if (provider === "kimi") {
+    const auth = await kimiAuth(accountId);
+    if (!auth) throw new Error("Kimi Code 로그인이 필요합니다.");
+    const reqInit = buildApiKeyRequest(provider, parsed, auth.accessToken);
+    upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
+    return streamOpenAiCompatible(providerLabel(provider), upstream);
+  }
   const key = await providerSettings.readApiKey(provider, accountId);
   const reqInit = provider === "anthropic" ? await buildAnthropicRequest(parsed, { apiKey: key }) : buildApiKeyRequest(provider, parsed, key);
   upstream = await fetchUpstream(reqInit.url, { method: "POST", headers: reqInit.headers, body: reqInit.body }, signal);
@@ -1027,6 +1043,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
   const parsed = parseRequest(body);
   parsed._previousResponseInputExpanded = previousResponseInputExpanded;
   const { provider, accountId, model } = splitModel(parsed.model);
+  const emptyWebSocketResponseId = shouldUseEmptyWebSocketResponseId(provider, diagnosticTransport(req));
   parsed.model = model;
   const routedCompaction = parsed._compactionRequest === true && provider !== "openai";
   if (routedCompaction) {
@@ -1144,7 +1161,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   const toolMaps = bridgeToolMaps(parsed);
-  const responseStateEligible = !routedCompaction && (!parsed.previousResponseId || previousResponseInputExpanded);
+  const responseStateEligible = !routedCompaction && !emptyWebSocketResponseId && (!parsed.previousResponseId || previousResponseInputExpanded);
   if (parsed.previousResponseId && !previousResponseInputExpanded) {
     console.warn(`[devil-proxy] previous_response_id ${parsed.previousResponseId} was not found; skipping continuation-state storage for this truncated turn`);
   }
@@ -1157,6 +1174,7 @@ async function handleExternalResponses(req: IncomingMessage, body: unknown, res:
     () => controller.abort(),
     2_000,
     {
+      ...(emptyWebSocketResponseId ? { responseId: "" } : {}),
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       onTerminal: (status) => { terminalStatus = status; },
       ...(routedCompaction ? { compaction: true } : {}),
@@ -1308,6 +1326,8 @@ async function handleModels(res: ServerResponse, selectedOnly: boolean): Promise
     .flatMap((provider) => provider.accounts.filter((account) => providerAccountReady(provider, account)).map(async (account) => {
       const liveModels = provider.id === "antigravity"
         ? await antigravityModels(account.id).catch(() => [])
+        : provider.id === "kimi"
+          ? await kimiModels(account.id).catch(() => [])
         : await oauthModels(provider.id as "copilot" | "claude-code", account.id).catch(() => []);
       // Login model refreshes can lag behind the account/provider cache. Keep
       // connected saved models in the catalog so Bridge activation does not
@@ -1317,7 +1337,7 @@ async function handleModels(res: ServerResponse, selectedOnly: boolean): Promise
         ...(account.models ?? []).map((model) => model.id),
         ...(provider.models ?? []).map((model) => model.id),
       ])];
-      const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : "anthropic";
+      const owner = provider.id === "copilot" ? "github" : provider.id === "antigravity" ? "google" : provider.id === "kimi" ? "moonshot" : "anthropic";
       return models.map((model) => ({ id: routedId(provider.id, account.id, model), object: "model", owned_by: owner }));
     })))).flat();
   const apiProviders = settings.providers.filter((provider) => provider.kind === "apikey" && provider.accounts.some((account) => providerAccountReady(provider, account)));
@@ -1541,9 +1561,11 @@ export class CodexProxyServer {
               const value = req.headers[name];
               if (typeof value === "string") headers[name] = value;
             }
+            // Routed WS responses use an empty response id so stock Codex sends full history on
+            // the next turn. Native Codex and OpenAI passthrough retain their upstream ids.
+            headers["x-devil-diagnostic-transport"] = "websocket";
             if (wsDiagnosticContext) {
               headers["x-devil-diagnostic-id"] = requestId;
-              headers["x-devil-diagnostic-transport"] = "websocket";
             }
             const stockPrefix = stockConnection ? "/stock" : "";
             const response = await fetch(`http://127.0.0.1:${DEVIL_PROXY_PORT}/${this.secret}${stockPrefix}/v1/responses`, {

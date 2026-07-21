@@ -21,7 +21,7 @@ import { rawMessage } from "./errors.cjs";
 import { buildOpenAiResponsesApiKeyRequest, inspectResponsesPayload, prepareOpenAiResponsesBody, restoreStreamedResponseOutput } from "./openai-responses.cjs";
 import { parseRequest } from "./parser.cjs";
 import { mapProviderReasoningEffort, providerAutoToolChoiceOnly, providerContextWindow, providerNativeImageInput, providerReasoningEfforts } from "./provider-policy.cjs";
-import { decodeRequestBody } from "./proxy-server.cjs";
+import { decodeRequestBody, shouldUseEmptyWebSocketResponseId } from "./proxy-server.cjs";
 import { clearResponseStateForTests, expandPreviousResponseInput, flushResponseState, rememberResponseState, resetResponseStateMemoryForTests } from "./response-state.cjs";
 import type { AdapterEvent, OcxParsedRequest } from "./types.cjs";
 
@@ -210,6 +210,9 @@ test("reasoning and tool-choice policies match OpenCodex model-specific mappings
   assert.equal(mapProviderReasoningEffort("deepseek", "deepseek-v4-pro", "xhigh"), "max");
   assert.equal(mapProviderReasoningEffort("moonshot", "kimi-k2.7-code", "high"), undefined);
   assert.equal(mapProviderReasoningEffort("moonshot", "kimi-k3", "low"), "max");
+  assert.equal(mapProviderReasoningEffort("kimi", "k3", "medium"), "high");
+  assert.equal(mapProviderReasoningEffort("kimi", "k3[1m]", "xhigh"), "max");
+  assert.deepEqual(providerReasoningEfforts("kimi", "kimi-k2.7-code"), []);
   assert.equal(mapProviderReasoningEffort("xai", "grok-4.5", "max"), "high");
   assert.deepEqual(providerReasoningEfforts("nvidia", "moonshotai/kimi-k2.6"), []);
   assert.equal(providerAutoToolChoiceOnly("moonshot", "kimi-k2.7-code"), true);
@@ -217,6 +220,8 @@ test("reasoning and tool-choice policies match OpenCodex model-specific mappings
   assert.equal(providerNativeImageInput("opencode-free", "big-pickle"), true);
   assert.equal(providerNativeImageInput("copilot", "gpt-5.5"), true);
   assert.equal(providerNativeImageInput("moonshot", "kimi-k2.5"), false);
+  assert.equal(providerNativeImageInput("kimi", "k3"), true);
+  assert.equal(providerContextWindow("kimi", "k3[1m]"), 1_048_576);
   assert.equal(providerContextWindow("anthropic", "claude-opus-4-6"), 1_000_000);
   assert.equal(providerContextWindow("openrouter", "openai/gpt-5.6-sol"), 1_050_000);
   assert.equal(providerContextWindow("openrouter-free", "openrouter/free"), 200_000);
@@ -241,6 +246,27 @@ test("additional_tools survive follow-up parsing and all active tools reach chat
   assert.equal((body.tools as unknown[]).length, 35);
   assert.equal(body.parallel_tool_calls, true);
   assert.equal(body.reasoning_effort, undefined);
+});
+
+test("only routed websocket adapters use an empty response id", async () => {
+  assert.equal(shouldUseEmptyWebSocketResponseId("antigravity", "websocket"), true);
+  assert.equal(shouldUseEmptyWebSocketResponseId("antigravity", "http"), false);
+  assert.equal(shouldUseEmptyWebSocketResponseId("openai", "websocket"), false);
+  assert.equal(shouldUseEmptyWebSocketResponseId("codex", "websocket"), false);
+
+  async function* events(): AsyncGenerator<AdapterEvent> {
+    yield { type: "text_delta", text: "done" };
+    yield { type: "done" };
+  }
+  const output = await collectReadable(bridgeToResponsesSSE(events(), "gemini-test", undefined, undefined, undefined, undefined, 2_000, {
+    responseId: "",
+  }));
+  const payloads = output
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data: {") && line.includes('"response"'))
+    .map((line) => JSON.parse(line.slice(6)) as { response?: { id?: unknown } });
+  assert.ok(payloads.length >= 2);
+  assert.ok(payloads.every((payload) => payload.response?.id === ""));
 });
 
 test("native passthrough repairs a stale exec_command example when only shell_command exists", () => {
@@ -543,6 +569,21 @@ test("Antigravity hides ordinary text in tool turns but preserves final answers"
     { type: "text_delta", text: "Deployment completed." },
     { type: "done" },
   ]);
+});
+
+test("Kimi subscription requests use the coding endpoint, OAuth bearer, and stripped K3 alias", () => {
+  const parsed = parsedRequest({
+    model: "k3[1m]",
+    reasoning: { effort: "medium" },
+    temperature: 0.2,
+  });
+  const request = buildApiKeyRequest("kimi", parsed, "oauth-token");
+  const body = JSON.parse(request.body) as Record<string, unknown>;
+  assert.equal(request.url, "https://api.kimi.com/coding/v1/chat/completions");
+  assert.equal(request.headers.Authorization, "Bearer oauth-token");
+  assert.equal(body.model, "k3");
+  assert.equal(body.reasoning_effort, "high");
+  assert.equal(body.temperature, undefined);
 });
 
 test("Antigravity preserves one safe progress line before a tool and hides post-tool text", async () => {

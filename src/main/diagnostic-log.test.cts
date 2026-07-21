@@ -59,8 +59,13 @@ test("diagnostic logger writes parseable serialized JSONL with restrictive permi
     const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
     assert.deepEqual(records.map((record) => record.sequence), Array.from({ length: 30 }, (_value, index) => index + 1));
     assert.equal(new Set(records.map((record) => record.requestId)).size, 30);
-    assert.equal((await stat(path)).mode & 0o777, 0o600);
-    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    // Windows reports synthesized mode bits and does not implement POSIX chmod
+    // semantics. The logger still creates and writes the files there; verify the
+    // restrictive bitmask only on platforms where Node can enforce it.
+    if (process.platform !== "win32") {
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    }
     assert.equal(lines.some((line) => line.includes("error-secret")), false);
   } finally {
     await rm(directory, { recursive: true, force: true });

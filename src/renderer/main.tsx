@@ -912,7 +912,7 @@ function compactUsageReset(value: string | number | null | undefined): string {
 
 function providerDisplayName(provider: ProviderId | "unknown", providers: ProviderInfo[]): string {
   if (provider === "unknown") return "알 수 없음";
-  return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider === "antigravity" ? "Antigravity" : provider);
+  return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider === "antigravity" ? "Antigravity" : provider === "kimi" ? "Kimi Code" : provider);
 }
 
 function runtimeAgentLabel(runtime: AgentRuntimeId, provider: ProviderId | undefined, providers: ProviderInfo[]): string {

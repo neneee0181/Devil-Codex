@@ -42,6 +42,7 @@ import { TAILSCALE_DOWNLOAD_URL, TailscaleCli } from "./tailscale.cjs";
 import { providerAuthStatus as codexCliStatus, providerLogin as codexCliLogin, providerLogout as codexCliLogout } from "./provider-auth.cjs";
 import { oauthLogin, oauthLogout, oauthModels, oauthStatus } from "./provider-oauth.cjs";
 import { antigravityLogin, antigravityLogout, antigravityModels, antigravityStatus } from "./provider-antigravity.cjs";
+import { kimiLogin, kimiLogout, kimiModels, kimiStatus } from "./provider-kimi.cjs";
 import { clearProviderUsageCache, providerUsageReport } from "./provider-usage.cjs";
 import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex-rollout-mirror.cjs";
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
@@ -49,15 +50,20 @@ import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import { codexHome } from "./codex-home.cjs";
 import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, DevilMcpStatus, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
-async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean }> {
-  const [cli, oauth, antigravity] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus()]);
-  return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot, antigravity };
+async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; kimi: boolean }> {
+  const [cli, oauth, antigravity, kimi] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus(), kimiStatus()]);
+  return { codex: cli.codex, claude: oauth.claude, copilot: oauth.copilot, antigravity, kimi };
 }
 
 async function refreshProviderModels(provider: Exclude<ProviderId, "codex">, accountId?: string) {
   if (provider === "antigravity") {
     const models = await antigravityModels(accountId);
     if (!models.length) throw new Error("Antigravity 로그인 또는 사용 가능한 모델을 확인하세요.");
+    return providerSettingsStore.saveModels(provider, models, accountId);
+  }
+  if (provider === "kimi") {
+    const models = await kimiModels(accountId);
+    if (!models.length) throw new Error("Kimi Code 로그인 또는 사용 가능한 모델을 확인하세요.");
     return providerSettingsStore.saveModels(provider, models, accountId);
   }
   if (provider === "copilot" || provider === "claude-code") {
@@ -68,8 +74,8 @@ async function refreshProviderModels(provider: Exclude<ProviderId, "codex">, acc
   return providerModels.refresh(provider, accountId);
 }
 
-type UsageCacheProvider = "codex" | "claude-code" | "copilot" | "antigravity";
-const USAGE_CACHE_PROVIDERS: readonly UsageCacheProvider[] = ["codex", "claude-code", "copilot", "antigravity"];
+type UsageCacheProvider = "codex" | "claude-code" | "copilot" | "antigravity" | "kimi";
+const USAGE_CACHE_PROVIDERS: readonly UsageCacheProvider[] = ["codex", "claude-code", "copilot", "antigravity", "kimi"];
 
 function isUsageCacheProvider(provider: ProviderId | "unknown"): provider is UsageCacheProvider {
   return (USAGE_CACHE_PROVIDERS as readonly string[]).includes(provider);
@@ -2955,13 +2961,18 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
         void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged("antigravity"); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
       });
     }
+    if (input.provider === "kimi") {
+      return kimiLogin(() => {
+        void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged("kimi"); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
+      });
+    }
     const oauthProvider = input.provider === "claude" ? "claude-code" : "copilot";
     return oauthLogin(oauthProvider, () => {
       void (async () => { await syncStockCodexCatalogOnly(); await notifyProviderStateChanged(oauthProvider); })().catch((error) => console.warn("[devil-codex providers] post-login refresh failed:", error));
     });
   });
   ipcMain.handle("providers:logout", async (_event, input) => {
-    let changedProvider: UsageCacheProvider | undefined;
+    let changedProvider: ProviderId | undefined;
     if (input.provider === "codex") {
       await codexCliLogout("codex");
       changedProvider = "codex";
@@ -2969,6 +2980,10 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else if (input.provider === "antigravity") {
       await antigravityLogout(input.accountId);
       changedProvider = "antigravity";
+    }
+    else if (input.provider === "kimi") {
+      await kimiLogout(input.accountId);
+      changedProvider = "kimi";
     }
     else {
       const provider = input.provider === "claude" ? "claude-code" : "copilot";
@@ -2980,7 +2995,11 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
       .catch((error) => console.warn("[devil-codex providers] logout notification failed:", error instanceof Error ? error.message : error));
     return combinedAuthStatus();
   });
-  ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity" ? antigravityModels(input.accountId) : oauthModels(input.provider, input.accountId));
+  ipcMain.handle("providers:oauth-models", (_event, input) => input.provider === "antigravity"
+    ? antigravityModels(input.accountId)
+    : input.provider === "kimi"
+      ? kimiModels(input.accountId)
+      : oauthModels(input.provider, input.accountId));
   handle("providers:usage", async (input) => {
     const request = (input ?? {}) as { force?: boolean };
     return providerUsageReport(await combinedAuthStatus(), await providerSettingsStore.load(), { force: Boolean(request.force) });

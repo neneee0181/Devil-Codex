@@ -46,7 +46,7 @@ export function useProviders(): {
 
   const oauthModelKey = (provider: ProviderId, accountId: string): string => `${provider}:${accountId}`;
   const syncOauthModels = useCallback((source?: ProviderSettings | null): void => {
-    (["copilot", "claude-code", "antigravity"] as const).forEach((provider) => {
+    (["copilot", "claude-code", "antigravity", "kimi"] as const).forEach((provider) => {
       const accounts = source?.providers.find((item) => item.id === provider)?.accounts ?? [];
       accounts.forEach((account) => window.devilCodex.providerOauthModels({ provider, accountId: account.id }).then((models) => {
         setOauthModels((prev) => {
@@ -108,6 +108,7 @@ export function useProviders(): {
         if (!status.copilot) for (const key of Object.keys(next)) if (key.startsWith("copilot:")) delete next[key];
         if (!status.claude) for (const key of Object.keys(next)) if (key.startsWith("claude-code:")) delete next[key];
         if (!status.antigravity) for (const key of Object.keys(next)) if (key.startsWith("antigravity:")) delete next[key];
+        if (!status.kimi) for (const key of Object.keys(next)) if (key.startsWith("kimi:")) delete next[key];
         return next;
       });
       window.devilCodex.loadProviderSettings().then((next) => {

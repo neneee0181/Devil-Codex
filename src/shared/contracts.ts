@@ -177,7 +177,7 @@ export interface RemoteScope { restricted: boolean; }
 export interface DevilMcpStatus { state: "ready" | "disabled" | "bridge" | "error"; detail: string; browserServer: boolean; computerServer: boolean; browserRegistered: boolean; computerRegistered: boolean; checkedAt: number; }
 export interface CodexSettings { model: string; approvalPolicy: string; sandboxMode: string; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; devilMcpEnabled: boolean; askUserMcpEnabled: boolean; subagentMcpEnabled: boolean; englishOutput: boolean; stockBridgeEnabled: boolean; stockBridgeModels: string[]; stockBridgeWebSearch: boolean; stockBridgeVision: boolean; remoteControlEnabled: boolean; remoteControlMode: RemoteControlMode; remoteAllowedThreadIds: string[]; }
 export type ProviderId =
-  | "codex" | "claude-code" | "copilot" | "antigravity"
+  | "codex" | "claude-code" | "copilot" | "antigravity" | "kimi"
   | "openai" | "anthropic" | "google" | "deepseek"
   | "xai" | "openrouter" | "openrouter-free" | "opencode-free" | "groq" | "mistral" | "cerebras" | "together" | "fireworks" | "zai"
   | "moonshot" | "huggingface" | "nvidia" | "ollama" | "vllm" | "lm-studio";
@@ -214,13 +214,13 @@ export interface ProviderAccount {
   createdAt?: number;
   updatedAt?: number;
 }
-export interface ProviderInfo { id: ProviderId; label: string; kind: "login" | "apikey"; keyRequired: boolean; models: ProviderModel[]; modelsLoaded: boolean; credentialSource: ProviderCredentialSource; authProvider?: "codex" | "claude" | "copilot" | "antigravity"; accounts: ProviderAccount[]; }
+export interface ProviderInfo { id: ProviderId; label: string; kind: "login" | "apikey"; keyRequired: boolean; models: ProviderModel[]; modelsLoaded: boolean; credentialSource: ProviderCredentialSource; authProvider?: "codex" | "claude" | "copilot" | "antigravity" | "kimi"; subscription?: boolean; accounts: ProviderAccount[]; }
 export interface ProviderSettings { provider: ProviderId; model: string; accountId?: string; providers: ProviderInfo[]; }
 export interface SidecarSettings { webSearch: boolean; vision: boolean; webSearchLimit: number; visionLimit: number; nvidiaRateLimitRpm?: number; }
-export interface ProviderAuthStatus { codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; }
+export interface ProviderAuthStatus { codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; kimi: boolean; }
 export interface DeviceCodeInfo { userCode: string; verificationUri: string; expiresIn: number; }
 export interface ProviderUsageWindow { label: string; usedPercent: number; remainingPercent: number; resetsAt?: string | number | null; }
-export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot" | "antigravity"; label: string; connected: boolean; windows: ProviderUsageWindow[]; accountId?: string; accountLabel?: string; accountEmail?: string; unavailable?: string; error?: string; updatedAt: number; }
+export interface ProviderUsageEntry { provider: "codex" | "claude-code" | "copilot" | "antigravity" | "kimi"; label: string; connected: boolean; windows: ProviderUsageWindow[]; accountId?: string; accountLabel?: string; accountEmail?: string; unavailable?: string; error?: string; updatedAt: number; }
 export interface ProviderUsageReport { entries: ProviderUsageEntry[]; }
 export interface ProviderUsageChangedEvent { provider?: ProviderId | "unknown"; completed?: boolean; at: number; }
 export interface ProviderTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; cacheMissReason?: string; cacheMissedInputTokens?: number; }
@@ -500,9 +500,9 @@ export interface DevilCodexApi {
   listCodexModels: () => Promise<ProviderModel[]>;
   newChatCwd: () => Promise<string>;
   providerAuthStatus: () => Promise<ProviderAuthStatus>;
-  providerLogin: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<DeviceCodeInfo | null>;
-  providerLogout: (input: { provider: "codex" | "claude" | "copilot" | "antigravity"; accountId?: string }) => Promise<ProviderAuthStatus>;
-  providerOauthModels: (input: { provider: "copilot" | "claude-code" | "antigravity"; accountId?: string }) => Promise<ProviderModel[]>;
+  providerLogin: (input: { provider: "codex" | "claude" | "copilot" | "antigravity" | "kimi"; accountId?: string }) => Promise<DeviceCodeInfo | null>;
+  providerLogout: (input: { provider: "codex" | "claude" | "copilot" | "antigravity" | "kimi"; accountId?: string }) => Promise<ProviderAuthStatus>;
+  providerOauthModels: (input: { provider: "copilot" | "claude-code" | "antigravity" | "kimi"; accountId?: string }) => Promise<ProviderModel[]>;
   providerUsage: (input?: { force?: boolean }) => Promise<ProviderUsageReport>;
   providerRequestLog: () => Promise<ProviderRequestLogEntry[]>;
   onProviderAuth: (listener: (status: ProviderAuthStatus) => void) => () => void;

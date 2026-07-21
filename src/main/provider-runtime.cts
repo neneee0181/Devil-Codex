@@ -1,5 +1,6 @@
 import type { AppServerEvent, ProviderId } from "./contracts.cjs";
 import { antigravityAuth } from "./provider-antigravity.cjs";
+import { kimiAuth } from "./provider-kimi.cjs";
 import { apiProviderConfig, apiProviderUrl, ProviderSettingsStore } from "./provider-settings.cjs";
 import { claudeChat, copilotChat } from "./provider-oauth.cjs";
 import { buildAntigravityRequest } from "./proxy/antigravity.cjs";
@@ -23,6 +24,7 @@ function providerLabel(provider: ExternalProvider): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "copilot") return "GitHub Copilot";
   if (provider === "antigravity") return "Antigravity";
+  if (provider === "kimi") return "Kimi Code";
   if (provider === "openai") return "OpenAI";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "google") return "Google Gemini";
@@ -147,6 +149,11 @@ export class ProviderRuntime {
     if (input.provider === "copilot") return copilotChat(input.model, input.text, signal, input.accountId);
     if (input.provider === "claude-code") return claudeChat(input.model, input.text, signal, input.accountId);
     if (input.provider === "antigravity") return this.antigravityRequest(input, signal);
+    if (input.provider === "kimi") {
+      const auth = await kimiAuth(input.accountId);
+      if (!auth) throw new Error("Kimi Code 로그인이 필요합니다.");
+      return this.request(input, auth.accessToken, signal);
+    }
     const key = await this.settings.readApiKey(input.provider, input.accountId);
     return this.request(input, key, signal);
   }
@@ -171,6 +178,7 @@ export class ProviderRuntime {
     if (!config) throw new Error(`지원하지 않는 Provider입니다: ${input.provider}`);
     if (config.adapter === "anthropic") return fetch(apiProviderUrl(input.provider, "/v1/messages"), { method: "POST", signal, headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model: input.model, max_tokens: 4096, stream: true, messages: [{ role: "user", content: input.text }] }) });
     if (config.adapter === "google") return fetch(`${apiProviderUrl(input.provider, `/v1beta/models/${encodeURIComponent(input.model)}:streamGenerateContent`)}?alt=sse&key=${encodeURIComponent(key)}`, { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: input.text }] }] }) });
-    return fetch(apiProviderUrl(input.provider, "/chat/completions"), { method: "POST", signal, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(config.headers ?? {}), "Content-Type": "application/json" }, body: JSON.stringify({ model: input.model, stream: true, messages: [{ role: "user", content: input.text }] }) });
+    const model = input.provider === "kimi" ? input.model.replace(/\[[^\]]*\]\s*$/, "") : input.model;
+    return fetch(apiProviderUrl(input.provider, "/chat/completions"), { method: "POST", signal, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), ...(config.headers ?? {}), "Content-Type": "application/json" }, body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: input.text }] }) });
   }
 }

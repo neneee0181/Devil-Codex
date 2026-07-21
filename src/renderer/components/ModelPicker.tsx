@@ -16,7 +16,7 @@ const speeds: Array<{ value: ResponseSpeed; label: string; detail: string }> = [
   { value: "standard", label: "표준", detail: "기본 속도" },
   { value: "fast", label: "고속", detail: "1.5x speed, increased usage" },
 ];
-const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false };
+const emptyAuth: ProviderAuthStatus = { codex: false, claude: false, copilot: false, antigravity: false, kimi: false };
 const modelPageSize = 10;
 const notifyProviderAuthChanged = (): void => { window.dispatchEvent(new Event("devil-codex:provider-auth-changed")); };
 
@@ -203,8 +203,8 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
     if (!authKey) return;
     setBusy(provider.id);
     const info = await window.devilCodex.providerLogin({ provider: authKey }).catch(() => null);
-    // Copilot device flow emits a provider:auth event when done (clears busy).
-    if (info?.userCode) { setNotice(`GitHub에서 코드 입력: ${info.userCode}`); return; }
+    // Device flows emit provider:auth when done (clears busy).
+    if (info?.userCode) { setNotice(`${provider.label} 인증 코드: ${info.userCode}`); return; }
     // codex / claude open a browser with no device code and emit no event, so
     // poll status and clear "로그인 중" once logged in (or after a timeout).
     for (let i = 0; i < 40; i += 1) {

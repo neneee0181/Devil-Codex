@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ProviderAccount, ProviderAuthStatus, ProviderSettings, ProviderUsageEntry, ProviderUsageReport, ProviderUsageWindow } from "./contracts.cjs";
 import { claudeAccessTokenForUsage } from "./provider-oauth.cjs";
 import { antigravityUsage, clearAntigravityUsageCache } from "./provider-antigravity.cjs";
+import { KIMI_CODE_BASE_URL, kimiAuth } from "./provider-kimi.cjs";
 import { readCurrentCodexAuth, refreshCodexAuth, writeCurrentCodexAuth, type CodexAuthJson } from "./provider-codex-accounts.cjs";
 
 const CACHE_TTL_MS = 90_000;
@@ -28,7 +29,7 @@ function windowEntryFromRemaining(label: string, remaining: unknown, resetsAt: u
 
 function resetValue(window: Record<string, unknown> | undefined): string | number | null {
   if (!window) return null;
-  const absolute = window.reset_at ?? window.resets_at ?? window.resetAt ?? window.resetsAt;
+  const absolute = window.reset_at ?? window.resets_at ?? window.resetAt ?? window.resetsAt ?? window.reset_time ?? window.resetTime;
   if (absolute != null) {
     if (typeof absolute === "number" && absolute > 0 && absolute < 10_000_000_000) return absolute * 1000;
     return absolute as string | number;
@@ -142,6 +143,59 @@ function claudeUsageWindowLabel(path: string, window: Record<string, unknown>, c
   if (/five.?hour|5.?hour|5h|primary/.test(text)) return "현재 세션";
   if (/secondary/.test(text)) return "이번 주(전체 모델)";
   return null;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function kimiQuotaWindow(label: string, value: unknown, resetFallback?: Record<string, unknown>): ProviderUsageWindow | null {
+  const row = record(value);
+  if (!row) return null;
+  const resetsAt = resetValue(row) ?? resetValue(resetFallback);
+  const limit = Number(row.limit);
+  if (Number.isFinite(limit) && limit > 0) {
+    const explicitUsed = Number(row.used);
+    const remaining = Number(row.remaining);
+    const used = Number.isFinite(explicitUsed) ? explicitUsed : Number.isFinite(remaining) ? limit - remaining : Number.NaN;
+    if (Number.isFinite(used)) return windowEntry(label, (used / limit) * 100, resetsAt);
+  }
+  const direct = row.utilization ?? row.percent ?? row.usedPercent ?? row.used_percent;
+  return direct == null ? null : windowEntry(label, direct, resetsAt);
+}
+
+function kimiLimitKind(item: Record<string, unknown>, detail: Record<string, unknown>, window: Record<string, unknown>): "5시간" | "7일" | null {
+  const duration = Number(window.duration ?? item.duration ?? detail.duration);
+  const unit = String(window.timeUnit ?? item.timeUnit ?? detail.timeUnit ?? "").toUpperCase();
+  const label = [item.name, item.title, item.scope, detail.name, detail.title].filter((value): value is string => typeof value === "string").join(" ").toLowerCase();
+  if ((unit.includes("MINUTE") && duration === 300) || (unit.includes("HOUR") && duration === 5) || /(^|\b)5\s*(?:h|hour)/.test(label)) return "5시간";
+  if ((unit.includes("DAY") && duration === 7) || (unit.includes("HOUR") && duration === 168) || /weekly|7\s*(?:d|day)/.test(label)) return "7일";
+  return null;
+}
+
+export function kimiUsageWindows(payload: unknown): ProviderUsageWindow[] {
+  const outer = record(payload);
+  if (!outer) return [];
+  const nested = record(outer.data);
+  const usable = (value: unknown): boolean => value !== undefined && value !== null;
+  const outerHasUsage = usable(outer.usage) || usable(outer.limits) || usable(outer.totalQuota);
+  const nestedHasUsage = nested ? usable(nested.usage) || usable(nested.limits) || usable(nested.totalQuota) : false;
+  const body = !outerHasUsage && nestedHasUsage ? nested! : outer;
+  let weekly = kimiQuotaWindow("7일", body.usage);
+  let fiveHour: ProviderUsageWindow | null = null;
+  if (Array.isArray(body.limits)) {
+    for (const value of body.limits) {
+      const item = record(value);
+      if (!item) continue;
+      const detail = record(item.detail) ?? item;
+      const window = record(item.window) ?? {};
+      const kind = kimiLimitKind(item, detail, window);
+      if (kind === "5시간" && !fiveHour) fiveHour = kimiQuotaWindow(kind, detail, window);
+      if (kind === "7일" && !weekly) weekly = kimiQuotaWindow(kind, detail, window);
+    }
+  }
+  const total = kimiQuotaWindow("구독 크레딧", body.totalQuota);
+  return [fiveHour, weekly, total].filter(Boolean) as ProviderUsageWindow[];
 }
 
 function claudeUsageWindowOrder(label: string): number {
@@ -474,6 +528,28 @@ function copilotUsage(connected: boolean, account?: ProviderAccount): ProviderUs
   };
 }
 
+async function kimiUsage(connected: boolean, account?: ProviderAccount): Promise<ProviderUsageEntry | null> {
+  if (!connected) return null;
+  const auth = await kimiAuth(account?.id);
+  const subject = tokenSubject(auth?.accessToken ?? null);
+  const hit = cached("kimi", subject);
+  if (hit) return hit;
+  if (!auth) {
+    return remember({ provider: "kimi", label: "Kimi Code", connected, windows: [], ...accountFields(account), unavailable: "Kimi Code OAuth 토큰을 찾지 못했습니다.", updatedAt: Date.now() }, subject);
+  }
+  try {
+    const res = await fetch(`${KIMI_CODE_BASE_URL}/usages`, {
+      headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return remember({ provider: "kimi", label: "Kimi Code", connected, windows: [], ...accountFields(account), error: `${res.status} ${await res.text()}`, updatedAt: Date.now() }, subject);
+    const windows = kimiUsageWindows(await res.json().catch(() => null));
+    return remember({ provider: "kimi", label: "Kimi Code", connected, windows, ...accountFields(account), unavailable: windows.length ? undefined : "Kimi Code 사용량 데이터가 비어 있습니다.", updatedAt: Date.now() }, subject);
+  } catch (error) {
+    return remember({ provider: "kimi", label: "Kimi Code", connected, windows: [], ...accountFields(account), error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }, subject);
+  }
+}
+
 function accounts(settings: ProviderSettings | undefined, provider: ProviderUsageEntry["provider"]): ProviderAccount[] {
   return settings?.providers.find((item) => item.id === provider)?.accounts ?? [];
 }
@@ -483,6 +559,7 @@ export async function providerUsageReport(auth: ProviderAuthStatus, settings?: P
   const claudeAccounts = accounts(settings, "claude-code");
   const copilotAccounts = accounts(settings, "copilot");
   const antigravityAccounts = accounts(settings, "antigravity");
+  const kimiAccounts = accounts(settings, "kimi");
   const entries = (await Promise.all([
     codexUsage(auth.codex),
     ...(claudeAccounts.length ? claudeAccounts.map((account) => claudeUsage(auth.claude, account)) : [claudeUsage(auth.claude)]),
@@ -490,6 +567,7 @@ export async function providerUsageReport(auth: ProviderAuthStatus, settings?: P
     ...(auth.antigravity
       ? (antigravityAccounts.length ? antigravityAccounts.map((account) => antigravityUsage(true, account.id)) : [antigravityUsage(true)])
       : [Promise.resolve(null)]),
+    ...(kimiAccounts.length ? kimiAccounts.map((account) => kimiUsage(auth.kimi, account)) : [kimiUsage(auth.kimi)]),
   ])).filter(Boolean) as ProviderUsageEntry[];
   return { entries };
 }
