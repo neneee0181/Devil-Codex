@@ -763,6 +763,36 @@ function dropAgentMessagesFoldedIntoActivity(items: ThreadHistoryItem[]): Thread
   return next.length === items.length ? items : next;
 }
 
+// A turn id the live runtime minted (`claude-<uuid>`, `claude-bg-<uuid>`), as
+// opposed to the offline reimport's synthetic id (`<threadId>-claude-turn-N`).
+// The live stream tags a turn's items with the former; a post-turn readThread
+// returns the same turn re-derived from the jsonl under the latter.
+function isLiveClaudeTurnId(turnId: string | undefined): boolean {
+  return Boolean(turnId) && turnId!.startsWith("claude-") && !turnId!.includes("-claude-turn-");
+}
+
+// The final answer reaches the timeline twice under two different turn ids: the
+// live stream builds a standalone agent item keyed on the live turn id
+// (claude-<uuid>), and a post-turn readThread returns the SAME text re-derived
+// from the jsonl under the reimport's own id (<threadId>-claude-turn-N).
+// mergeTimelineItems keys agent items on `agent:<turnId>:<text>`, so the two
+// ids never collide and both copies stay on screen — the exact "final answer
+// shown twice, survives reload" the user hit. The reimport id is the durable
+// source of truth (it's what a fresh load renders), so drop the live-keyed copy
+// whenever a reimport-keyed item already carries the identical text. A live
+// answer the reimport has not yet produced (turn just finished, jsonl not
+// re-read) has no reimport twin and is left untouched, so nothing is lost.
+function dropStaleLiveAgentDuplicates(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const reimportedAgentText = new Set(
+    items
+      .filter((item) => item.kind === "agent" && !isLiveClaudeTurnId(item.turnId) && item.text.trim())
+      .map((item) => item.text.trim()),
+  );
+  if (!reimportedAgentText.size) return items;
+  const next = items.filter((item) => !(item.kind === "agent" && isLiveClaudeTurnId(item.turnId) && item.text.trim() && reimportedAgentText.has(item.text.trim())));
+  return next.length === items.length ? items : next;
+}
+
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
@@ -781,7 +811,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       : item;
     result[index] = mergeTimelineItem(result[index]!, incoming);
   }
-  return dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result));
+  return dropStaleLiveAgentDuplicates(dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result)));
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
