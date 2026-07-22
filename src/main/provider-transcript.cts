@@ -28,7 +28,7 @@ type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; thr
 // since its last import would otherwise be treated as "unchanged" forever
 // and keep serving the stale, already-imported (pre-fix) history even after
 // the app updates. Bumping this forces exactly one re-derive per thread.
-const CLAUDE_IMPORT_FORMAT_VERSION = 5;
+const CLAUDE_IMPORT_FORMAT_VERSION = 6;
 type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
 type ClaudeJsonLine = {
@@ -546,6 +546,40 @@ function absorbOrphanLiveActivities(history: ThreadHistoryItem[], existing: Thre
   });
 }
 
+// The claude-code turn writes its final answer to the store TWICE by different
+// routes: onCompleted appends an agent item keyed on the LIVE turn id
+// (`claude-<uuid>`), and the jsonl reimport re-derives the same text as an agent
+// item keyed on its own synthetic turn id (`<threadId>-claude-turn-N`). When a
+// reimport ran mid-turn (a sidebar refresh, say) it already stored the synthetic
+// copy before onCompleted appended the live copy, and the next reimport's
+// wholesale replace was gated behind a length/mtime check that a duplicate makes
+// fail - so both copies survived and the final answer rendered twice (until a
+// reload, which re-reads the store fresh). Drop each live-keyed agent whose text
+// the reimport already carries under a real turn; keep a live agent the reimport
+// has NOT caught up to yet (jsonl flush lag) so no answer is ever lost.
+function dedupeOrphanLiveAgents(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  if (!existing.length) return history;
+  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
+  const historyAgentText = new Set(history.filter((item) => item.kind === "agent" && item.text.trim()).map((item) => claudeTurnAlignmentKey(item.text)));
+  const survivingOrphans = existing.filter((item) =>
+    item.kind === "agent"
+    && item.turnId
+    && !historyTurns.has(item.turnId)
+    && item.text.trim()
+    && !historyAgentText.has(claudeTurnAlignmentKey(item.text)));
+  return survivingOrphans.length ? [...history, ...survivingOrphans] : history;
+}
+
+// True when the stored history holds an item under a turn id the reimport does
+// not (re)produce - a live-only leftover (duplicate final answer, synthetic
+// fileChange). Its presence forces the wholesale replace below even when the
+// length/mtime gate would otherwise skip it, so the leftover gets reconciled
+// away instead of lingering until the next unrelated jsonl change.
+function hasLiveOnlyLeftover(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): boolean {
+  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
+  return existing.some((item) => (item.kind === "agent" || item.kind === "activity") && item.turnId != null && !historyTurns.has(item.turnId));
+}
+
 // Keep a Devil-owned transcript copy for non-native providers. Proxy-backed
 // threads use the app-server too, but its custom-provider history can be absent
 // after restart while the local copy remains available for rendering.
@@ -846,7 +880,8 @@ export class ProviderTranscriptStore {
         if (!line.trim()) return [];
         try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
       }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
-      const history = absorbOrphanLiveActivities(alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), all.items[threadId] ?? []), all.items[threadId] ?? []);
+      const priorItems = all.items[threadId] ?? [];
+      const history = dedupeOrphanLiveAgents(absorbOrphanLiveActivities(alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), priorItems), priorItems), priorItems);
       if (!history.length && all.deleted?.[threadId]) continue;
       const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? cwdFromClaudeProjectPath(path);
       if (!cwd) continue;
@@ -857,7 +892,7 @@ export class ProviderTranscriptStore {
       const existing = all.items[threadId] ?? [];
       const nativeUpdatedAt = latestVisibleClaudeTime(lines);
       const localUpdatedAt = all.meta[threadId]?.updatedAt ?? 0;
-      if (history.length && (history.length >= existing.length || nativeUpdatedAt > localUpdatedAt || hasClaudeImportNoise(existing))) all.items[threadId] = history;
+      if (history.length && (history.length >= existing.length || nativeUpdatedAt > localUpdatedAt || hasClaudeImportNoise(existing) || hasLiveOnlyLeftover(history, existing))) all.items[threadId] = history;
       else all.items[threadId] ??= [];
       all.meta[threadId] = {
         ...all.meta[threadId],
