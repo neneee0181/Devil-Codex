@@ -74,7 +74,7 @@ function accountLabel(account: ProviderAccount): string {
   return account.email || account.label || account.id;
 }
 
-export function ModelPicker({ model, providerId, accountId, providers, contextUsage, reasoningEffort, responseSpeed, runtime, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; runtime?: "codex" | "claude-code"; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
+export function ModelPicker({ model, providerId, accountId, providers, contextUsage, reasoningEffort, responseSpeed, runtime, onModelChange, onReasoningEffortChange, onResponseSpeedChange }: { model: string; providerId: ProviderId; accountId?: string; providers: ProviderInfo[]; contextUsage?: ContextUsage; reasoningEffort: ReasoningEffort; responseSpeed: ResponseSpeed; runtime?: "codex"; onModelChange: (input: { provider: ProviderId; accountId?: string; model: string }) => void; onReasoningEffortChange: (value: ReasoningEffort) => void; onResponseSpeedChange: (value: ResponseSpeed) => void }): React.JSX.Element {
   const root = useRef<HTMLDivElement>(null);
   const speedButtonRef = useRef<HTMLButtonElement>(null);
   const speedSubmenuRef = useRef<HTMLDivElement>(null);
@@ -125,8 +125,8 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
   const activeAccount = active?.accounts.find((account) => account.id === accountId) ?? active?.accounts[0];
   const selected = active ? accountModels(active, activeAccount).find((item) => item.id === model) : undefined;
   const reasoningChoices = reasoningChoicesFor(selected);
-  const supportsSpeed = runtime !== "claude-code" && (providerId === "codex" || providerId === "openai");
-  const showReasoning = runtime !== "claude-code" && reasoningChoices.length > 0;
+  const supportsSpeed = providerId === "codex" || providerId === "openai";
+  const showReasoning = reasoningChoices.length > 0;
   const effortLabel = showReasoning ? efforts.find((item) => item.value === reasoningEffort)?.label ?? "중간" : "추론 없음";
   const speedLabel = speeds.find((item) => item.value === responseSpeed)?.label ?? "표준";
   const contextLimitTokens = contextLimit(contextUsage);
@@ -205,7 +205,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
     const info = await window.devilCodex.providerLogin({ provider: authKey }).catch(() => null);
     // Device flows emit provider:auth when done (clears busy).
     if (info?.userCode) { setNotice(`${provider.label} 인증 코드: ${info.userCode}`); return; }
-    // codex / claude open a browser with no device code and emit no event, so
+    // codex / anthropic open a browser with no device code and emit no event, so
     // poll status and clear "로그인 중" once logged in (or after a timeout).
     for (let i = 0; i < 40; i += 1) {
       await new Promise((r) => setTimeout(r, 1500));
@@ -242,7 +242,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
       )}
       <button type="button" className="model-trigger" onClick={() => { setOpen((value) => !value); setSubmenu(null); }}>
         <span className="model-trigger-name">{selected?.label ?? model}</span>
-        {runtime !== "claude-code" && <span className="model-trigger-meta">{effortLabel}</span>}
+        <span className="model-trigger-meta">{effortLabel}</span>
         <ChevronDown size={14} />
       </button>
       <AnimatePresence>{open && (
@@ -323,8 +323,6 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
             );
           })}
           {(showReasoning || supportsSpeed) && <>
-            {/* 추론/속도 map to Codex app-server turn params; Claude Code turns
-                ignore them, so the menu hides them there to avoid dead controls. */}
             <div className="menu-divider" />
             {showReasoning && <><div className="model-section-label">추론</div>
             {reasoningChoices.map((item) => <button type="button" className="model-option" key={item.value} onClick={() => onReasoningEffortChange(item.value)}><span>{item.label}</span>{item.value === reasoningEffort && <Check size={15} />}</button>)}</>}

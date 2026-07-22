@@ -27,7 +27,6 @@ export type RemoteCallChannel =
   | "settings:load"
   | "settings:update-permissions"
   | "codex:models"
-  | "claude:slash-commands"
   | "remote:status"
   | "remote:scope";
 
@@ -91,7 +90,6 @@ const allowedChannels = new Set<RemoteCallChannel>([
   "settings:load",
   "settings:update-permissions",
   "codex:models",
-  "claude:slash-commands",
   "remote:status",
   "remote:scope",
 ]);

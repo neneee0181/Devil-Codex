@@ -782,8 +782,8 @@ export function SideChat({ target, history, busy, pick, lockedModel = false, onP
   // A delegated subagent thread runs on its own provider/runtime (e.g. DeepSeek
   // through the Codex app-server) regardless of the parent chat's runtime. The
   // spawn pick (locked, auto:false) carries the child's actual provider, so
-  // derive runtime/account from it — otherwise a Claude-mode parent would read
-  // and continue a Codex-runtime child through the wrong history path.
+  // derive runtime/account from it so the child is read through its own
+  // history path rather than the parent's.
   const spawn = lockedModel && pick && pick.auto === false ? pick : undefined;
   const runtime: AgentRuntimeId = spawn ? "codex" : target.runtime;
   const accountId = spawn ? spawn.accountId : target.accountId;

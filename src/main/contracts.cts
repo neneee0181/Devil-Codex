@@ -150,7 +150,6 @@ export interface GitWorktreeInfo {
 }
 
 export interface CodexSkillInfo { name: string; description: string; path: string; scope: string; enabled: boolean; }
-export interface ClaudeSlashCommandInfo { name: string; description: string; argumentHint?: string; aliases?: string[]; }
 export interface McpToolInfo { name: string; title: string; description: string; }
 export interface McpServerInfo { name: string; authStatus: string; tools: McpToolInfo[]; resources: number; }
 

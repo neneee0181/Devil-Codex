@@ -47,7 +47,7 @@ import { appendMirroredRolloutEvents, repairMirroredRolloutJsonl } from "./codex
 import { attachCodexTokenSnapshot, attachRolloutFinalAnswers, readCodexTokenSnapshot } from "./codex-token-usage.cjs";
 import { applySessionIndexTitles } from "./codex-session-index.cjs";
 import { codexHome } from "./codex-home.cjs";
-import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, DevilMcpStatus, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
+import type { AgentRuntimeId, AppServerEvent, ApprovalDecision, CodexSettings, CodexSkillInfo, ContextUsage, DevilMcpStatus, ExternalTarget, McpServerInfo, OpenWorkspaceTarget, ProviderId, QueuedTurnView, RemoteControlMode, RemoteControlStatus, RemoteDevice, SidecarSettings, ThreadApprovalPolicy, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadSandboxMode, ThreadSummary, WorkspaceChange } from "./contracts.cjs";
 
 async function combinedAuthStatus(): Promise<{ codex: boolean; claude: boolean; copilot: boolean; antigravity: boolean; kimi: boolean }> {
   const [cli, oauth, antigravity, kimi] = await Promise.all([codexCliStatus(), oauthStatus(), antigravityStatus(), kimiStatus()]);

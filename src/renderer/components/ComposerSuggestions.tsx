@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import type { CaretPosition } from "./composerCaret";
 import type { ApprovalMode } from "./ApprovalPicker";
-import type { ClaudeSlashCommandInfo, ContextUsage, McpServerInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
+import type { ContextUsage, McpServerInfo, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 
 export type SlashCommandId =
   | "mcp"
@@ -56,7 +56,7 @@ export type SlashCommandContext = {
   responseSpeed: ResponseSpeed;
   approvalMode: ApprovalMode;
   petVisible: boolean;
-  runtime?: "codex" | "claude-code";
+  runtime?: "codex";
   workspace?: string;
   hasActiveThread?: boolean;
   contextUsage?: ContextUsage;
@@ -71,7 +71,7 @@ export type ComposerSuggestion = {
   id: string;
   label: string;
   detail: string;
-  kind: "skill" | "plugin" | "command" | "mcp" | "claude-command";
+  kind: "skill" | "plugin" | "command" | "mcp";
   command?: SlashCommandId;
   token?: string;
 };
@@ -134,10 +134,6 @@ const codexCommands: SlashCommand[] = [
   { id: "feedback", label: "피드백", detail: ({ skillCount = 0 }) => `피드백 보내기 · ${skillCount}개 스킬 동기화됨`, aliases: ["bug"] },
 ];
 
-function commandDetail(command: ClaudeSlashCommandInfo): string {
-  return [command.argumentHint, command.description || "Claude Code 명령"].filter(Boolean).join(" · ");
-}
-
 type SkillOption = { name: string; description: string; scope?: string };
 
 function pluginName(skill: SkillOption): string | null {
@@ -145,7 +141,7 @@ function pluginName(skill: SkillOption): string | null {
   return skill.name.split(":", 1)[0] || skill.name;
 }
 
-export function suggestionsFor(sigil: "$" | "/" | "@", query: string, skills: SkillOption[], context: SlashCommandContext, mcpServers: McpServerInfo[] = [], claudeSlashCommands: ClaudeSlashCommandInfo[] = []): ComposerSuggestion[] {
+export function suggestionsFor(sigil: "$" | "/" | "@", query: string, skills: SkillOption[], context: SlashCommandContext, mcpServers: McpServerInfo[] = []): ComposerSuggestion[] {
   const normalized = query.toLowerCase();
   const skillItems = skills.filter((skill) => skill.name.toLowerCase().includes(normalized)).map((skill) => ({ id: `skill:${skill.name}`, label: sigil === "$" ? `$${skill.name}` : `/${skill.name}`, detail: skill.description || "스킬", kind: "skill" as const }));
   if (sigil === "$") return skillItems;
@@ -162,20 +158,6 @@ export function suggestionsFor(sigil: "$" | "/" | "@", query: string, skills: Sk
       .filter(([name, entries]) => !normalized || [name, ...entries.flatMap((skill) => [skill.name, skill.description])].some((value) => value.toLowerCase().includes(normalized)))
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([name, entries]) => ({ id: `plugin:${name}`, label: `@${name}`, detail: `${entries.length}개 스킬 · 플러그인 사용`, kind: "plugin" as const }));
-  }
-  if (context.runtime === "claude-code") {
-    return claudeSlashCommands
-      .filter((command) => {
-        if (!normalized) return true;
-        return [command.name, command.description, command.argumentHint ?? "", ...(command.aliases ?? [])].some((part) => part.toLowerCase().includes(normalized));
-      })
-      .map((command) => ({
-        id: `claude-command:${command.name}`,
-        label: `/${command.name}`,
-        detail: commandDetail(command),
-        kind: "claude-command" as const,
-        token: `/${command.name} `,
-      }));
   }
   const mcpItems = mcpServers
     .filter((server) => {
@@ -215,7 +197,6 @@ function iconFor(item: ComposerSuggestion): React.JSX.Element {
   if (item.kind === "plugin") return <Package size={16} />;
   if (item.kind === "skill") return <Cuboid size={16} />;
   if (item.kind === "mcp") return <PlugIcon />;
-  if (item.kind === "claude-command") return <Command size={16} />;
   switch (item.command) {
     case "mcp": return <Package size={16} />;
     case "fast": return <FastForward size={16} />;

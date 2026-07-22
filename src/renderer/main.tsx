@@ -8,7 +8,7 @@ import {
   Maximize2, Minimize2, Minus, MoreHorizontal, NotebookText, PanelBottom, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Pin, PinOff, Plus, Search, SearchCode,
   Settings, Share2, SlidersHorizontal, Square, SquarePen, SquareTerminal, Target, Trash2, UploadCloud, X,
 } from "lucide-react";
-import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ApprovalResolvedEvent, ClaudeSlashCommandInfo, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
+import type { AgentRuntimeId, AppInfo, ApprovalDecision, ApprovalPrompt, AppServerEvent, ApprovalResolvedEvent, CodexSettings, CodexSkillInfo, ContextUsage, ExternalTarget, GitBranchInfo, McpServerInfo, OpenWorkspaceTarget, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderTokenUsage, ProviderUsageEntry, QueuedTurnView, ReasoningEffort, ResponseSpeed, RuntimeStatus, SidecarSettings, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadMetaUpdate, ThreadQueueCommand, ThreadQueueState, ThreadRef, ThreadSummary, UpdateState, WindowControlAction, WorkspaceChange, WorkspaceChanges, WorkspaceDiff } from "../shared/contracts";
 import { SettingsView } from "./SettingsView";
 import { useProviderUsage } from "./hooks/useProviderUsage";
 import { Composer, type ComposerInput } from "./components/Composer";
@@ -497,7 +497,6 @@ function normalizedUserText(text: string): string {
   if (value.includes(marker)) value = value.slice(value.lastIndexOf(marker) + marker.length).trim();
   const newRequest = "[새 요청]";
   if (value.includes(newRequest)) value = value.slice(value.lastIndexOf(newRequest) + newRequest.length).trim();
-  value = value.replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "");
   value = value.replace(/^\[플러그인 스킬\][\s\S]*?\n\n/, "");
   value = value.replace(/^\[연결된 플러그인\/MCP 언급\][\s\S]*?\n\n/, "");
   value = value.replace(/^\[이전 런타임에서 전달된 대화\][\s\S]*?\[새 요청\]\s*/, "");
@@ -537,7 +536,7 @@ function mergeAttachments(
 
 function userDisplayTextScore(text: string): number {
   let score = text.trim().length ? 10 : 0;
-  if (/^\[(?:Devil Claude Code runtime tool instructions|플러그인 스킬|연결된 플러그인\/MCP 언급|이전 런타임에서 전달된 대화|첨부 파일 컨텍스트)\]/.test(text.trim())) score -= 20;
+  if (/^\[(?:플러그인 스킬|연결된 플러그인\/MCP 언급|첨부 파일 컨텍스트)\]/.test(text.trim())) score -= 20;
   if (normalizedUserText(text) === text.replace(/\s+/g, " ").trim()) score += 5;
   return score;
 }
@@ -713,44 +712,6 @@ function dropAgentMessagesFoldedIntoActivity(items: ThreadHistoryItem[]): Thread
   return next.length === items.length ? items : next;
 }
 
-// A turn id the live runtime minted (`claude-<uuid>`, `claude-bg-<uuid>`), as
-// opposed to the offline reimport's synthetic id (`<threadId>-claude-turn-N`).
-// The live stream tags a turn's items with the former; a post-turn readThread
-// returns the same turn re-derived from the jsonl under the latter.
-function isLiveClaudeTurnId(turnId: string | undefined): boolean {
-  return Boolean(turnId) && turnId!.startsWith("claude-") && !turnId!.includes("-claude-turn-");
-}
-
-// The final answer reaches the timeline twice under two different turn ids: the
-// live stream builds a standalone agent item keyed on the live turn id
-// (claude-<uuid>), and a post-turn readThread returns the SAME text re-derived
-// from the jsonl under the reimport's own id (<threadId>-claude-turn-N).
-// mergeTimelineItems keys agent items on `agent:<turnId>:<text>`, so the two
-// ids never collide and both copies stay on screen — the exact "final answer
-// shown twice, survives reload" the user hit.
-//
-// Collapse to the LIVE-keyed copy, dropping the reimported twin. The live turn
-// id is the one the rest of the renderer keys on: the turn/completed handler
-// checks hasAgentMessageForTurn(items, liveTurnId) to decide whether to post a
-// "최종 응답 본문 누락" notice, and folding logic rides the live item. Dropping
-// the live copy (as an earlier version did) left only the reimport copy under a
-// different id, so that check found no agent for the live turn and posted a
-// false missing-answer notice — and the reimport copy then got folded into the
-// activity card, erasing the visible answer entirely. On reload there is no
-// live copy (cache rebuilt from readThread), only the reimport one, which
-// renders fine on its own; the missing-answer check runs only during live
-// completion, so keeping the live id here is always safe.
-function dropReimportedAgentDuplicates(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  const liveAgentText = new Set(
-    items
-      .filter((item) => item.kind === "agent" && isLiveClaudeTurnId(item.turnId) && item.text.trim())
-      .map((item) => item.text.trim()),
-  );
-  if (!liveAgentText.size) return items;
-  const next = items.filter((item) => !(item.kind === "agent" && !isLiveClaudeTurnId(item.turnId) && item.text.trim() && liveAgentText.has(item.text.trim())));
-  return next.length === items.length ? items : next;
-}
-
 function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryItem[]): ThreadHistoryItem[] {
   if (!base.length) return overlay;
   if (!overlay.length) return base;
@@ -769,7 +730,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       : item;
     result[index] = mergeTimelineItem(result[index]!, incoming);
   }
-  return dropReimportedAgentDuplicates(dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result)));
+  return dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result));
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
@@ -917,19 +878,19 @@ function contextUsageDisplay(contextUsage: ContextUsage | undefined): string {
   return `${used} / ${formatTokenShort(contextUsage.maxTokens)} (${percent ?? 0}%)`;
 }
 
-function contextUsageStatus(contextUsage: ContextUsage | undefined, overflow: boolean, usageHasClaudeCode: boolean): string {
+function contextUsageStatus(contextUsage: ContextUsage | undefined, overflow: boolean): string {
   if (!contextUsage?.usedTokens || !contextUsage.maxTokens) return "알 수 없음";
   const percent = contextUsagePercent(contextUsage) ?? Math.round((contextUsage.usedTokens / contextUsage.maxTokens) * 100);
   if (contextUsage.scope === "last-request") return contextUsage.includesCache ? `캐시 포함 · ${percent}% 상당` : `${percent}% 상당`;
   if (contextUsage.source === "renderer-estimate") return overflow
-    ? usageHasClaudeCode ? "추정 임계값 초과 · Claude Code 자동 압축 켜짐" : "추정 임계값 초과"
+    ? "추정 임계값 초과"
     : `추정 ${percent}% 사용`;
   if (contextUsage.autoCompactEnabled && contextUsage.autoCompactThreshold) {
     return overflow ? `자동압축 임계값 도달 · ${percent}%` : `자동압축 기준 ${percent}%`;
   }
   if (contextUsage.autoCompactEnabled === false) return `${percent}% 사용 · 자동압축 꺼짐`;
-  if (overflow) return usageHasClaudeCode ? "임계값 초과 · Claude Code 자동 압축 켜짐" : "다음 요청에서 압축 필요";
-  return usageHasClaudeCode ? `${percent}% 사용 · Claude Code 자동 압축 켜짐` : `${percent}% 사용`;
+  if (overflow) return "다음 요청에서 압축 필요";
+  return `${percent}% 사용`;
 }
 
 function compactUsageReset(value: string | number | null | undefined): string {
@@ -1319,8 +1280,6 @@ function App(): React.JSX.Element {
   const [searchResults, setSearchResults] = useState<ThreadSummary[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<CodexSkillInfo[]>([]);
-  const [availableClaudeSkills, setAvailableClaudeSkills] = useState<CodexSkillInfo[]>([]);
-  const [availableClaudeSlashCommands, setAvailableClaudeSlashCommands] = useState<ClaudeSlashCommandInfo[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerInfo[]>([]);
   const [settingsSection, setSettingsSection] = useState("구성");
   const [items, setItems] = useState<ThreadHistoryItem[]>([]);
@@ -1937,9 +1896,9 @@ function App(): React.JSX.Element {
   const sideConversationModel = providers.settings?.provider === "codex" ? model : "gpt-5.5";
   const sideConversationProviders = providers.settings?.providers ?? [];
   // Side chats must inherit the composer's approval mode. Without it the child
-  // thread falls back to the app-server/SDK defaults (Codex on-request, Claude
-  // "default" per-tool approval on a hidden thread), which diverges from the
-  // main chat and can leave the side chat unable to read the repository.
+  // thread falls back to the app-server defaults (Codex on-request), which
+  // diverges from the main chat and can leave the side chat unable to read the
+  // repository.
   const sideConversationPermissions = sideChatPermissionsForMode(storedComposerApprovalMode());
   const visibleItems = useMemo(() => {
     const needle = threadFindQuery.trim().toLowerCase();
@@ -4299,7 +4258,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} preparing={externalTurnPreparing} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} bridgeActionBusy={codexSettings.state === "loading"} onDisableBridge={disableBridgeFromComposer} agentRuntime={composerRuntime} threadId={thread?.id} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} preparing={externalTurnPreparing} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} bridgeActionBusy={codexSettings.state === "loading"} onDisableBridge={disableBridgeFromComposer} agentRuntime={composerRuntime} threadId={thread?.id} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -4837,7 +4796,6 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
   const [usageExpanded, setUsageExpanded] = useState(false);
   const hiddenUsageModels = Math.max(0, usage.models.length - ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
   const visibleUsageModels = usageExpanded ? usage.models : usage.models.slice(0, ENVIRONMENT_USAGE_MODEL_PREVIEW_LIMIT);
-  const usageHasClaudeCode = usage.models.some((row) => row.provider === "claude-code");
   useEffect(() => {
     if (!menu) return;
     const close = (event: PointerEvent): void => {
@@ -4916,7 +4874,7 @@ function EnvironmentCard({ cwd, changes, sources, usage, usageState, subagents, 
           )}
           <div className={usage.contextOverflow ? "environment-usage-context overflow" : "environment-usage-context"}>
             <span>컨텍스트 상태</span>
-            <b>{contextUsageStatus(usage.contextUsage, usage.contextOverflow, usageHasClaudeCode)}</b>
+            <b>{contextUsageStatus(usage.contextUsage, usage.contextOverflow)}</b>
           </div>
           <progress className={usage.contextOverflow ? "overflow" : ""} value={Math.min(usage.contextTokens, usage.contextLimitTokens)} max={usage.contextLimitTokens} />
         </>}

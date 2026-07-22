@@ -39,7 +39,6 @@ import type {
   ApprovalPrompt,
   AskAnswer,
   AskRequest,
-  ClaudeSlashCommandInfo,
   CodexSettings,
   ContextUsage,
   ProviderId,
@@ -310,7 +309,6 @@ function App(): React.JSX.Element {
   const [codexSettings, setCodexSettings] = useState<CodexSettings | null>(null);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings | null>(null);
   const [codexModels, setCodexModels] = useState<ProviderModel[]>([]);
-  const [slashCommands, setSlashCommands] = useState<ClaudeSlashCommandInfo[]>([]);
   const [usageReport, setUsageReport] = useState<ProviderUsageReport | null>(null);
   const [remoteScope, setRemoteScope] = useState<RemoteScope>({ restricted: true });
   const [projectSummaries, setProjectSummaries] = useState<ThreadSummary[]>([]);
@@ -331,7 +329,7 @@ function App(): React.JSX.Element {
   const [respondingApproval, setRespondingApproval] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreateThreadDraft>({ cwd: "", model: "" });
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
-  const [threadPanel, setThreadPanel] = useState<"info" | "slash" | "model" | "permissions" | null>(null);
+  const [threadPanel, setThreadPanel] = useState<"info" | "model" | "permissions" | null>(null);
   const [threadDetailsOpen, setThreadDetailsOpen] = useState(false);
   const [threadModelKeyState, setThreadModelKeyState] = useState<{ key: string; dirty: boolean }>({ key: "", dirty: false });
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -364,10 +362,8 @@ function App(): React.JSX.Element {
   }, [bridge]);
 
   // The bridge channel defaults to the Codex runtime when `runtime` is
-  // omitted, so a plain call here silently drops every Claude Code thread -
-  // including ones an allowed-threads device is specifically scoped to. Query
-  // both runtimes and merge so remote clients see the same threads the
-  // desktop app does, regardless of which runtime created them.
+  // omitted; pass it explicitly so remote clients see the same threads the
+  // desktop app does.
   async function refreshProjects(query = searchQuery): Promise<void> {
     const trimmed = query.trim();
     const result = (trimmed
@@ -438,7 +434,6 @@ function App(): React.JSX.Element {
     if (summary) {
       setCurrentThread(summary);
       if (summary.cwd) setSelectedProject(summary.cwd);
-      if (summary.cwd) void refreshSlashCommands(summary.cwd, summary.model);
     }
     void openThread(route.threadId, summary ?? null);
   }, [route.view, route.view === "thread" ? route.threadId : "", threadSummaries, projectSummaries]);
@@ -603,7 +598,6 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     if (route.view !== "thread" || !currentThread?.cwd) return;
-    void refreshSlashCommands(currentThread.cwd, selectedThreadModel?.model || currentThread.model);
   }, [route.view, currentThread?.cwd, currentThread?.model, selectedThreadModel?.model]);
 
   useEffect(() => {
@@ -674,10 +668,6 @@ function App(): React.JSX.Element {
       unsubProviders();
     };
   }, [bridge, currentThread, threadSummaries, projectSummaries, selectedProject]);
-
-  async function refreshSlashCommands(_cwd: string, _model?: string): Promise<void> {
-    setSlashCommands([]);
-  }
 
   function effectiveThreadSettings(thread: ThreadSummary | ThreadRef | null = currentThread): Pick<TurnSendInput, "approvalPolicy" | "sandboxMode" | "reasoningEffort" | "responseSpeed"> {
     return {
@@ -814,7 +804,6 @@ function App(): React.JSX.Element {
       setComposerText("");
       forceScrollToBottomRef.current = true;
       setRoute({ view: "thread", threadId: thread.id, cwd: thread.cwd });
-      await refreshSlashCommands(thread.cwd, thread.model);
     } catch (error) {
       setBootstrapError(String(error));
     }
@@ -893,8 +882,7 @@ function App(): React.JSX.Element {
     if (nearBottomRef.current) forceScrollToBottomRef.current = true;
     try {
       if (busy) {
-        const canNativeSteer = meta.runtime !== "claude-code"
-          && (targetModel.provider ?? meta.provider ?? "codex") === "codex"
+        const canNativeSteer = (targetModel.provider ?? meta.provider ?? "codex") === "codex"
           && Boolean(activeTurnId)
           && attachments.length === 0;
         if (canNativeSteer && activeTurnId) {
@@ -1260,13 +1248,6 @@ function App(): React.JSX.Element {
                         </button>
                         <button
                           type="button"
-                          className={`chip thread-toggle ${threadPanel === "slash" ? "active" : ""}`}
-                          onClick={() => setThreadPanel((current) => current === "slash" ? null : "slash")}
-                        >
-                          <Sparkles size={14} />스킬
-                        </button>
-                        <button
-                          type="button"
                           className={`chip thread-toggle ${threadPanel === "model" ? "active" : ""}`}
                           onClick={() => setThreadPanel((current) => current === "model" ? null : "model")}
                         >
@@ -1395,11 +1376,6 @@ function App(): React.JSX.Element {
                         </div>
                       )}
 
-                      {threadPanel === "slash" && slashCommands.length === 0 && (
-                        <div className="thread-panel">
-                          <div className="tiny">사용 가능한 slash 명령이 없습니다.</div>
-                        </div>
-                      )}
                         </>
                       )}
                     </div>
