@@ -1,8 +1,8 @@
 import { app } from "electron";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import type { ContextUsage, ThreadActivityEntry, ThreadAttachment, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
+import { join } from "node:path";
+import type { ContextUsage, ThreadActivityEntry, ThreadHistoryItem, ThreadSummary } from "./contracts.cjs";
 
 type ProviderTurnMeta = {
   provider: string;
@@ -20,39 +20,8 @@ type StoredShape = {
   providerTurns?: Record<string, ProviderTurnMeta[]>;
   deleted?: Record<string, number>;
   recovered?: boolean;
-  claudeImports?: Record<string, ClaudeImportState>;
 };
-type ClaudeImportState = { size: number; mtimeMs: number; sessionId: string; threadId: string; formatVersion?: number };
-// Bump whenever historyFromClaudeLines() starts recovering data it used to
-// drop (e.g. image attachments) - a file whose size/mtime haven't changed
-// since its last import would otherwise be treated as "unchanged" forever
-// and keep serving the stale, already-imported (pre-fix) history even after
-// the app updates. Bumping this forces exactly one re-derive per thread.
-const CLAUDE_IMPORT_FORMAT_VERSION = 6;
-type ClaudeJsonlFileState = { path: string; size: number; mtimeMs: number; sessionId: string };
 type RolloutLine = { type?: string; timestamp?: string; payload?: Record<string, unknown> };
-type ClaudeJsonLine = {
-  type?: string;
-  subtype?: string;
-  uuid?: string;
-  sessionId?: string;
-  cwd?: string;
-  timestamp?: string;
-  isSidechain?: boolean;
-  isMeta?: boolean;
-  isApiErrorMessage?: boolean;
-  apiErrorStatus?: number;
-  error?: string;
-  version?: string;
-  promptSource?: string;
-  origin?: { kind?: unknown };
-  content?: unknown;
-  compactMetadata?: Record<string, unknown>;
-  compact_metadata?: Record<string, unknown>;
-  attachment?: { content?: unknown; stdout?: unknown; command?: unknown };
-  message?: { role?: string; content?: unknown };
-};
-
 function fileChangePathKey(path: string): string {
   const normalized = path.trim().replace(/\\/g, "/").replace(/^\.\//, "");
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
@@ -106,276 +75,6 @@ function toUnixSeconds(value: unknown): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return nowSeconds();
   return numeric > 10_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
-}
-
-function compactText(text: string, fallback: string, maxLength: number): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  return (normalized || fallback).slice(0, maxLength);
-}
-
-function claudeTextContent(content: unknown): string {
-  if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object")
-    .filter((part) => String(part.type ?? "") === "text")
-    .map((part) => String(part.text ?? ""))
-    .join("")
-    .trim();
-}
-
-function claudeContentParts(content: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(content)) return [];
-  return content.filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === "object");
-}
-
-// Pasted/dropped images ride a top-level user message as Anthropic-format
-// `{type:"image", source:{type:"base64"|"url", ...}}` blocks (see
-// userMessageContent()/imageContentBlock() in claude-runtime.cts). Reimporting
-// a session from the raw jsonl (recoverClaudeProjects) previously only pulled
-// `type:"text"` parts via claudeTextContent(), silently dropping every
-// attachment on the user bubble on the next app restart even though the
-// image data is sitting right there in the session file.
-function claudeUserAttachments(content: unknown): ThreadAttachment[] {
-  return claudeContentParts(content).flatMap((part, index): ThreadAttachment[] => {
-    if (String(part.type ?? "") !== "image") return [];
-    const source = part.source as Record<string, unknown> | undefined;
-    if (!source) return [];
-    const sourceType = String(source.type ?? "");
-    if (sourceType === "base64" && typeof source.data === "string") {
-      const mediaType = typeof source.media_type === "string" ? source.media_type : "image/png";
-      return [{ name: `image-${index + 1}`, kind: "image", url: `data:${mediaType};base64,${source.data}`, mime: mediaType }];
-    }
-    if (sourceType === "url" && typeof source.url === "string" && source.url) {
-      return [{ name: `image-${index + 1}`, kind: "image", url: source.url }];
-    }
-    return [];
-  });
-}
-
-// A screenshot inside an MCP tool_result is recorded in whichever image shape
-// the transport used: the MCP wire shape ({type:"image",data,mimeType}) or the
-// Anthropic content-block shape ({type:"image",source:{type:"base64",
-// media_type,data}}) - and devil_browser/devil_computer screenshots land in the
-// jsonl as the latter. Reading only `data` dropped every one of them, so the
-// reimported activity card showed no screenshot at all.
-function claudeResultImageUrl(part: Record<string, unknown>): string[] {
-  if (String(part.type ?? "") !== "image") return [];
-  if (typeof part.data === "string") return [`data:${typeof part.mimeType === "string" ? part.mimeType : "image/png"};base64,${part.data}`];
-  const source = part.source as Record<string, unknown> | undefined;
-  if (!source) return [];
-  if (typeof source.data === "string") return [`data:${typeof source.media_type === "string" ? source.media_type : "image/png"};base64,${source.data}`];
-  if (typeof source.url === "string" && source.url) return [source.url];
-  return [];
-}
-
-function isClaudeApiErrorLine(line: ClaudeJsonLine): boolean {
-  return Boolean(line.isApiErrorMessage || line.error || line.apiErrorStatus);
-}
-
-function claudeApiErrorTitle(line: ClaudeJsonLine): string {
-  const status = typeof line.apiErrorStatus === "number" && line.apiErrorStatus > 0 ? ` ${line.apiErrorStatus}` : "";
-  const code = typeof line.error === "string" && line.error ? ` (${line.error})` : "";
-  return `Claude Code 오류${status}${code}`;
-}
-
-function isClaudeLocalCommandText(text: string): boolean {
-  const normalized = text.trim();
-  return normalized.startsWith("<local-command-caveat>")
-    || normalized.startsWith("<command-name>")
-    || normalized.startsWith("<command-message>")
-    || normalized.startsWith("<local-command-stdout>")
-    || normalized.startsWith("This session is being continued from a previous conversation that ran out of context.")
-    || normalized.startsWith("<local-command-stderr>");
-}
-
-// True if `text` exactly repeats the most recent standalone agent reply in
-// `items` with no user message in between. Claude Code's own session jsonl
-// can log an internal/continuation "user" line that isn't caught by the
-// noise filters above (e.g. around auto-compaction), which this importer
-// then reads as a brand-new turn boundary — and if the model's reply for
-// that phantom turn is a verbatim repeat of the previous real answer, it
-// renders as a second, near-empty duplicate turn. A distinct item id or
-// turnId doesn't matter here: identical trailing text with nothing new from
-// the user is never a legitimate second reply.
-function isRepeatOfLastClaudeAgentReply(items: ThreadHistoryItem[], text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const current = items[index]!;
-    if (current.kind === "user") return false;
-    if (current.kind === "agent") return current.text.trim() === trimmed;
-  }
-  return false;
-}
-
-function isClaudeHookNoiseText(text: string): boolean {
-  const normalized = text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim();
-  return normalized.startsWith("CAVEMAN MODE ACTIVE")
-    || normalized.startsWith("STATUSLINE SETUP NEEDED:")
-    || /Loading caveman mode/i.test(normalized);
-}
-
-function stripClaudeRuntimePrefix(text: string): string {
-  return text
-    .replace(/^\[Devil Claude Code runtime tool instructions\][\s\S]*?\n\n/, "")
-    .replace(/^Base directory for this skill:[\s\S]*?\n\n## User Request\n\n/, "")
-    .trim();
-}
-
-function isClaudeAutoContinuationText(text: string): boolean {
-  const normalized = text.trimStart();
-  return normalized.startsWith("<task-notification")
-    || normalized.startsWith("<scheduled-wakeup")
-    || normalized.startsWith("<background-task");
-}
-
-function isClaudeInternalUserLine(line: ClaudeJsonLine, text: string): boolean {
-  if (line.isMeta) return true;
-  if (String(line.origin?.kind ?? "") === "task-notification") return true;
-  if (String(line.promptSource ?? "") === "system" && isClaudeAutoContinuationText(text)) return true;
-  return isClaudeAutoContinuationText(text);
-}
-
-function isClaudeToolResultOnly(content: unknown): boolean {
-  const parts = claudeContentParts(content);
-  return parts.length > 0 && parts.every((part) => String(part.type ?? "") === "tool_result");
-}
-
-function xmlTagValue(text: string, tag: string): string {
-  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i").exec(text);
-  return match?.[1]?.trim() ?? "";
-}
-
-function claudeTaskNotificationEntry(id: string, text: string): ThreadActivityEntry {
-  const status = xmlTagValue(text, "status");
-  const summary = xmlTagValue(text, "summary");
-  const taskId = xmlTagValue(text, "task-id");
-  const outputFile = xmlTagValue(text, "output-file");
-  const detail = [
-    summary,
-    taskId ? `task: ${taskId}` : "",
-    outputFile ? `output: ${outputFile}` : "",
-  ].filter(Boolean).join("\n");
-  return {
-    id,
-    kind: "diagnostic",
-    title: "Claude 백그라운드 작업 알림",
-    detail: detail || text,
-    status: status === "failed" || status === "stopped" ? "failed" : "completed",
-  };
-}
-
-function hasClaudeImportNoise(items: ThreadHistoryItem[]): boolean {
-  return items.some((item) => {
-    if (item.kind === "user" && isClaudeLocalCommandText(item.text)) return true;
-    if (item.kind === "user" && isClaudeAutoContinuationText(item.text)) return true;
-    if (item.kind === "user" && stripClaudeRuntimePrefix(item.text) !== item.text.trim()) return true;
-    if (item.kind === "user" && item.text.trimStart().startsWith("Base directory for this skill:")) return true;
-    if (item.kind === "activity" && item.id.startsWith("activity-") && !item.turnId?.startsWith("claude-")) return true;
-    return false;
-  });
-}
-
-function latestVisibleClaudeTime(lines: ClaudeJsonLine[]): number {
-  let latest = 0;
-  for (const line of lines) {
-    if (line.type !== "user" && line.type !== "assistant") continue;
-    const role = String(line.message?.role ?? line.type);
-    const text = stripClaudeRuntimePrefix(claudeTextContent(line.message?.content));
-    if (role === "user") {
-      if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(line.message?.content) || isClaudeInternalUserLine(line, text)) continue;
-    } else if (role === "assistant") {
-      if (!text || isClaudeHookNoiseText(text)) continue;
-    } else {
-      continue;
-    }
-    latest = Math.max(latest, claudeLineTime(line));
-  }
-  return latest;
-}
-
-function claudeLineTime(line: ClaudeJsonLine): number {
-  const parsed = Date.parse(String(line.timestamp ?? ""));
-  return Number.isFinite(parsed) ? toUnixSeconds(parsed) : 0;
-}
-
-function claudeLineText(line: ClaudeJsonLine): string {
-  const messageText = claudeTextContent(line.message?.content);
-  if (messageText) return messageText;
-  if (typeof line.content === "string") return line.content.trim();
-  const attachment = line.attachment;
-  const attachmentText = typeof attachment?.content === "string" ? attachment.content : typeof attachment?.stdout === "string" ? attachment.stdout : "";
-  return attachmentText.trim();
-}
-
-function claudeCompactMetadata(line: ClaudeJsonLine): Record<string, unknown> {
-  return line.compactMetadata ?? line.compact_metadata ?? {};
-}
-
-function claudeCompactNumber(value: unknown): number | undefined {
-  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  return Number.isFinite(number) && number > 0 ? number : undefined;
-}
-
-function claudeCompactDetail(line: ClaudeJsonLine): string {
-  const meta = claudeCompactMetadata(line);
-  const pre = claudeCompactNumber(meta.preTokens ?? meta.pre_tokens);
-  const post = claudeCompactNumber(meta.postTokens ?? meta.post_tokens);
-  const duration = claudeCompactNumber(meta.durationMs ?? meta.duration_ms);
-  const parts = [
-    pre ? `압축 전 ${Math.round(pre).toLocaleString()} tokens` : "",
-    post ? `압축 후 ${Math.round(post).toLocaleString()} tokens` : "",
-    duration ? `${Math.round(duration)}ms` : "",
-  ].filter(Boolean);
-  return parts.join(" · ");
-}
-
-function claudeCompactTitle(line: ClaudeJsonLine): string {
-  const trigger = String(claudeCompactMetadata(line).trigger ?? "");
-  return trigger === "manual" ? "컨텍스트가 수동으로 압축됨" : "컨텍스트가 자동으로 압축됨";
-}
-
-function claudeSessionFallbackText(lines: ClaudeJsonLine[]): string {
-  const leafUuid = String((lines.find((line) => line.type === "last-prompt") as Record<string, unknown> | undefined)?.leafUuid ?? "");
-  const leafLine = leafUuid ? lines.find((line) => line.uuid === leafUuid) : undefined;
-  const leafText = leafLine ? stripClaudeRuntimePrefix(claudeLineText(leafLine)) : "";
-  if (leafText && !isClaudeLocalCommandText(leafText) && !isClaudeHookNoiseText(leafText) && !isClaudeInternalUserLine(leafLine ?? {}, leafText)) return leafText;
-  for (const line of lines) {
-    const text = stripClaudeRuntimePrefix(claudeLineText(line));
-    if (!text) continue;
-    if (/resume cancelled/i.test(text)) continue;
-    if (/^(Kept model as|Set model to)/i.test(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim())) continue;
-    if (isClaudeLocalCommandText(text)) continue;
-    if (isClaudeHookNoiseText(text)) continue;
-    if (isClaudeInternalUserLine(line, text)) continue;
-    return text;
-  }
-  return "";
-}
-
-async function normalizeClaudeEntrypointFile(path: string, source: string): Promise<string> {
-  if (!source.includes('"entrypoint":"sdk-cli"')) return source;
-  const next = source.split(/\r?\n/).map((line) => {
-    if (!line.trim()) return line;
-    try {
-      const parsed = JSON.parse(line) as { entrypoint?: unknown };
-      if (parsed.entrypoint === "sdk-cli") parsed.entrypoint = "cli";
-      return JSON.stringify(parsed);
-    } catch {
-      return line;
-    }
-  }).join("\n");
-  if (next !== source) await writeFile(path, next, "utf8").catch(() => undefined);
-  return next;
-}
-
-function cwdFromClaudeProjectPath(path: string): string {
-  const projectKey = basename(dirname(path));
-  const windows = /^([A-Za-z])--(.+)$/.exec(projectKey);
-  if (windows) return `${windows[1]}:\\${windows[2]!.split("-").filter(Boolean).join("\\")}`;
-  if (projectKey.startsWith("-")) return `/${projectKey.slice(1).split("-").filter(Boolean).join("/")}`;
-  return "";
 }
 
 function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHistoryItem[]): ThreadHistoryItem[] {
@@ -447,139 +146,6 @@ function mergeAttachmentMetadata(native: ThreadHistoryItem[], local: ThreadHisto
   return result;
 }
 
-function claudeTurnAlignmentKey(text: string | undefined): string {
-  return String(text ?? "").replace(/\s+/g, " ").trim();
-}
-
-// Turn-id → the turn's user prompt, in turn order. Works for both shapes the
-// store can hold: freshly imported items (every item carries the turnId) and
-// live-appended ones (the user item has no turnId; the agent/activity item that
-// follows it does).
-function claudeTurnPrompts(items: ThreadHistoryItem[]): Array<{ turnId: string; prompt: string }> {
-  const turns: Array<{ turnId: string; prompt: string }> = [];
-  const seen = new Set<string>();
-  let prompt = "";
-  for (const item of items) {
-    if (item.kind === "user") {
-      prompt = claudeTurnAlignmentKey(item.text);
-      if (!item.turnId) continue;
-    }
-    const turnId = item.turnId ?? "";
-    if (!turnId || !prompt || seen.has(turnId)) continue;
-    seen.add(turnId);
-    turns.push({ turnId, prompt });
-  }
-  return turns;
-}
-
-// A live turn streams under a runtime-minted id (`claude-<uuid>`) that the
-// renderer keys its in-memory timeline on. Re-deriving the thread from the raw
-// jsonl cannot know those ids, so it numbers turns itself
-// (`<threadId>-claude-turn-N`) - and because the jsonl changes on every turn,
-// that re-derive replaces the stored history while the conversation is still
-// open. The renderer's post-turn sync merges stored history into the live one
-// by turn id, so every renamed turn missed its live counterpart and got
-// appended as a SECOND copy: the answer showed up twice, once more below the
-// work/diff card. Reloading the thread hid it, because that renders the stored
-// copy alone. Re-attach the ids the store already knows by matching each turn's
-// user prompt (the model-bound text only ever gets Devil directives appended,
-// so a prefix match on either side is the reliable pairing). Turns Devil never
-// streamed keep their synthetic id.
-function alignClaudeTurnIds(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  if (!history.length || !existing.length) return history;
-  const stored = claudeTurnPrompts(existing);
-  if (!stored.length) return history;
-  const rename = new Map<string, string>();
-  const taken = new Set<string>();
-  let cursor = 0;
-  for (const turn of claudeTurnPrompts(history)) {
-    for (let index = cursor; index < stored.length; index += 1) {
-      const candidate = stored[index]!;
-      if (taken.has(candidate.turnId)) continue;
-      if (!candidate.prompt.startsWith(turn.prompt) && !turn.prompt.startsWith(candidate.prompt)) continue;
-      taken.add(candidate.turnId);
-      cursor = index + 1;
-      if (candidate.turnId !== turn.turnId) rename.set(turn.turnId, candidate.turnId);
-      break;
-    }
-  }
-  if (!rename.size) return history;
-  return history.map((item) => {
-    const turnId = item.turnId ? rename.get(item.turnId) : undefined;
-    if (!turnId) return item;
-    return { ...item, turnId, ...(item.id === `activity-${item.turnId}` ? { id: `activity-${turnId}` } : {}) };
-  });
-}
-
-// emitSyntheticFileChanges() (main.cts) records the git-diff it detects after a
-// turn as a fileChange activity keyed on the LIVE turn id (`claude-<uuid>`).
-// The jsonl reimport never reproduces that card - the raw transcript only holds
-// the Edit/Write tool_use, which re-derives as an "Edit 실행" mcp entry, not a
-// diff card - so once the reimport replaces the stored history the synthetic
-// card is either orphaned under a turn id no other item shares (a ghost card
-// stacked below the turn's real answer) or lost entirely. Fold each such
-// orphan's entries into the reimported turn that immediately precedes it in the
-// stored order (a post-turn synthetic always belongs to the turn that just
-// finished), so the diff card survives the reimport attached to the right turn.
-function absorbOrphanLiveActivities(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  if (!history.length || !existing.length) return history;
-  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
-  const orphanEntriesByTurn = new Map<string, ThreadActivityEntry[]>();
-  let lastKnownTurn = "";
-  for (const item of existing) {
-    if (item.turnId && historyTurns.has(item.turnId)) { lastKnownTurn = item.turnId; continue; }
-    if (item.kind !== "activity" || !item.activities?.length || !lastKnownTurn) continue;
-    // An activity whose turn id no reimported item shares is a live-only
-    // leftover (synthetic fileChange, etc.). Attribute it to the last real turn.
-    const bucket = orphanEntriesByTurn.get(lastKnownTurn) ?? [];
-    bucket.push(...item.activities);
-    orphanEntriesByTurn.set(lastKnownTurn, bucket);
-  }
-  if (!orphanEntriesByTurn.size) return history;
-  return history.map((item) => {
-    if (item.kind !== "activity" || !item.turnId) return item;
-    const orphans = orphanEntriesByTurn.get(item.turnId);
-    if (!orphans?.length) return item;
-    const seen = new Set((item.activities ?? []).map((entry) => entry.id));
-    const add = orphans.filter((entry) => !seen.has(entry.id));
-    return add.length ? { ...item, activities: dedupeFileChangeEntries([...(item.activities ?? []), ...add]) } : item;
-  });
-}
-
-// The claude-code turn writes its final answer to the store TWICE by different
-// routes: onCompleted appends an agent item keyed on the LIVE turn id
-// (`claude-<uuid>`), and the jsonl reimport re-derives the same text as an agent
-// item keyed on its own synthetic turn id (`<threadId>-claude-turn-N`). When a
-// reimport ran mid-turn (a sidebar refresh, say) it already stored the synthetic
-// copy before onCompleted appended the live copy, and the next reimport's
-// wholesale replace was gated behind a length/mtime check that a duplicate makes
-// fail - so both copies survived and the final answer rendered twice (until a
-// reload, which re-reads the store fresh). Drop each live-keyed agent whose text
-// the reimport already carries under a real turn; keep a live agent the reimport
-// has NOT caught up to yet (jsonl flush lag) so no answer is ever lost.
-function dedupeOrphanLiveAgents(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  if (!existing.length) return history;
-  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
-  const historyAgentText = new Set(history.filter((item) => item.kind === "agent" && item.text.trim()).map((item) => claudeTurnAlignmentKey(item.text)));
-  const survivingOrphans = existing.filter((item) =>
-    item.kind === "agent"
-    && item.turnId
-    && !historyTurns.has(item.turnId)
-    && item.text.trim()
-    && !historyAgentText.has(claudeTurnAlignmentKey(item.text)));
-  return survivingOrphans.length ? [...history, ...survivingOrphans] : history;
-}
-
-// True when the stored history holds an item under a turn id the reimport does
-// not (re)produce - a live-only leftover (duplicate final answer, synthetic
-// fileChange). Its presence forces the wholesale replace below even when the
-// length/mtime gate would otherwise skip it, so the leftover gets reconciled
-// away instead of lingering until the next unrelated jsonl change.
-function hasLiveOnlyLeftover(history: ThreadHistoryItem[], existing: ThreadHistoryItem[]): boolean {
-  const historyTurns = new Set(history.map((item) => item.turnId).filter((id): id is string => Boolean(id)));
-  return existing.some((item) => (item.kind === "agent" || item.kind === "activity") && item.turnId != null && !historyTurns.has(item.turnId));
-}
-
 // Keep a Devil-owned transcript copy for non-native providers. Proxy-backed
 // threads use the app-server too, but its custom-provider history can be absent
 // after restart while the local copy remains available for rendering.
@@ -587,12 +153,10 @@ export class ProviderTranscriptStore {
   private recovery?: Promise<void>;
   private writes = Promise.resolve();
   private cache: StoredShape | null = null;
-  private claudeImportSignature = "";
   private dir(): string { return join(app.getPath("userData"), "providers"); }
   private path(): string { return join(this.dir(), "transcripts.json"); }
 
   async read(threadId: string): Promise<ThreadHistoryItem[]> {
-    await this.importClaudeProjects();
     return (await this.load()).items[threadId] ?? [];
   }
 
@@ -752,28 +316,7 @@ export class ProviderTranscriptStore {
     // index was first created. Re-scan once per app launch, not once forever.
     this.recovery ??= this.mutate((all) => this.recoverDevilRollouts(all));
     await this.recovery;
-    await this.importClaudeProjects();
     return this.readLatest((all) => Object.values(all.meta).sort((a, b) => b.updatedAt - a.updatedAt));
-  }
-
-  private async importClaudeProjects(): Promise<void> {
-    const files = await this.claudeJsonlFileStates().catch(() => [] as ClaudeJsonlFileState[]);
-    const signature = files.map((file) => `${file.path}:${file.size}:${file.mtimeMs}`).join("|");
-    if (signature && signature === this.claudeImportSignature) return;
-    const imports = await this.readLatest((all) => all.claudeImports ?? {});
-    const currentPaths = new Set(files.map((file) => file.path));
-    const unchanged = files.length > 0
-      && files.every((file) => {
-        const imported = imports[file.path];
-        return imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && imported.formatVersion === CLAUDE_IMPORT_FORMAT_VERSION;
-      })
-      && Object.keys(imports).every((path) => currentPaths.has(path));
-    if (unchanged) {
-      this.claudeImportSignature = signature;
-      return;
-    }
-    await this.mutate((all) => this.recoverClaudeProjects(all, files));
-    this.claudeImportSignature = signature;
   }
 
   private async mutate(change: (all: StoredShape) => void | Promise<void>): Promise<void> {
@@ -806,15 +349,14 @@ export class ProviderTranscriptStore {
         const shaped = parsed as StoredShape;
         shaped.providerTurns ??= {};
         shaped.deleted ??= {};
-        shaped.claudeImports ??= {};
         for (const summary of Object.values(shaped.meta ?? {})) summary.updatedAt = toUnixSeconds(summary.updatedAt);
         this.cache = shaped;
         return shaped;
       }
-      this.cache = { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {}, providerTurns: {}, deleted: {}, claudeImports: {} };
+      this.cache = { items: parsed as Record<string, ThreadHistoryItem[]>, meta: {}, providerTurns: {}, deleted: {} };
       return this.cache; // migrate legacy flat shape
     } catch {
-      this.cache = { items: {}, meta: {}, providerTurns: {}, deleted: {}, claudeImports: {} };
+      this.cache = { items: {}, meta: {}, providerTurns: {}, deleted: {} };
       return this.cache;
     }
   }
@@ -853,226 +395,6 @@ export class ProviderTranscriptStore {
     all.recovered = true;
   }
 
-  private async recoverClaudeProjects(all: StoredShape, files: ClaudeJsonlFileState[]): Promise<void> {
-    all.claudeImports ??= {};
-    const nativeSessionToThreadId = new Map<string, string>();
-    for (const [id, summary] of Object.entries(all.meta)) {
-      if (summary.claudeSessionId) nativeSessionToThreadId.set(summary.claudeSessionId, id);
-    }
-    const currentPaths = new Set(files.map((file) => file.path));
-    for (const path of Object.keys(all.claudeImports)) {
-      if (!currentPaths.has(path)) delete all.claudeImports[path];
-    }
-    for (const file of files) {
-      const { path, sessionId } = file;
-      const threadId = nativeSessionToThreadId.get(sessionId) ?? sessionId;
-      if (all.deleted?.[threadId]) continue;
-      const imported = all.claudeImports[path];
-      if (imported && imported.size === file.size && imported.mtimeMs === file.mtimeMs && imported.formatVersion === CLAUDE_IMPORT_FORMAT_VERSION && all.meta[threadId]) continue;
-      if (!imported && all.meta[threadId] && all.items[threadId]) {
-        all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId, formatVersion: CLAUDE_IMPORT_FORMAT_VERSION };
-        continue;
-      }
-      let source = "";
-      try { source = await readFile(path, "utf8"); } catch { continue; }
-      source = await normalizeClaudeEntrypointFile(path, source);
-      const lines = source.split(/\r?\n/).flatMap((line) => {
-        if (!line.trim()) return [];
-        try { return [JSON.parse(line) as ClaudeJsonLine]; } catch { return []; }
-      }).filter((line) => line.sessionId === sessionId && !line.isSidechain);
-      const priorItems = all.items[threadId] ?? [];
-      const history = dedupeOrphanLiveAgents(absorbOrphanLiveActivities(alignClaudeTurnIds(this.historyFromClaudeLines(lines, threadId), priorItems), priorItems), priorItems);
-      if (!history.length && all.deleted?.[threadId]) continue;
-      const cwd = lines.find((line) => typeof line.cwd === "string" && line.cwd)?.cwd ?? all.meta[threadId]?.cwd ?? cwdFromClaudeProjectPath(path);
-      if (!cwd) continue;
-      const fallbackText = claudeSessionFallbackText(lines);
-      const firstUser = history.find((item) => item.kind === "user")?.text || fallbackText || "새 Claude Code 채팅";
-      const lastUser = [...history].reverse().find((item) => item.kind === "user")?.text || fallbackText || firstUser;
-      const updatedAt = Math.max(...lines.map(claudeLineTime), all.meta[threadId]?.updatedAt ?? 0) || nowSeconds();
-      const existing = all.items[threadId] ?? [];
-      const nativeUpdatedAt = latestVisibleClaudeTime(lines);
-      const localUpdatedAt = all.meta[threadId]?.updatedAt ?? 0;
-      if (history.length && (history.length >= existing.length || nativeUpdatedAt > localUpdatedAt || hasClaudeImportNoise(existing) || hasLiveOnlyLeftover(history, existing))) all.items[threadId] = history;
-      else all.items[threadId] ??= [];
-      all.meta[threadId] = {
-        ...all.meta[threadId],
-        id: threadId,
-        cwd,
-        model: all.meta[threadId]?.model || "sonnet",
-        runtime: "claude-code",
-        provider: "claude-code",
-        claudeSessionId: sessionId,
-        title: all.meta[threadId]?.title && all.meta[threadId]?.title !== "새 Claude Code 채팅" && !isClaudeHookNoiseText(all.meta[threadId]!.title) ? all.meta[threadId]!.title : compactText(firstUser, "새 Claude Code 채팅", 60),
-        preview: compactText(lastUser, "", 80),
-        updatedAt,
-        archived: all.meta[threadId]?.archived ?? false,
-      };
-      all.claudeImports[path] = { size: file.size, mtimeMs: file.mtimeMs, sessionId, threadId, formatVersion: CLAUDE_IMPORT_FORMAT_VERSION };
-    }
-  }
-
-  private historyFromClaudeLines(lines: ClaudeJsonLine[], threadId: string): ThreadHistoryItem[] {
-    const items: ThreadHistoryItem[] = [];
-    let turnIndex = 0;
-    let currentTurnId = "";
-
-    // tool_use_id → tool_result text. Needed to rebuild delegate_subagent cards
-    // as subagent activities: the child threadId/provider/model live in the MCP
-    // result text, which arrives in later tool_result-only user lines.
-    const toolResults = new Map<string, string>();
-    // tool_use_id → screenshot(s) from the same tool_result. claudeTextContent
-    // above only keeps type:"text" parts, so a screenshot-only result (browser_
-    // screenshot, computer_screenshot) left mcp activity cards image-less.
-    const toolResultImages = new Map<string, string[]>();
-    for (const line of lines) {
-      if (line.type !== "user" && line.type !== "assistant") continue;
-      for (const part of claudeContentParts(line.message?.content)) {
-        if (String(part.type ?? "") !== "tool_result") continue;
-        const useId = String(part.tool_use_id ?? "");
-        if (!useId) continue;
-        if (!toolResults.has(useId)) toolResults.set(useId, claudeTextContent(part.content));
-        if (!toolResultImages.has(useId)) {
-          const images = claudeContentParts(part.content).flatMap((entry) => claudeResultImageUrl(entry));
-          if (images.length) toolResultImages.set(useId, images);
-        }
-      }
-    }
-
-    const ensureActivity = (turnId: string, entry: ThreadActivityEntry): void => {
-      const index = items.findIndex((item) => item.kind === "activity" && item.turnId === turnId);
-      if (index >= 0) {
-        const current = items[index]!;
-        const activities = current.activities ?? [];
-        if (activities.some((activity) => activity.id === entry.id)) return;
-        items[index] = { ...current, activities: [...activities, entry] };
-        return;
-      }
-      items.push({ id: `activity-${turnId}`, kind: "activity", text: "", turnId, status: "completed", activities: [entry] });
-    };
-
-    // First pass: assign each line the turnId the main pass will also assign,
-    // and record — per turn — the index of the LAST assistant text line (the
-    // true final answer). A trailing housekeeping tool call after that line
-    // (TodoWrite, hooks, etc.) must not demote the real final answer into a
-    // "작업 메모" activity, which is what a "does a tool run later?" check did
-    // before: it punished the final answer whenever anything (even an
-    // invisible follow-up tool call) happened afterward. Mirrors the
-    // Codex-side isFinalAssistantMessage "last text wins" rule in
-    // thread-history.cts.
-    const turnIdByIndex: string[] = [];
-    const lastTextIndexByTurn = new Map<string, number>();
-    {
-      let index_ = 0;
-      let turnId_ = "";
-      lines.forEach((line, index) => {
-        if (line.type !== "user" && line.type !== "assistant") { turnIdByIndex[index] = turnId_; return; }
-        const role = String(line.message?.role ?? line.type);
-        const content = line.message?.content;
-        if (role === "user") {
-          const text = stripClaudeRuntimePrefix(claudeTextContent(content));
-          if (text && !isClaudeLocalCommandText(text) && !isClaudeHookNoiseText(text) && !isClaudeToolResultOnly(content) && !isClaudeInternalUserLine(line, text)) {
-            turnId_ = `${threadId}-claude-turn-${index_++}`;
-          }
-          turnIdByIndex[index] = turnId_;
-          return;
-        }
-        if (role !== "assistant") { turnIdByIndex[index] = turnId_; return; }
-        const turnId = turnId_ || `${threadId}-claude-turn-${index_}`;
-        turnIdByIndex[index] = turnId;
-        const text = claudeTextContent(content);
-        if (text && !isClaudeHookNoiseText(text) && !isClaudeApiErrorLine(line)) lastTextIndexByTurn.set(turnId, index);
-      });
-    }
-
-    lines.forEach((line, index) => {
-      if (line.type === "system" && line.subtype === "compact_boundary") {
-        const turnId = turnIdByIndex[index] || currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
-        ensureActivity(turnId, {
-          id: String(line.uuid ?? `${threadId}-claude-compact-${index}`),
-          kind: "compaction",
-          title: claudeCompactTitle(line),
-          detail: claudeCompactDetail(line),
-          status: "completed",
-        });
-        return;
-      }
-      if (line.type !== "user" && line.type !== "assistant") return;
-      const role = String(line.message?.role ?? line.type);
-      const content = line.message?.content;
-      const id = String(line.uuid ?? `${threadId}-claude-${index}`);
-      if (role === "user") {
-        const text = stripClaudeRuntimePrefix(claudeTextContent(content));
-        if (text && isClaudeInternalUserLine(line, text)) {
-          const turnId = turnIdByIndex[index] || currentTurnId;
-          if (turnId && isClaudeAutoContinuationText(text)) ensureActivity(turnId, claudeTaskNotificationEntry(id, text));
-          return;
-        }
-        if (!text || isClaudeLocalCommandText(text) || isClaudeHookNoiseText(text) || isClaudeToolResultOnly(content)) return;
-        currentTurnId = `${threadId}-claude-turn-${turnIndex++}`;
-        const attachments = claudeUserAttachments(content);
-        items.push({ id, kind: "user", text, turnId: currentTurnId, ...(attachments.length ? { attachments } : {}) });
-        return;
-      }
-      if (role !== "assistant") return;
-      const turnId = turnIdByIndex[index] || currentTurnId || `${threadId}-claude-turn-${turnIndex}`;
-      const text = claudeTextContent(content);
-      if (text && !isClaudeHookNoiseText(text)) {
-        if (isClaudeApiErrorLine(line)) {
-          items.push({ id, kind: "system", title: claudeApiErrorTitle(line), text, turnId, status: "failed", runtime: "claude-code", provider: "claude-code" });
-        } else if (index === lastTextIndexByTurn.get(turnId)) {
-          if (!isRepeatOfLastClaudeAgentReply(items, text)) items.push({ id, kind: "agent", text, turnId, runtime: "claude-code", provider: "claude-code" });
-        } else {
-          ensureActivity(turnId, { id, kind: "message", title: "작업 메모", detail: text, status: "completed" });
-        }
-      }
-      for (const part of claudeContentParts(content).filter((part) => String(part.type ?? "") === "tool_use")) {
-        const toolId = String(part.id ?? `${id}-tool`);
-        const name = String(part.name ?? "Claude 도구");
-        // Rebuild delegated subagent calls as subagent activities so the right
-        // tab/model lock survive a reimport (Claude SDK prefixes MCP tools as
-        // "mcp__devil_subagent__delegate_subagent").
-        if (name === "delegate_subagent" || name.endsWith("__delegate_subagent")) {
-          const resultText = toolResults.get(toolId) ?? "";
-          const agentThreadId = resultText.match(/^threadId:\s*([^\s]+)/m)?.[1] ?? "";
-          if (agentThreadId) {
-            const provider = resultText.match(/^provider:\s*([^\n]+)/m)?.[1]?.trim();
-            const model = resultText.match(/^model:\s*([^\n]+)/m)?.[1]?.trim();
-            ensureActivity(turnId, {
-              id: toolId,
-              kind: "subagent",
-              title: provider || model ? `하위 에이전트: ${[provider, model].filter(Boolean).join(" · ")}` : "하위 에이전트",
-              detail: resultText,
-              status: "completed",
-              subagent: { agentThreadId, source: "thread_spawn", role: provider || "subagent", nickname: provider || undefined, model },
-            });
-            continue;
-          }
-        }
-        // detail is the tool RESULT (rendered under the "결과" header in
-        // TurnActivity.tsx), not the call's input params - this used to
-        // stuff JSON.stringify(part.input) in here instead, so a no-arg
-        // screenshot tool (input === {}) rendered its "결과" as literally
-        // "{}" even though toolResults already had the real result text
-        // (or was empty because the only payload was an image, handled by
-        // resultImages below). Mirrors the live path's mcpResultContent()
-        // split between `input` and `detail` in threadTimeline.ts.
-        const resultImages = toolResultImages.get(toolId);
-        const resultText = toolResults.get(toolId) ?? "";
-        const inputKeys = part.input && typeof part.input === "object" ? Object.keys(part.input as Record<string, unknown>) : [];
-        ensureActivity(turnId, {
-          id: toolId,
-          kind: "mcp",
-          title: `${name} 실행`,
-          ...(inputKeys.length ? { input: JSON.stringify(part.input, null, 2) } : {}),
-          detail: resultText || undefined,
-          status: "completed",
-          ...(resultImages?.length ? { images: resultImages } : {}),
-        });
-      }
-    });
-    return items;
-  }
-
   private async rolloutFiles(dir: string, depth = 0): Promise<string[]> {
     if (depth > 4) return [];
     const entries = await readdir(dir, { withFileTypes: true });
@@ -1093,16 +415,6 @@ export class ProviderTranscriptStore {
       return entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [];
     }));
     return nested.flat();
-  }
-
-  private async claudeJsonlFileStates(): Promise<ClaudeJsonlFileState[]> {
-    const root = join(homedir(), ".claude", "projects");
-    const files = await this.jsonlFiles(root);
-    const states = await Promise.all(files.map(async (path) => {
-      const info = await stat(path);
-      return { path, size: info.size, mtimeMs: Math.trunc(info.mtimeMs), sessionId: basename(path).replace(/\.jsonl$/i, "") };
-    }));
-    return states.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   private historyFromRollout(lines: RolloutLine[], threadId: string): ThreadHistoryItem[] {

@@ -92,7 +92,7 @@ function normalizeDelegatePayload(raw: Record<string, unknown>): SubagentDelegat
     provider: raw.provider ? String(raw.provider) as ProviderId : undefined,
     accountId: raw.accountId ? String(raw.accountId) : undefined,
     model: raw.model ? String(raw.model) : undefined,
-    runtime: raw.runtime === "claude-code" ? "claude-code" : raw.runtime === "codex" ? "codex" : undefined,
+    runtime: raw.runtime === "codex" ? "codex" : undefined,
     reasoningEffort: raw.reasoningEffort === "low" || raw.reasoningEffort === "medium" || raw.reasoningEffort === "high" || raw.reasoningEffort === "xhigh"
       ? raw.reasoningEffort
       : undefined,

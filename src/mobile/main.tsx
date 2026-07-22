@@ -370,27 +370,18 @@ function App(): React.JSX.Element {
   // desktop app does, regardless of which runtime created them.
   async function refreshProjects(query = searchQuery): Promise<void> {
     const trimmed = query.trim();
-    const [codex, claude] = trimmed
-      ? await Promise.all([
-          bridge.call<ThreadSummary[]>("thread:search", { query: trimmed, archived: false, runtime: "codex" }),
-          bridge.call<ThreadSummary[]>("thread:search", { query: trimmed, archived: false, runtime: "claude-code" }),
-        ])
-      : await Promise.all([
-          bridge.call<ThreadSummary[]>("thread:projects", { archived: false, runtime: "codex" }),
-          bridge.call<ThreadSummary[]>("thread:projects", { archived: false, runtime: "claude-code" }),
-        ]);
-    const result = [...codex, ...claude].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    const result = (trimmed
+      ? await bridge.call<ThreadSummary[]>("thread:search", { query: trimmed, archived: false, runtime: "codex" })
+      : await bridge.call<ThreadSummary[]>("thread:projects", { archived: false, runtime: "codex" })
+    ).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     setProjectSummaries(result);
     if (!trimmed && !selectedProject && result[0]?.cwd) setSelectedProject(result[0].cwd);
   }
 
   async function refreshThreads(cwd: string): Promise<void> {
     if (!cwd) return;
-    const [codex, claude] = await Promise.all([
-      bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false, runtime: "codex" }),
-      bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false, runtime: "claude-code" }),
-    ]);
-    const result = [...codex, ...claude].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    const result = (await bridge.call<ThreadSummary[]>("thread:list", { cwd, archived: false, runtime: "codex" }))
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     setThreadSummaries(result);
   }
 
@@ -684,13 +675,8 @@ function App(): React.JSX.Element {
     };
   }, [bridge, currentThread, threadSummaries, projectSummaries, selectedProject]);
 
-  async function refreshSlashCommands(cwd: string, model?: string): Promise<void> {
-    try {
-      const commands = await bridge.call<ClaudeSlashCommandInfo[]>("claude:slash-commands", { cwd, model });
-      setSlashCommands(commands.slice(0, 8));
-    } catch {
-      setSlashCommands([]);
-    }
+  async function refreshSlashCommands(_cwd: string, _model?: string): Promise<void> {
+    setSlashCommands([]);
   }
 
   function effectiveThreadSettings(thread: ThreadSummary | ThreadRef | null = currentThread): Pick<TurnSendInput, "approvalPolicy" | "sandboxMode" | "reasoningEffort" | "responseSpeed"> {

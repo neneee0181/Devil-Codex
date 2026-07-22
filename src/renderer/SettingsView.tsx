@@ -465,7 +465,7 @@ function RemoteAccessCard({ title, detail, icon, url, qrDataUrl, disabled }: { t
   </div>;
 }
 
-const ALLOWED_THREADS_RUNTIMES = [["codex", "코덱스"], ["claude-code", "클로드 코드"]] as const;
+const ALLOWED_THREADS_RUNTIMES = [["codex", "코덱스"]] as const;
 
 function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChange: (ids: string[]) => void }): React.JSX.Element {
   const [loading, setLoading] = useState(true);
@@ -476,17 +476,8 @@ function AllowedThreadsPicker({ allowed, onChange }: { allowed: string[]; onChan
   const reload = async (): Promise<void> => {
     setLoading(true);
     try {
-      const [codexThreads, claudeThreads] = await Promise.all([
-        window.devilCodex.listProjects({ archived: false, runtime: "codex" }).catch(() => [] as ThreadSummary[]),
-        window.devilCodex.listProjects({ archived: false, runtime: "claude-code" }).catch(() => [] as ThreadSummary[]),
-      ]);
-      // Kept as two explicitly-tagged runtime lists (not merged/sorted
-      // together) so the runtime tabs below can filter without re-deriving
-      // which runtime each thread belongs to from a mixed array.
-      setAllThreads([
-        ...codexThreads.map((thread) => ({ ...thread, runtime: "codex" as const })),
-        ...claudeThreads.map((thread) => ({ ...thread, runtime: "claude-code" as const })),
-      ]);
+      const codexThreads = await window.devilCodex.listProjects({ archived: false, runtime: "codex" }).catch(() => [] as ThreadSummary[]);
+      setAllThreads(codexThreads.map((thread) => ({ ...thread, runtime: "codex" as const })));
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,5 @@
 export type RuntimeState = "ready" | "connecting" | "connected" | "unavailable" | "error";
-export type AgentRuntimeId = "codex" | "claude-code";
+export type AgentRuntimeId = "codex";
 
 export interface RuntimeStatus {
   state: RuntimeState;
@@ -474,9 +474,6 @@ export interface DevilCodexApi {
   installUpdate: () => Promise<void>;
   getSubagentInfo: (input: { id: string }) => Promise<{ nickname: string | null; model: string | null }>;
   onUpdateState: (listener: (state: UpdateState) => void) => () => void;
-  listClaudeSkills: () => Promise<CodexSkillInfo[]>;
-  listClaudeSlashCommands: (input?: { cwd?: string; model?: string }) => Promise<ClaudeSlashCommandInfo[]>;
-  listClaudeMcpServers: (input?: { cwd?: string }) => Promise<McpServerInfo[]>;
   listCodexPluginSkills: () => Promise<CodexSkillInfo[]>;
   listKnownSites: () => Promise<Array<{ name: string; url: string; access?: string }>>;
   loadCodexSettings: () => Promise<CodexSettings>;

@@ -785,7 +785,7 @@ export function SideChat({ target, history, busy, pick, lockedModel = false, onP
   // derive runtime/account from it — otherwise a Claude-mode parent would read
   // and continue a Codex-runtime child through the wrong history path.
   const spawn = lockedModel && pick && pick.auto === false ? pick : undefined;
-  const runtime: AgentRuntimeId = spawn ? (spawn.provider === "claude-code" ? "claude-code" : "codex") : target.runtime;
+  const runtime: AgentRuntimeId = spawn ? "codex" : target.runtime;
   const accountId = spawn ? spawn.accountId : target.accountId;
   const [loaded, setLoaded] = useState(history !== undefined);
   const [draft, setDraft] = useState(() => readSideChatDraft(thread.id));

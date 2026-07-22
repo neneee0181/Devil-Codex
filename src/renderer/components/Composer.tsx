@@ -274,19 +274,6 @@ export function Composer({
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [trigger]);
 
-  // Stock CLI parity: approving Claude's ExitPlanMode tool call flips the live
-  // session back to default mode server-side (see claude-runtime.cts). Mirror
-  // that here so the "계획" chip doesn't stay stuck on for every later turn.
-  useEffect(() => {
-    if (agentRuntime !== "claude-code" || !threadId) return;
-    return window.devilCodex.onAppServerEvent((event) => {
-      if (event.method !== "claude/planModeExited") return;
-      const params = event.params as { threadId?: string } | undefined;
-      if (params?.threadId !== threadId) return;
-      setPlanMode(false);
-    });
-  }, [agentRuntime, threadId]);
-
   const isImageFile = (file: File, path: string): boolean => file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif)$/i.test(path);
   const isTextFile = (file: File, path: string): boolean => file.type.startsWith("text/") || /\.(txt|md|markdown|json|csv|tsv|ya?ml|toml|log|xml|html|css|tsx?|jsx?|cjs|mjs|py|rb|go|rs|java|kt|swift|sh|zsh|bash|sql)$/i.test(path);
 

@@ -24,7 +24,6 @@ import { AskUserModal } from "./components/AskUserModal";
 import { GitWorkflowDialog } from "./components/GitWorkflowDialog";
 import { WorktreeDialog } from "./components/WorktreeDialog";
 import codexRuntimeIcon from "./assets/codex-runtime.png";
-import claudeRuntimeIcon from "./assets/claude-runtime.png";
 import { IntegrationsView } from "./components/IntegrationsView";
 import { CommandPalette, type CommandId } from "./components/CommandPalette";
 import { ThreadFind } from "./components/ThreadFind";
@@ -49,7 +48,7 @@ type ShellMenuKey = "file" | "edit" | "view" | "help";
 type SentModelState = { provider: ProviderId; accountId?: string; model: string };
 type NotificationSettings = { notificationsEnabled: boolean; notifyOnTurnComplete: boolean; notifyOnApproval: boolean; notifyOnAsk: boolean };
 
-const THREAD_STATE_RUNTIMES: AgentRuntimeId[] = ["codex", "claude-code"];
+const THREAD_STATE_RUNTIMES: AgentRuntimeId[] = ["codex"];
 const NOTIFICATION_DEFAULTS: NotificationSettings = {
   notificationsEnabled: true,
   notifyOnTurnComplete: true,
@@ -117,40 +116,6 @@ function readNotificationSettings(): NotificationSettings {
   }
 }
 
-const CLAUDE_RUNTIME_SKILLS: CodexSkillInfo[] = [
-  {
-    name: "browser-use",
-    description: "Devil 내장 브라우저 MCP를 사용해 페이지 이동, 읽기, 클릭, 입력을 수행합니다.",
-    path: "devil://claude-runtime/browser-use",
-    scope: "devil",
-    enabled: true,
-  },
-  {
-    name: "computer-use",
-    description: "Devil Computer Use MCP를 사용해 화면 확인, 마우스, 키보드 조작을 수행합니다.",
-    path: "devil://claude-runtime/computer-use",
-    scope: "devil",
-    enabled: true,
-  },
-];
-
-function claudeRuntimeSkillPrompt(skillNames: string[], skillOptions: CodexSkillInfo[] = []): string {
-  const names = new Set(skillNames);
-  const lines: string[] = [];
-  if (names.has("browser-use")) {
-    lines.push("사용자가 /browser-use를 선택했습니다. WebFetch 대신 Devil MCP 서버 `devil_browser`의 브라우저 도구를 사용하세요. 사용 가능한 도구는 `browser_navigate`, `browser_read`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`이며, SDK에서 `mcp__devil_browser__browser_navigate` 같은 이름으로 보일 수 있습니다. 클릭은 `browser_read`가 알려준 CSS selector를 좌표보다 우선하세요. native confirm()/alert() 다이얼로그는 DOM 밖이라 이 도구로 못 누릅니다 — 그런 흐름을 만나면 화면 조작을 반복하지 말고 같은 동작을 스크립트/CLI/API 직접 호출로 수행할 수 있는지 먼저 판단해 그 경로로 전환하세요.");
-  }
-  if (names.has("computer-use")) {
-    lines.push("사용자가 /computer-use를 선택했습니다. OS 화면 확인이나 마우스/키보드 조작이 필요하면 Devil MCP 서버 `devil_computer`의 도구를 사용하세요. 사용 가능한 도구는 `computer_screenshot`, `computer_click`, `computer_move`, `computer_type`, `computer_key`, `computer_scroll`, `computer_list_windows`이며, 사용자의 명시 요청 범위 안에서만 조작하세요. 기본적으로 화면 조작으로 진행하되, 매 단계에서 같은 목표를 스크립트/CLI/API로 더 확실하게 달성할 수 있는지 스스로 판단하세요. 다음 상황에서는 화면 클릭을 중단하고 스크립트 경로로 전환하는 것이 맞습니다: (1) 좌표 클릭이 2번 연속 빗나감, (2) 사용자가 마우스를 직접 사용 중이거나 풀스크린 앱/게임이 화면을 점유함(실제 커서를 공유하므로 충돌), (3) native confirm()/alert() 같은 화면 자동화가 닿지 않는 UI, (4) 동일 동작의 대량 반복. 전환할 때는 한 줄로 이유를 밝히고 진행하세요.");
-  }
-  for (const skillName of skillNames) {
-    if (skillName === "browser-use" || skillName === "computer-use" || skillName.startsWith("mcp:")) continue;
-    const skill = skillOptions.find((item) => item.name === skillName);
-    if (skill?.path) lines.push(`사용자가 $${skill.name} 스킬을 선택했습니다. 필요하면 이 스킬 지침 파일을 먼저 읽고 따르세요: ${skill.path}`);
-  }
-  return lines.length ? `[Devil Claude Code runtime tool instructions]\n${lines.join("\n")}\n\n` : "";
-}
-
 function pluginNameForSkill(skill: CodexSkillInfo): string | null {
   if (skill.scope !== "plugin") return null;
   return skill.name.split(":", 1)[0] || skill.name;
@@ -216,9 +181,6 @@ const STEERING_PREFIX = [
   "",
   "[사용자 스티어링]",
 ].join("\n");
-const CLAUDE_PROVIDER_KEY = "devil-codex:claude-provider";
-const CLAUDE_ACCOUNT_KEY = "devil-codex:claude-account";
-const CLAUDE_MODEL_KEY = "devil-codex:claude-model";
 const COMPOSER_CONFIGS_KEY = "devil-codex:composer-configs";
 const RUNNING_TURNS_KEY = "devil-codex:running-turns";
 const ENVIRONMENT_SOURCE_TURN_LIMIT = 8;
@@ -379,19 +341,7 @@ function storedResponseSpeed(): ResponseSpeed {
 }
 
 function storedAgentRuntime(): AgentRuntimeId {
-  return localStorage.getItem(AGENT_RUNTIME_KEY) === "claude-code" ? "claude-code" : "codex";
-}
-
-function storedClaudeModel(): string {
-  return localStorage.getItem(CLAUDE_MODEL_KEY) || "claude-sonnet-5";
-}
-
-function storedClaudeProvider(): ProviderId {
-  return (localStorage.getItem(CLAUDE_PROVIDER_KEY) as ProviderId | null) || "claude-code";
-}
-
-function storedClaudeAccount(): string | undefined {
-  return localStorage.getItem(CLAUDE_ACCOUNT_KEY) || undefined;
+  return "codex";
 }
 
 type ComposerConfigSnapshot = {
@@ -999,11 +949,9 @@ function providerDisplayName(provider: ProviderId | "unknown", providers: Provid
   return providers.find((item) => item.id === provider)?.label ?? (provider === "claude-code" ? "Claude Code" : provider === "copilot" ? "GitHub Copilot" : provider === "antigravity" ? "Antigravity" : provider === "kimi" ? "Kimi Code" : provider);
 }
 
-function runtimeAgentLabel(runtime: AgentRuntimeId, provider: ProviderId | undefined, providers: ProviderInfo[]): string {
-  const base = runtime === "claude-code" ? "Claude" : "Codex";
-  const defaultProvider = runtime === "claude-code" ? "claude-code" : "codex";
-  if (!provider || provider === defaultProvider) return base;
-  return `${base}(${providerDisplayName(provider, providers)})`;
+function runtimeAgentLabel(_runtime: AgentRuntimeId, provider: ProviderId | undefined, providers: ProviderInfo[]): string {
+  if (!provider || provider === "codex") return "Codex";
+  return `Codex(${providerDisplayName(provider, providers)})`;
 }
 
 function providerUsageInputBreakdown(usage: ProviderTokenUsage): { uncachedInput: number; cached: number; cacheRead: number; cacheCreation: number; total: number } {
@@ -1133,7 +1081,7 @@ function summarizeThreadUsage(input: { threadId?: string; contextUsage?: Context
     for (const item of timelineUsageByTurn.values()) {
       const tokenUsage = item.tokenUsage;
       if (!tokenUsage) continue;
-      const provider = item.provider ?? (item.runtime === "claude-code" ? "claude-code" : input.defaultProvider);
+      const provider = item.provider ?? input.defaultProvider;
       const runtime = item.runtime ?? input.defaultRuntime;
       const model = item.model ?? input.defaultModel;
       const key = `${provider}:${item.accountId ?? "thread"}:${model}`;
@@ -1200,28 +1148,16 @@ function App(): React.JSX.Element {
   const devilBrowserOwnsRouting = codexSettings.settings?.stockBridgeEnabled === false && codexSettings.settings?.devilMcpEnabled === true;
   const model = providers.settings?.model ?? "gpt-5.5";
   const accountId = providers.settings?.accountId;
-  const [claudeModel, setClaudeModelState] = useState(() => storedClaudeModel());
-  const [claudeProviderId, setClaudeProviderIdState] = useState<ProviderId>(() => storedClaudeProvider());
-  const [claudeAccountId, setClaudeAccountIdState] = useState<string | undefined>(() => storedClaudeAccount());
   const [composerConfigs, setComposerConfigs] = useState<Record<string, ComposerConfigSnapshot>>(readComposerConfigs);
-  const claudeModeProviders = providers.settings?.providers.filter((provider) => provider.id !== "codex") ?? [];
-  const claudeModeProvider = claudeModeProviders.find((provider) => provider.id === claudeProviderId) ?? claudeModeProviders.find((provider) => provider.id === "claude-code") ?? null;
-  const resolvedClaudeProviderId: ProviderId = claudeModeProvider?.id ?? "claude-code";
-  const resolvedClaudeAccountId = claudeAccountId && claudeModeProvider?.accounts.some((account) => account.id === claudeAccountId)
-    ? claudeAccountId
-    : claudeModeProvider?.accounts[0]?.id;
   const composerRuntime = thread?.runtime ?? agentRuntime;
   const composerConfigKey = thread?.id ? `${composerRuntime}:thread:${thread.id}` : null;
   const composerConfig = composerConfigKey ? composerConfigs[composerConfigKey] : undefined;
-  const composerProviders = composerRuntime === "claude-code" ? claudeModeProviders : providers.settings?.providers ?? [];
-  const defaultComposerProviderId: ProviderId = composerRuntime === "claude-code" ? resolvedClaudeProviderId : providers.settings?.provider ?? "codex";
+  const composerProviders = providers.settings?.providers ?? [];
+  const defaultComposerProviderId: ProviderId = providers.settings?.provider ?? "codex";
   const composerProviderId: ProviderId = composerConfig?.provider ?? thread?.provider ?? defaultComposerProviderId;
   const composerProvider = composerProviders.find((provider) => provider.id === composerProviderId) ?? null;
-  const defaultComposerModel = composerRuntime === "claude-code" ? claudeModel : model;
-  const composerModel = composerConfig?.model ?? thread?.model ?? defaultComposerModel;
-  const composerAccountId = composerConfig?.accountId
-    ?? thread?.accountId
-    ?? (composerRuntime === "claude-code" ? resolvedClaudeAccountId : accountId);
+  const composerModel = composerConfig?.model ?? thread?.model ?? model;
+  const composerAccountId = composerConfig?.accountId ?? thread?.accountId ?? accountId;
   const activeProvider = composerProvider;
   const rememberComposerConfig = (key: string | null, patch: Omit<Partial<ComposerConfigSnapshot>, "updatedAt">): void => {
     if (!key) return;
@@ -1230,26 +1166,6 @@ function App(): React.JSX.Element {
       writeComposerConfigs(next);
       return next;
     });
-  };
-  const setAgentRuntime = (next: AgentRuntimeId): void => {
-    if (next !== agentRuntime) {
-      runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
-      const key = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
-      panelByThread.current[key] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
-      bottomByThread.current[key] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
-      skipNextPanelSave.current = true;
-      skipNextBottomSave.current = true;
-      setUtilityTabs([]);
-      setUtilityActive(null);
-      setUtilityPanelOpen(false);
-      setUtilityPanelExpanded(false);
-      setBottomTabs(["terminal:default"]);
-      setBottomActive("terminal:default");
-      setTerminalOpen(false);
-      setEnvironmentOpen(false);
-    }
-    setAgentRuntimeState(next);
-    localStorage.setItem(AGENT_RUNTIME_KEY, next);
   };
   const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => storedReasoningEffort());
   const [responseSpeed, setResponseSpeedState] = useState<ResponseSpeed>(() => storedResponseSpeed());
@@ -1287,16 +1203,6 @@ function App(): React.JSX.Element {
           model: next.model,
         }).catch((error) => console.warn("[devil-codex] thread model sync failed", error));
       }
-      return;
-    }
-    if (composerRuntime === "claude-code") {
-      setClaudeProviderIdState(next.provider);
-      localStorage.setItem(CLAUDE_PROVIDER_KEY, next.provider);
-      setClaudeAccountIdState(next.accountId);
-      if (next.accountId) localStorage.setItem(CLAUDE_ACCOUNT_KEY, next.accountId);
-      else localStorage.removeItem(CLAUDE_ACCOUNT_KEY);
-      setClaudeModelState(next.model);
-      localStorage.setItem(CLAUDE_MODEL_KEY, next.model);
       return;
     }
     void providers.select(next);
@@ -1400,7 +1306,6 @@ function App(): React.JSX.Element {
   const skipNextPanelSave = useRef(false);
   const skipNextBottomSave = useRef(false);
   const [externalError, setExternalError] = useState("");
-  const [runtimeShareBusy, setRuntimeShareBusy] = useState<string | null>(null);
   const [petVisible, setPetVisible] = useState(storedPetVisible);
   const [permissionHint, setPermissionHint] = useState<"computer-use" | null>(null);
   // Screenshot / annotate from the embedded browser injects an image (+ optional
@@ -1668,7 +1573,6 @@ function App(): React.JSX.Element {
       if (!activeThreadId) return;
       if (runningTurnsRef.current[activeThreadId] || pendingTurns.current.has(activeThreadId) || activeTurnsByThread.current.has(activeThreadId)) return;
       const activeRuntime = threadRef.current?.runtime ?? agentRuntime;
-      if (activeRuntime === "claude-code") return;
       void window.devilCodex.syncThreadHistory({ id: activeThreadId, runtime: activeRuntime, accountId: threadRef.current?.accountId }).then((history) => {
         const localHistory = threadHistoryCache.current.get(activeThreadId) ?? visibleItemsForThread(activeThreadId) ?? [];
         const merged = mergeTimelineItems(localHistory, history);
@@ -1749,38 +1653,6 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     let active = true;
-    void window.devilCodex.listClaudeSkills()
-      .then((skills) => { if (active) setAvailableClaudeSkills(skills.filter((skill) => skill.enabled)); })
-      .catch((error) => { if (active) setExternalError(`Claude 스킬 목록 실패: ${String(error)}`); });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (composerRuntime !== "claude-code" || !workspace) {
-      setAvailableClaudeSlashCommands([]);
-      return;
-    }
-    let active = true;
-    void window.devilCodex.listClaudeSlashCommands({ cwd: workspace, model: composerModel })
-      .then((commands) => { if (active) setAvailableClaudeSlashCommands(commands.filter((command) => command.name)); })
-      .catch((error) => {
-        if (!active) return;
-        setAvailableClaudeSlashCommands([]);
-        setExternalError(`Claude 명령 목록 실패: ${String(error)}`);
-      });
-    return () => { active = false; };
-  }, [composerRuntime, workspace, composerModel]);
-
-  useEffect(() => {
-    let active = true;
-    // Claude Code loads its own MCP config (~/.claude.json, .mcp.json, plugin
-    // .mcp.json), so the "/" menu must list those instead of Codex servers.
-    if (composerRuntime === "claude-code") {
-      void window.devilCodex.listClaudeMcpServers({ ...(workspace ? { cwd: workspace } : {}) })
-        .then((servers) => { if (active) setAvailableMcpServers(servers.filter((server) => server.name)); })
-        .catch(() => { if (active) setAvailableMcpServers([]); });
-      return () => { active = false; };
-    }
     if (runtime.state !== "connected") { setAvailableMcpServers([]); return; }
     void window.devilCodex.listMcpServers({ ...(thread?.id ? { threadId: thread.id } : {}) })
       .then((servers) => {
@@ -1789,11 +1661,9 @@ function App(): React.JSX.Element {
       })
       .catch(() => { if (active) setAvailableMcpServers([]); });
     return () => { active = false; };
-  }, [thread?.id, runtime.state, composerRuntime, workspace]);
+  }, [thread?.id, runtime.state]);
 
-  const composerSkillOptions = composerRuntime === "claude-code"
-    ? [...CLAUDE_RUNTIME_SKILLS, ...availableClaudeSkills.filter((skill) => !CLAUDE_RUNTIME_SKILLS.some((builtIn) => builtIn.name === skill.name))]
-    : devilBrowserOwnsRouting ? availableSkills.filter((skill) => skill.name !== "browser:control-in-app-browser") : availableSkills;
+  const composerSkillOptions = devilBrowserOwnsRouting ? availableSkills.filter((skill) => skill.name !== "browser:control-in-app-browser") : availableSkills;
   const queuedHere = thread?.id ? (queuedView[thread.id]?.length ?? 0) : 0;
   function scheduleThreadScrollPersist(): void {
     if (scrollPersistFrame.current != null) return;
@@ -2011,9 +1881,9 @@ function App(): React.JSX.Element {
   const composerDraftKey = thread?.id ? `${composerRuntime}:thread:${thread.id}` : `${agentRuntime}:${projectDraft ? "project-draft" : "new-chat"}:${cwdKey(workspace) || "__none__"}`;
   const composerReasoningEffort = composerConfig?.reasoningEffort ?? reasoningEffort;
   const composerResponseSpeed = composerConfig?.responseSpeed ?? responseSpeed;
-  const runtimeLabel = composerRuntime === "claude-code" ? "Claude Code" : "Codex";
-  const runtimeBrandLabel = agentRuntime === "claude-code" ? "Claude" : "Codex";
-  const runtimeBrandIcon = agentRuntime === "claude-code" ? claudeRuntimeIcon : codexRuntimeIcon;
+  const runtimeLabel = "Codex";
+  const runtimeBrandLabel = "Codex";
+  const runtimeBrandIcon = codexRuntimeIcon;
   const canOpenWorkspace = Boolean(workspace && !isGeneralChatWorkspace && openTargets.length > 0);
   const activeThreadBusy = Boolean(thread?.id && runningTurns[thread.id]);
   const externalTurnPreparing = Boolean(activeThreadBusy && thread?.id && !runningTurns[thread.id]?.turnId && composerRuntime === "codex" && composerProviderId !== "codex");
@@ -2062,12 +1932,10 @@ function App(): React.JSX.Element {
     defaultModel: composerModel,
   }), [thread?.id, contextUsage, providers.settings?.providers, quickUsage.requestLog, items, composerRuntime, composerProviderId, composerModel]);
   const sideConversationRuntime = thread?.runtime ?? composerRuntime;
-  const sideConversationProvider: ProviderId = sideConversationRuntime === "claude-code" ? composerProviderId : "codex";
-  const sideConversationAccountId = sideConversationProvider === "codex" ? undefined : composerAccountId;
-  const sideConversationModel = sideConversationRuntime === "claude-code"
-    ? composerModel
-    : providers.settings?.provider === "codex" ? model : "gpt-5.5";
-  const sideConversationProviders = sideConversationRuntime === "claude-code" ? composerProviders : providers.settings?.providers ?? [];
+  const sideConversationProvider: ProviderId = "codex";
+  const sideConversationAccountId = undefined;
+  const sideConversationModel = providers.settings?.provider === "codex" ? model : "gpt-5.5";
+  const sideConversationProviders = providers.settings?.providers ?? [];
   // Side chats must inherit the composer's approval mode. Without it the child
   // thread falls back to the app-server/SDK defaults (Codex on-request, Claude
   // "default" per-tool approval on a hidden thread), which diverges from the
@@ -2868,9 +2736,7 @@ function App(): React.JSX.Element {
           const localHistory = threadHistoryCache.current.get(threadId) ?? visibleItemsForThread(threadId) ?? [];
           const cachedAccountId = threadRef.current?.id === threadId ? threadRef.current.accountId : undefined;
           const cachedRuntime = threadRef.current?.id === threadId ? threadRef.current.runtime ?? agentRuntime : pendingForThread(threadId)?.runtime ?? agentRuntime;
-          if (cachedRuntime !== "claude-code") {
-            await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
-          }
+          await window.devilCodex.cacheThreadHistory({ id: threadId, items: localHistory, runtime: cachedRuntime, accountId: cachedAccountId });
           const history = await window.devilCodex.syncThreadHistory({ id: threadId, runtime: cachedRuntime, accountId: cachedAccountId });
           const latestLocalHistory = threadHistoryCache.current.get(threadId) ?? localHistory;
           let recoveredHistory = annotateAgentMessages(mergeTimelineItems(latestLocalHistory, history), turnId, completedPending ?? undefined);
@@ -2966,16 +2832,6 @@ function App(): React.JSX.Element {
   function restoreNavigation(entry: NavigationEntry): void {
     activeResume.current = entry.thread?.id ?? null;
     if (entry.thread?.id) setInitializingThreadId(entry.thread.id);
-    const entryRuntime = entry.thread?.runtime ?? entry.runtime;
-    if (entryRuntime !== agentRuntime) {
-      runtimeSnapshots.current[agentRuntime] = runtimeSnapshotFor(agentRuntime);
-      const currentPanelKey = threadStateKey(thread?.runtime ?? agentRuntime, thread?.id, emptyThreadStateId(workspace, projectDraft));
-      panelByThread.current[currentPanelKey] = { tabs: utilityTabs, active: utilityActive, open: utilityPanelOpen, expanded: utilityPanelExpanded };
-      bottomByThread.current[currentPanelKey] = { tabs: bottomTabs, active: bottomActive, open: terminalOpen, height: terminalHeight };
-      keepThreadOnRuntimeSwitch.current = true;
-      setAgentRuntimeState(entryRuntime);
-      localStorage.setItem(AGENT_RUNTIME_KEY, entryRuntime);
-    }
     threadRef.current = entry.thread;
     const restoredItems = entry.thread?.id ? threadHistoryCache.current.get(entry.thread.id) ?? entry.items : entry.items;
     setView(entry.view);
@@ -2998,7 +2854,7 @@ function App(): React.JSX.Element {
       setUtilityPanelOpen(false);
       setUtilityPanelExpanded(false);
     } else {
-      const panelKey = threadStateKey(entryRuntime, entry.thread?.id, emptyThreadStateId(entry.workspace, entry.projectDraft));
+      const panelKey = threadStateKey(entry.thread?.runtime ?? entry.runtime, entry.thread?.id, emptyThreadStateId(entry.workspace, entry.projectDraft));
       const panel = panelByThread.current[panelKey] ?? { tabs: [], active: null, open: false, expanded: false };
       setUtilityTabs(panel.tabs);
       setUtilityActive(panel.active);
@@ -3065,7 +2921,7 @@ function App(): React.JSX.Element {
     }
     navigate({ view: "thread", workspace: cwd, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
-    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd)]);
+    if (runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd)]);
   }
 
   async function chooseWorkspace(): Promise<void> {
@@ -3073,7 +2929,7 @@ function App(): React.JSX.Element {
     if (!next) return;
     navigate({ view: "thread", workspace: next, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
-    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
+    if (runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next)]);
   }
 
   async function refreshThreads(cwd = workspace, options?: { quiet?: boolean; showLoading?: boolean }): Promise<void> {
@@ -3400,79 +3256,6 @@ function App(): React.JSX.Element {
     });
   }
 
-  async function shareActiveThreadToOtherRuntime(): Promise<void> {
-    if (!activeSummary || !workspace) return;
-    setThreadMenuOpen(false);
-    const sourceRuntime = activeSummary.runtime ?? agentRuntime;
-    const targetRuntime: AgentRuntimeId = sourceRuntime === "claude-code" ? "codex" : "claude-code";
-    const targetLabel = targetRuntime === "claude-code" ? "Devil Claude Code" : "Devil Codex";
-    const sourceLabel = sourceRuntime === "claude-code" ? "Devil Claude Code" : "Devil Codex";
-    const targetProvider: ProviderId = targetRuntime === "claude-code" ? "claude-code" : "codex";
-    const targetModel = targetRuntime === "claude-code"
-      ? claudeModel
-      : providers.settings?.provider === "codex" ? model : "gpt-5.5";
-    const now = Math.floor(Date.now() / 1000);
-    const sharedTitle = `공유: ${activeSummary.title || "새 채팅"}`;
-    const marker: ThreadHistoryItem = {
-      id: crypto.randomUUID(),
-      kind: "system",
-      title: "런타임 공유",
-      text: `${sourceLabel} thread에서 ${targetLabel} thread를 새로 열고 대화 컨텍스트를 첨부했습니다.\n공유 버튼 자체는 모델을 호출하지 않았습니다.\n추가 토큰은 이 새 thread에서 첫 메시지를 보낼 때만 사용됩니다.`,
-    };
-    const contextText = transferContextFromHistory(threadHistoryCache.current.get(activeSummary.id) ?? itemsRef.current);
-    const contextItem: ThreadHistoryItem | null = contextText ? {
-      id: crypto.randomUUID(),
-      kind: "system",
-      title: "런타임 공유 컨텍스트",
-      text: contextText,
-    } : null;
-    const initialItems = contextItem ? [marker, contextItem] : [marker];
-
-    try {
-      setRuntimeShareBusy(`${targetLabel}로 대화 넘기는 중...`);
-      const created = await window.devilCodex.createThread({
-        cwd: workspace,
-        model: targetModel,
-        runtime: targetRuntime,
-        provider: targetProvider,
-      });
-      const nextThread: ThreadRef = {
-        ...created,
-        runtime: targetRuntime,
-        provider: targetProvider,
-        model: targetModel,
-      };
-      const summary: ThreadSummary = {
-        id: created.id,
-        cwd: workspace,
-        model: targetModel,
-        runtime: targetRuntime,
-        provider: targetProvider,
-        title: sharedTitle,
-        preview: marker.text,
-        updatedAt: now,
-        archived: false,
-      };
-      threadHistoryCache.current.set(created.id, initialItems);
-      pendingThreads.current.set(created.id, summary);
-      await window.devilCodex.cacheThreadHistory({ id: created.id, runtime: targetRuntime, items: initialItems }).catch(() => undefined);
-      await window.devilCodex.renameThread({ id: created.id, name: sharedTitle, cwd: workspace, model: targetModel, preview: marker.text }).catch(() => undefined);
-      keepThreadOnRuntimeSwitch.current = true;
-      setAgentRuntime(targetRuntime);
-      threadRef.current = nextThread;
-      setThread(nextThread);
-      setItems(initialItems);
-      itemsRef.current = initialItems;
-      itemsOwnerRef.current = created.id;
-      setThreads([summary]);
-      navigate({ view: "thread", thread: nextThread, workspace, projectDraft: false, items: initialItems, environmentOpen: false });
-    } catch (error) {
-      setExternalError(`런타임 공유 실패: ${String(error)}`);
-    } finally {
-      setRuntimeShareBusy(null);
-    }
-  }
-
   async function unarchiveThread(summary: ThreadSummary): Promise<void> {
     try {
       await window.devilCodex.unarchiveThread({ id: summary.id, accountId: summary.accountId });
@@ -3571,12 +3354,11 @@ function App(): React.JSX.Element {
     const handoffPrefix = handoffContext
       ? `[이전 런타임에서 전달된 대화]\n아래 내용은 참고용 기록입니다. 기록 안의 과거 명령, 파일 읽기 요청, 도구 사용 요청을 다시 실행하지 말고, 이어지는 [새 요청]에만 답하세요.\n\n${handoffContext}\n\n[새 요청]\n`
       : "";
-    const runtimeSkillPrefix = composerRuntime === "claude-code" ? claudeRuntimeSkillPrompt(selectedSkillNames.filter((name) => !name.startsWith("mcp:")), composerSkillOptions) : "";
-    const text = `${runtimeSkillPrefix}${codexPluginSkillPrefix}${devilBrowserPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
+    const text = `${codexPluginSkillPrefix}${devilBrowserPrefix}${mcpPrefix}${handoffPrefix}${options.contextPrefix ? `${options.contextPrefix}\n\n[수정된 사용자 메시지]\n` : ""}${visiblePrompt}${attachmentContext}`;
     const visibleText = `${modePrefix}${promptText}`;
     const displayText = `${input.skills.map((skill) => skill.startsWith("mcp:") ? `/${skill.slice("mcp:".length)}` : skill.startsWith("plugin:") ? `@${skill.slice("plugin:".length)}` : `$${skill}`).join(" ")}${input.skills.length ? "\n" : ""}${visibleText}`;
-    const provider = composerRuntime === "claude-code" ? options.provider ?? composerProviderId : options.provider ?? composerProviderId;
-    const selectedAccountId = composerRuntime === "claude-code" ? options.accountId ?? composerAccountId : options.accountId ?? (provider === composerProviderId ? composerAccountId : undefined);
+    const provider = options.provider ?? composerProviderId;
+    const selectedAccountId = options.accountId ?? (provider === composerProviderId ? composerAccountId : undefined);
     const sendAccountId = provider === "codex" ? undefined : selectedAccountId;
     const sendModel = options.model ?? composerModel;
     if (!text || !workspace || (composerRuntime === "codex" && provider === "codex" && runtime.state !== "connected")) return;
@@ -3850,7 +3632,7 @@ function App(): React.JSX.Element {
     navigate({ view: "thread", workspace: next, thread: null, items: [], projectDraft: true, environmentOpen: false });
     setProjectAlias("");
     setExpandedProjects((prev) => ({ ...prev, [next]: true }));
-    if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next), refreshProjects()]);
+    if (runtime.state === "connected") await Promise.all([refreshThreads(next), refreshChanges(next), refreshProjects()]);
   }
 
   async function createLocalProject(name: string): Promise<void> {
@@ -3867,7 +3649,7 @@ function App(): React.JSX.Element {
         return next;
       });
       setExpandedProjects((prev) => ({ ...prev, [cwd]: true }));
-      if (agentRuntime === "claude-code" || runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
+      if (runtime.state === "connected") await Promise.all([refreshThreads(cwd), refreshChanges(cwd), refreshProjects()]);
     } catch (error) {
       setExternalError(`프로젝트 생성 실패: ${String(error)}`);
     }
@@ -4358,10 +4140,6 @@ function App(): React.JSX.Element {
           <button className={view === "plugins" ? "selected" : ""} onClick={() => openView("plugins")}><Blocks />플러그인</button>
           <button className={view === "automations" ? "selected" : ""} onClick={() => openView("automations")}><Bot />자동화</button>
         </nav>
-        <div className="agent-mode-switch" aria-label="에이전트 모드">
-          <button type="button" className={agentRuntime === "codex" ? "active" : ""} onClick={() => setAgentRuntime("codex")}><img className="runtime-logo" src={codexRuntimeIcon} alt="" />Codex</button>
-          <button type="button" className={agentRuntime === "claude-code" ? "active" : ""} onClick={() => setAgentRuntime("claude-code")}><img className="runtime-logo" src={claudeRuntimeIcon} alt="" />Claude</button>
-        </div>
 
         {sidebarLayoutMode === "projectsDown" && (sidebarLoading || generalChats.length > 0) && (
           <div className="general-chats">
@@ -4473,7 +4251,7 @@ function App(): React.JSX.Element {
                 onForward={goForward}
               />
             )}
-            <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} shareRuntimeLabel={(activeSummary.runtime ?? agentRuntime) === "claude-code" ? "Devil Codex" : "Devil Claude Code"} onShareRuntime={() => void shareActiveThreadToOtherRuntime()} />}</AnimatePresence></span>}</div>
+            <div className="thread-title"><strong>{view === "thread" ? threadTitle : viewLabel(view)}</strong>{canUseThreadMenu && <span className="thread-menu-wrap"><button className={threadMenuOpen ? "active" : ""} onClick={() => { const next = !threadMenuOpen; closePopovers(); setThreadMenuOpen(next); }} aria-label="스레드 메뉴"><MoreHorizontal size={18} /></button><AnimatePresence>{threadMenuOpen && activeSummary && <ThreadMenu pinned={pinnedThreads.includes(activeSummary.id)} onPin={toggleActiveThreadPin} onRename={() => void renameActiveThread()} onCopy={(kind) => void copyThreadInfo(activeSummary, kind)} onSide={() => void newSideChat()} />}</AnimatePresence></span>}</div>
           </div>
           <div className="topbar-actions">
             {update.status === "available" && <button className="update-badge" onClick={() => void window.devilCodex.installUpdate()} title={`Devil Codex ${update.version} 업데이트`}><Download size={15} />업데이트 {update.version}</button>}
@@ -4491,7 +4269,6 @@ function App(): React.JSX.Element {
         </header>
 
         {externalError && <button className="external-error" onClick={() => setExternalError("")}>{externalError} ×</button>}
-        <AnimatePresence>{runtimeShareBusy && <motion.div className="runtime-share-loading" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><Loader2 size={14} />{runtimeShareBusy}</motion.div>}</AnimatePresence>
         <AnimatePresence>{sideChatCreatingDock && <motion.div className="side-chat-create-loading" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}><Loader2 size={14} />사이드 채팅 준비 중…</motion.div>}</AnimatePresence>
         {permissionHint === "computer-use" && <div className="permission-hint">
           <span>Computer Use에 권한이 필요합니다. macOS 설정에서 허용 후 앱을 재시작하세요.</span>
@@ -4522,7 +4299,7 @@ function App(): React.JSX.Element {
             </div>
             <AnimatePresence>{showScrollToBottom && <motion.button type="button" className="scroll-to-bottom-button" style={{ bottom: Math.max(88, composerClearance - 86) }} initial={{ opacity: 0, y: 10, scale: .92 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: .94 }} transition={{ duration: .16 }} onClick={scrollThreadToBottom} aria-label="맨 아래로 이동" title="맨 아래로 이동"><ArrowDown size={18} /></motion.button>}</AnimatePresence>
 
-            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} preparing={externalTurnPreparing} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && (composerRuntime === "claude-code" ? composerProviderId === "claude-code" || providerReady(activeProvider, runtime.state) : providerReady(activeProvider, runtime.state))} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} bridgeActionBusy={codexSettings.state === "loading"} onDisableBridge={disableBridgeFromComposer} agentRuntime={composerRuntime} threadId={thread?.id} />
+            <Composer key={composerDraftKey} wrapRef={composerWrapRef} draftKey={composerDraftKey} busy={activeThreadBusy} preparing={externalTurnPreparing} queued={thread?.id ? (queuedView[thread.id] ?? []) : []} onEditQueued={(id, text) => { if (thread?.id) editQueuedTurn(thread.id, id, text); }} onRemoveQueued={(id) => { if (thread?.id) removeQueuedTurn(thread.id, id); }} onSteerQueued={(id) => { if (thread?.id) steerQueuedTurn(thread.id, id); }} connected={Boolean(workspace) && providerReady(activeProvider, runtime.state)} model={composerModel} providerId={composerProviderId} accountId={composerAccountId} providers={composerProviders} contextUsage={contextUsage} reasoningEffort={composerReasoningEffort} responseSpeed={composerResponseSpeed} skillOptions={composerSkillOptions} claudeSlashCommands={availableClaudeSlashCommands} mcpServers={availableMcpServers} projectContext={projectDraft ? { name: projectName, branch: changes.branch } : undefined} hasActiveThread={Boolean(thread?.id)} inject={composerInject} onModelChange={setModel} onReasoningEffortChange={setReasoningEffort} onResponseSpeedChange={setResponseSpeed} onSubmit={(input) => void submit(input)} onStop={stopTurn} onSlashCommand={runSlashCommand} petVisible={petVisible} disabled={bridgeChatLocked} bridgeActionBusy={codexSettings.state === "loading"} onDisableBridge={disableBridgeFromComposer} agentRuntime={composerRuntime} threadId={thread?.id} />
 
             <AnimatePresence>{environmentOpen && <EnvironmentCard cwd={workspace} changes={changes} sources={environmentSources} usage={threadUsage} usageState={quickUsage.state} subagents={namedSubagents} sideChats={sideChats} onRefresh={() => refreshChanges()} onReview={() => openUtility("review")} onGit={() => setGitDialogOpen(true)} onCodexWeb={openCodexWeb} onUsage={() => openSettingsSection("사용량 및 청구")} onOpenSource={(url) => void window.devilCodex.openExternalUrl({ url }).catch((error) => setExternalError(`출처 열기 실패: ${String(error)}`))} onError={setExternalError} onOpenSubagent={(id, label) => { setEnvironmentOpen(false); openSubagentTab(id, label); }} onOpenSide={(id, label) => { setEnvironmentOpen(false); openSideTab(id, label); }} />}</AnimatePresence>
           </>
@@ -5312,7 +5089,7 @@ function AutomationsView({ onPrompt }: { onPrompt: (prompt: string) => void }): 
   );
 }
 
-function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide, shareRuntimeLabel, onShareRuntime }: { pinned: boolean; onPin: () => void; onRename: () => void; onCopy: (kind: "cwd" | "id" | "markdown") => void; onSide: () => void; shareRuntimeLabel: string; onShareRuntime: () => void }): React.JSX.Element {
+function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide }: { pinned: boolean; onPin: () => void; onRename: () => void; onCopy: (kind: "cwd" | "id" | "markdown") => void; onSide: () => void }): React.JSX.Element {
   const [copyOpen, setCopyOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [copyPlacement, setCopyPlacement] = useState<"left" | "right">("right");
@@ -5328,7 +5105,6 @@ function ThreadMenu({ pinned, onPin, onRename, onCopy, onSide, shareRuntimeLabel
     <button onClick={onRename}><Pencil size={16} />채팅 이름 바꾸기<kbd>{shortcut("⌥⌘R")}</kbd></button>
     <div className="menu-divider" />
     <button onClick={onSide}><MessageSquarePlus size={16} />사이드 채팅 열기<kbd>{shortcut("⌥⌘S")}</kbd></button>
-    <button onClick={onShareRuntime}><GitFork size={16} />{shareRuntimeLabel}로 대화 넘기기</button>
     <button className={copyOpen ? "active" : ""} onClick={() => setCopyOpen((open) => !open)}><Copy size={16} />복사<ChevronRight size={15} className="chev" /></button>
     <AnimatePresence>
       {copyOpen && (
