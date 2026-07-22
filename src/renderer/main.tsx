@@ -777,19 +777,27 @@ function isLiveClaudeTurnId(turnId: string | undefined): boolean {
 // from the jsonl under the reimport's own id (<threadId>-claude-turn-N).
 // mergeTimelineItems keys agent items on `agent:<turnId>:<text>`, so the two
 // ids never collide and both copies stay on screen — the exact "final answer
-// shown twice, survives reload" the user hit. The reimport id is the durable
-// source of truth (it's what a fresh load renders), so drop the live-keyed copy
-// whenever a reimport-keyed item already carries the identical text. A live
-// answer the reimport has not yet produced (turn just finished, jsonl not
-// re-read) has no reimport twin and is left untouched, so nothing is lost.
-function dropStaleLiveAgentDuplicates(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
-  const reimportedAgentText = new Set(
+// shown twice, survives reload" the user hit.
+//
+// Collapse to the LIVE-keyed copy, dropping the reimported twin. The live turn
+// id is the one the rest of the renderer keys on: the turn/completed handler
+// checks hasAgentMessageForTurn(items, liveTurnId) to decide whether to post a
+// "최종 응답 본문 누락" notice, and folding logic rides the live item. Dropping
+// the live copy (as an earlier version did) left only the reimport copy under a
+// different id, so that check found no agent for the live turn and posted a
+// false missing-answer notice — and the reimport copy then got folded into the
+// activity card, erasing the visible answer entirely. On reload there is no
+// live copy (cache rebuilt from readThread), only the reimport one, which
+// renders fine on its own; the missing-answer check runs only during live
+// completion, so keeping the live id here is always safe.
+function dropReimportedAgentDuplicates(items: ThreadHistoryItem[]): ThreadHistoryItem[] {
+  const liveAgentText = new Set(
     items
-      .filter((item) => item.kind === "agent" && !isLiveClaudeTurnId(item.turnId) && item.text.trim())
+      .filter((item) => item.kind === "agent" && isLiveClaudeTurnId(item.turnId) && item.text.trim())
       .map((item) => item.text.trim()),
   );
-  if (!reimportedAgentText.size) return items;
-  const next = items.filter((item) => !(item.kind === "agent" && isLiveClaudeTurnId(item.turnId) && item.text.trim() && reimportedAgentText.has(item.text.trim())));
+  if (!liveAgentText.size) return items;
+  const next = items.filter((item) => !(item.kind === "agent" && !isLiveClaudeTurnId(item.turnId) && item.text.trim() && liveAgentText.has(item.text.trim())));
   return next.length === items.length ? items : next;
 }
 
@@ -811,7 +819,7 @@ function mergeTimelineItems(base: ThreadHistoryItem[], overlay: ThreadHistoryIte
       : item;
     result[index] = mergeTimelineItem(result[index]!, incoming);
   }
-  return dropStaleLiveAgentDuplicates(dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result)));
+  return dropReimportedAgentDuplicates(dropAgentMessagesFoldedIntoActivity(dedupeTimelineItems(result)));
 }
 
 function hasConversationItems(items: ThreadHistoryItem[] | undefined): boolean {
