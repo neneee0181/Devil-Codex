@@ -103,6 +103,47 @@ Add-Type -TypeDefinition $code -ErrorAction Stop
 [DevilWin]::List() | ConvertTo-Json -Compress
 `;
 
+// System-wide idle time (ms since last real mouse/keyboard input) via
+// GetLastInputInfo. This is the only reliable signal for "is the user actively
+// driving the machine right now" — the active-window title alone can't tell a
+// running game from an idle one the user walked away from. computer_use steals
+// the shared physical cursor, so the model must not synthesize input while the
+// user is mid-action; idle time gates that decision.
+const IDLE_PS = `
+$code = @"
+using System;using System.Runtime.InteropServices;
+public class DevilIdle{
+ [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO{public uint cbSize;public uint dwTime;}
+ [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO p);
+ [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+ public static uint IdleMs(){var l=new LASTINPUTINFO();l.cbSize=(uint)Marshal.SizeOf(l);GetLastInputInfo(ref l);return GetTickCount()-l.dwTime;}
+}
+"@
+Add-Type -TypeDefinition $code -ErrorAction Stop
+[DevilIdle]::IdleMs()
+`;
+
+// Below this many ms of idle, treat the user as actively using the machine and
+// forbid computer_use input synthesis. 3s: long enough to ignore the tiny gap
+// between two of the user's own actions, short enough that the model doesn't
+// grab the cursor while the user is still working.
+const USER_ACTIVE_IDLE_MS = 3000;
+
+function getUserIdleMs(): Promise<number | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", IDLE_PS],
+      { encoding: "utf8", timeout: 4000, windowsHide: true },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const ms = Number(String(stdout).trim());
+        resolve(Number.isFinite(ms) ? ms : null);
+      },
+    );
+  });
+}
+
 function enumWindowsWin32(): Promise<WindowInfo[]> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -182,15 +223,29 @@ export class DesktopControlManager {
 
     let active = "";
     let count = 0;
-    try {
-      const wins = await this.listWindows();
-      count = wins.length;
-      active = wins.find((win) => win.active)?.title ?? "";
-    } catch { /* windows optional */ }
+    let idleMs: number | null = null;
+    // Windows enumeration and idle probe are independent PowerShell spawns; run
+    // them in parallel so the caption's extra signal costs no serial latency.
+    const [winsResult, idleResult] = await Promise.allSettled([this.listWindows(), getUserIdleMs()]);
+    if (winsResult.status === "fulfilled") {
+      count = winsResult.value.length;
+      active = winsResult.value.find((win) => win.active)?.title ?? "";
+    }
+    if (idleResult.status === "fulfilled") idleMs = idleResult.value;
+    // Bake the 3s threshold into the caption as a directive, not a raw number,
+    // so the model acts on it regardless of whether it remembers the policy.
+    let idlePhrase = "";
+    if (idleMs !== null) {
+      const idleSec = Math.floor(idleMs / 1000);
+      idlePhrase = idleMs < USER_ACTIVE_IDLE_MS
+        ? ` · 유저 입력중(유휴 ${idleMs}ms) — 실제 마우스/키보드 뺏지 말 것, 스크립트/API 경로 사용`
+        : ` · 유저 유휴 ${idleSec}초(입력 없음) — 조작 전 1회 안내 후 진행 가능`;
+    }
     const caption =
       `가상 데스크톱 ${W}x${H}, 모니터 ${displays.length}개 (좌표는 이 이미지 기준)` +
       (active ? ` · 활성 창: ${active}` : "") +
-      (count ? ` · 열린 창 ${count}개 (정확한 위치는 computer_list_windows)` : "");
+      (count ? ` · 열린 창 ${count}개 (정확한 위치는 computer_list_windows)` : "") +
+      idlePhrase;
     return { dataUrl, caption };
   }
 
