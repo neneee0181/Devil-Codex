@@ -1,4 +1,4 @@
-import { Check, KeyRound, LogIn, LogOut, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, KeyRound, LogIn, LogOut, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderRequestLogEntry, ProviderSettings } from "../../shared/contracts";
 import { providerAccountModelCount, providerAccountReady, selectableApiProvider } from "../providerReadiness";
@@ -134,6 +134,15 @@ export function ProviderSettingsPanel({ settings, state, error, onSelect, onSave
       </button>
       {activeCard && provider.kind === "login" && provider.authProvider && <div className="provider-inline-panel">
         <div><strong>{provider.label} 로그인</strong><p>{loginStatusLabel(provider, auth)}</p></div>
+        {provider.id === "claude-code" && <p className="provider-risk-note">
+          <AlertTriangle size={14} />
+          <span>
+            <strong>계정 정지 위험 — 직접 판단해서 사용하세요.</strong>
+            Anthropic 소비자 약관은 Claude Free/Pro/Max 계정의 OAuth 토큰을 다른 제품·도구·서비스에서 쓰는 것을 금지합니다.
+            2026년 1월부터 구독 토큰은 공식 Claude Code 클라이언트로 제한되고 있고, 그 과정에서 계정이 정지된 사례도 보고됐습니다.
+            Devil Codex에서 Anthropic 모델을 약관 안에서 쓰려면 아래 <strong>Anthropic</strong> Provider에 API 키를 등록하세요.
+          </span>
+        </p>}
         {loginAccounts.length > 0 && <div className="provider-account-list">{loginAccounts.map((account) => <div className="provider-account-row" key={account.id}>
           <span><strong>{accountName(account)}</strong><small>{account.id}</small></span>
           <button type="button" className="provider-btn danger" disabled={busy === `${provider.id}:${account.id}`} onClick={() => void logout(provider, account.id)}><LogOut size={14} />로그아웃</button>

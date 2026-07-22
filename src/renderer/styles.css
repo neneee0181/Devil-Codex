@@ -1290,6 +1290,11 @@ button:active:not(:disabled) { transform: scale(.96); }
 .provider-inline-panel > div:first-child { display: grid; gap: 5px; }
 .provider-inline-panel p { margin: 0; color: #999; font-size: 13px; line-height: 1.45; }
 .provider-notice.inline { color: #9fc9f1; }
+.provider-risk-note { display: flex; gap: 9px; align-items: flex-start; border: 1px solid #6b4a1f; border-radius: 9px; background: #2a2011; color: #e8cfa6; padding: 11px 12px; margin: 0; font-size: 13px; line-height: 1.5; }
+.provider-risk-note svg { flex: 0 0 auto; margin-top: 2px; color: #e0a33c; }
+.provider-risk-note strong { display: block; margin-bottom: 3px; color: #f3d9ae; }
+.model-provider-risk { display: flex; gap: 6px; align-items: flex-start; margin: 0 9px 6px; color: #e0b877; font-size: 11px; line-height: 1.45; }
+.model-provider-risk svg { flex: 0 0 auto; margin-top: 2px; color: #e0a33c; }
 .provider-inline-panel .provider-key-actions { align-items: flex-start; flex-wrap: wrap; }
 .provider-inline-panel .provider-key-input { min-width: min(100%, 260px); flex-wrap: wrap; }
 .provider-inline-panel .provider-key-input input { min-width: 160px; }

@@ -1,7 +1,7 @@
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronDown, ChevronRight, LogIn, LogOut, Zap } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, LogIn, LogOut, Zap } from "lucide-react";
 import type { ContextUsage, ProviderAccount, ProviderAuthStatus, ProviderId, ProviderInfo, ProviderModel, ReasoningEffort, ResponseSpeed } from "../../shared/contracts";
 import { useOutsideDismiss } from "../hooks/useOutsideDismiss";
 import { selectableApiProvider } from "../providerReadiness";
@@ -271,6 +271,7 @@ export function ModelPicker({ model, providerId, accountId, providers, contextUs
                     ? <button type="button" className="model-auth out" disabled={busy === provider.id} onClick={() => void logout(provider)}><LogOut size={12} />{busy === provider.id ? "…" : "로그아웃"}</button>
                     : <button type="button" className="model-auth in" disabled={busy === provider.id} onClick={() => void login(provider)}><LogIn size={12} />{busy === provider.id ? "로그인 중…" : "로그인"}</button>)}
                 </div>
+                {provider.id === "claude-code" && <p className="model-provider-risk"><AlertTriangle size={12} />Anthropic 구독 OAuth를 서드파티 앱에서 쓰는 것은 소비자 약관 위반이며 계정 정지 위험이 있습니다. 약관 안에서 쓰려면 Anthropic API 키를 사용하세요.</p>}
                 <AnimatePresence initial={false}>
                   {expanded && (
                     <motion.div className="model-provider-options" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: .16, ease: [.4, 0, .2, 1] }}>
