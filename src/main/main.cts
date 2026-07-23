@@ -194,6 +194,10 @@ app.on("child-process-gone", (_event, details) => diagnosticLog("app", "electron
 app.once("ready", () => diagnosticLog("app", "lifecycle.ready", { version: app.getVersion(), packaged: app.isPackaged, diagnosticsDirectory: diagnosticsDirectory() }, { source: "electron" }));
 
 const ENGLISH_OUTPUT_DIRECTIVE = "[Output language directive] Respond only in English, even when the user writes in another language. Do not translate code, identifiers, file paths, or shell commands.";
+// Some external models occasionally emit a progress sentence ("I will do X")
+// as their final response after a failed tool call. Keep the instruction in the
+// model-bound input so the transcript still preserves the user's original text.
+const EXTERNAL_TURN_COMPLETION_DIRECTIVE = "[Completion discipline] Do not end a turn with a promise of a next action (for example, 'I will create the file another way'). If work remains, immediately call the next tool in this same turn. End only after completing the requested work or clearly reporting the exact blocker and what was verified.";
 const DEVIL_ASK_USER_DIRECTIVE = [
   "[Question tool routing]",
   "When work can proceed with a reasonable default or the repository context makes the answer clear, do not ask the user; state the assumption briefly and continue.",
@@ -1800,8 +1804,10 @@ function previewFromText(text: string): string {
 async function externalThreadTitle(threadId: string, fallbackText: string): Promise<string | undefined> {
   const local = await providerTranscripts.read(threadId).catch(() => []);
   if (local.some((item) => item.kind === "user")) return undefined;
-  const native = await server().readThread({ id: threadId }).catch(() => []);
-  return titleFromText(native.find((item) => item.kind === "user")?.text ?? fallbackText);
+  // The native shell's first user item can contain Devil-injected routing and
+  // plugin instructions. Using it made stock Codex show that boilerplate as the
+  // thread title, hiding the actual external-provider conversation in practice.
+  return titleFromText(fallbackText);
 }
 
 function lastAgentText(items: ThreadHistoryItem[]): string {
@@ -3079,9 +3085,10 @@ else if (hasSingleInstanceLock) app.whenReady().then(async () => {
       : askUserMcpEnabled
         ? `\n\n---\n${DEVIL_ASK_USER_DIRECTIVE}`
         : "";
+    const completionDirective = usesCodexProxy(request.provider) ? `\n\n---\n${EXTERNAL_TURN_COMPLETION_DIRECTIVE}` : "";
     const turnInput = {
       ...request,
-      text: `${request.text}${attachmentEnrichment.context}${englishDirective}${questionDirective}`,
+      text: `${request.text}${attachmentEnrichment.context}${englishDirective}${questionDirective}${completionDirective}`,
       attachmentDetails: attachmentEnrichment.attachments,
     };
     if (!request.subagent) {

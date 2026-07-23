@@ -2,8 +2,16 @@
 title: Fix stock Bridge model selection and transport
 date: 2026-07-17
 actor: neneee0181
+memoc: true
+type: worklog
+scope: project-memory
+updated: 2026-07-23T07:24:42
+created: 2026-07-23T07:24:42
+status: active
+tags:
+  - memoc
+  - memoc/worklog
 ---
-
 - Confirmed installed Devil Codex is v0.3.12 and the prior stock session reached Bridge WebSocket/HTTP fallback but never an external provider.
 - Fixed rapid Bridge model selection overwrites using a latest-selection ref in the renderer.
 - Restored stock `openai_base_url` identity path and set `supports_websockets: false` on generated external catalog rows.

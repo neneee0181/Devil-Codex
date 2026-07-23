@@ -2,8 +2,16 @@
 title: Align stock Bridge WebSocket fallback with OpenCodex
 date: 2026-07-18
 actor: neneee0181
+memoc: true
+type: worklog
+scope: project-memory
+updated: 2026-07-23T07:24:42
+created: 2026-07-23T07:24:42
+status: active
+tags:
+  - memoc
+  - memoc/worklog
 ---
-
 - Compared `lidge-jun/opencodex` Bridge injection and server transport code.
 - Confirmed loopback history-safe route is `openai_base_url`, not a custom root model provider.
 - Added explicit `426 Upgrade Required` for authenticated `/v1/responses` WebSocket upgrades; Codex falls back to HTTP/SSE.
