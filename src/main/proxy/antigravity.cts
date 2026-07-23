@@ -88,8 +88,12 @@ function safeAntigravityProgressText(events: AdapterEvent[]): string | undefined
     .map((event) => event.text)
     .join("")
     .trim();
-  if (!raw.startsWith(ANTIGRAVITY_PROGRESS_PREFIX)) return undefined;
-  const text = raw.slice(ANTIGRAVITY_PROGRESS_PREFIX.length).trim();
+  // Prefer the explicit marker, but retain a single safe natural-language
+  // status sentence when Gemini omits it. External models do omit the marker
+  // in practice; dropping those sentences made tool work look silent.
+  const text = raw.startsWith(ANTIGRAVITY_PROGRESS_PREFIX)
+    ? raw.slice(ANTIGRAVITY_PROGRESS_PREFIX.length).trim()
+    : raw;
   if (!text || text.length > 240 || /[\r\n\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) return undefined;
   if (!/^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}\p{Zs}.,!?…:'’“”()/_-]*$/u.test(text)) return undefined;
   if (!isUserFacingProgressSentence(text)) return undefined;

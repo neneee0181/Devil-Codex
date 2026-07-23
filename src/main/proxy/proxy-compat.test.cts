@@ -608,31 +608,32 @@ test("Antigravity preserves one safe progress line before a tool and hides post-
   ]);
 });
 
-test("Antigravity preserves Korean and English plain-language progress", async () => {
+test("Antigravity preserves marked and unmarked Korean and English plain-language progress", async () => {
   for (const progress of [
     "변경 범위를 확인한 뒤 관련 테스트를 실행하겠습니다.",
     "I will make the smallest safe change and verify it.",
     "I’ll inspect the affected files and run the relevant tests.",
   ]) {
-    async function* toolTurn(): AsyncGenerator<AdapterEvent> {
-      yield { type: "text_delta", text: `DEVIL_PROGRESS: ${progress}` };
-      yield { type: "tool_call_start", id: "call_1", name: "read_file" };
-      yield { type: "tool_call_end" };
-      yield { type: "done" };
-    }
+    for (const text of [`DEVIL_PROGRESS: ${progress}`, progress]) {
+      async function* toolTurn(): AsyncGenerator<AdapterEvent> {
+        yield { type: "text_delta", text };
+        yield { type: "tool_call_start", id: "call_1", name: "read_file" };
+        yield { type: "tool_call_end" };
+        yield { type: "done" };
+      }
 
-    const filtered = await collect(filterAntigravityToolTurnText(toolTurn()));
-    assert.equal(
-      filtered.some((event) => event.type === "text_delta" && event.text === progress),
-      true,
-      progress,
-    );
+      const filtered = await collect(filterAntigravityToolTurnText(toolTurn()));
+      assert.equal(
+        filtered.some((event) => event.type === "text_delta" && event.text === progress),
+        true,
+        text,
+      );
+    }
   }
 });
 
-test("Antigravity rejects unmarked, source, JSON-like, command, and secret progress before a tool", async () => {
+test("Antigravity rejects source, JSON-like, command, and secret progress before a tool", async () => {
   for (const unsafeText of [
-    '저장소 구조를 확인하겠습니다.',
     'console.log("secret");',
     '{"path":"README.md"}',
     'npm run build && git status',
