@@ -3,13 +3,15 @@ memoc: true
 type: state
 scope: project-memory
 created: 2026-06-21T11:02:34
-updated: 2026-07-21T03:01:42+09:00
+updated: 2026-07-23T16:30:00+09:00
 status: active
 tags:
   - memoc
   - memoc/state
 ---
 # Current Project State
+
+- Release version bumped to `0.5.3` so the release tag and packaged artifact names stay aligned.
 
 - Antigravity thought_signature extraction gap fix (2026-07-21, v0.4.6): compared our streamGoogle Gemini SSE parser (src/main/proxy/api-key.cts) against opencodex google-antigravity-replay.ts and found we never read the nested extra_content.google.thought_signature fallback, only top-level thoughtSignature/thought_signature on the part or functionCall. When Gemini returns the signature only in that nested shape, our replay cache (antigravity-replay.cts) silently cached the function call with no signature, so a later turn replayed it without one and Antigravity/Gemini rejected the request ("Function call is missing a thought_signature"), causing the observed mid-session Bridge 다시 연결 중 retry-and-fail loop deep into long tool-loop conversations. Added extractThoughtSignature() helper mirroring opencodex fallback order plus a regression test. Note: the prior v0.4.5 commit that added the Kimi provider ("harden GLM/Claude/Antigravity routing" in its message) did NOT touch antigravity.cts/antigravity-replay.cts at all; the actual thought_signature bug was still unfixed until this v0.4.6 change. npm run test:main 55/55, build + typecheck clean.
 
